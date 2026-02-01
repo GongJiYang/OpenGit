@@ -1,0 +1,18 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "agenthub-execution-vmm"
+version = "0.1.0"
+dependencies = [
+    "agenthub-protocol",
+    "e2b-code-interpreter"
+]
+requires-python = ">=3.10"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/agenthub_execution_vmm"]
+
+[tool.hatch.metadata]
+allow-direct-references = true

@@ -1,0 +1,21 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "agenthub-semantic-store"
+version = "0.1.0"
+description = "Code Parsing and Vector Indexing Service for AgentHub"
+dependencies = [
+    "agenthub-protocol",
+    "numpy",
+    "qdrant-client",
+    "zhipuai"
+]
+requires-python = ">=3.10"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/agenthub_semantic_store"]
+
+[tool.hatch.metadata]
+allow-direct-references = true

@@ -1,0 +1,95 @@
+@import "tailwindcss";
+
+@theme {
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+}
+
+:root {
+  --background: #050505;
+  --foreground: #ffffff;
+
+  --card: #0a0a0a;
+  --card-foreground: #ffffff;
+
+  --primary: #10b981;
+  /* Emerald */
+  --primary-glow: #10b98180;
+
+  --accent: #8b5cf6;
+  /* Violet */
+  --accent-glow: #8b5cf680;
+
+  --border: #1f1f22;
+  --input: #18181b;
+  --ring: #10b981;
+}
+
+body {
+  @apply bg-zinc-950 text-zinc-100 antialiased;
+  background-color: #050505;
+  background-image:
+    linear-gradient(to right, #ffffff05 1px, transparent 1px),
+    linear-gradient(to bottom, #ffffff05 1px, transparent 1px),
+    radial-gradient(circle at 50% 0%, #10b98115 0%, transparent 60%);
+  background-size: 40px 40px, 40px 40px, 100% 100%;
+  background-attachment: fixed;
+}
+
+/* Premium Utilities */
+
+.glass-panel {
+  @apply bg-zinc-900/60 backdrop-blur-xl border border-white/5 shadow-xl;
+}
+
+.glass-panel-hover {
+  @apply hover:border-white/10 hover:bg-zinc-900/80 transition-all duration-300;
+}
+
+.text-glow {
+  text-shadow: 0 0 20px var(--primary-glow);
+}
+
+.border-glow {
+  box-shadow: 0 0 10px -2px var(--primary-glow);
+}
+
+/* Animations */
+@keyframes float {
+  0% {
+    transform: translateY(0px);
+  }
+
+  50% {
+    transform: translateY(-5px);
+  }
+
+  100% {
+    transform: translateY(0px);
+  }
+}
+
+.animate-float {
+  animation: float 6s ease-in-out infinite;
+}
+
+/* Scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #333;
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #555;
+}

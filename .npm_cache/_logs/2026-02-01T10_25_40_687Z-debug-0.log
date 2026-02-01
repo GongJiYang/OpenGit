@@ -1,0 +1,68 @@
+0 verbose cli /usr/local/bin/node /usr/local/lib/node_modules/npm/bin/npm-cli.js
+1 info using npm@11.4.2
+2 info using node@v22.14.0
+3 silly config load:file:/usr/local/lib/node_modules/npm/npmrc
+4 silly config load:file:/Users/x/OpenGit/.npmrc
+5 silly config load:file:/Users/x/.npmrc
+6 silly config load:file:/usr/local/etc/npmrc
+7 verbose title npm exec create-next-app@latest apps/observer-ui --yes --ts --tailwind --eslint --no-src-dir --app --import-alias @/* --use-npm
+8 verbose argv "exec" "--" "create-next-app@latest" "apps/observer-ui" "--yes" "--ts" "--tailwind" "--eslint" "--no-src-dir" "--app" "--import-alias" "@/*" "--use-npm"
+9 verbose logfile logs-max:10 dir:/Users/x/OpenGit/.npm_cache/_logs/2026-02-01T10_25_40_687Z-
+10 verbose logfile /Users/x/OpenGit/.npm_cache/_logs/2026-02-01T10_25_40_687Z-debug-0.log
+11 silly logfile done cleaning log files
+12 silly packumentCache heap:4345298944 maxSize:1086324736 maxEntrySize:543162368
+13 http fetch GET 200 https://registry.npmmirror.com/npm 1277ms
+14 http fetch GET 200 https://registry.npmmirror.com/create-next-app 2214ms (cache miss)
+15 silly packumentCache heap:4345298944 maxSize:1086324736 maxEntrySize:543162368
+16 silly packumentCache heap:4345298944 maxSize:1086324736 maxEntrySize:543162368
+17 silly idealTree buildDeps
+18 silly fetch manifest create-next-app@16.1.6
+19 silly packumentCache full:https://registry.npmmirror.com/create-next-app cache-miss
+20 http fetch GET 200 https://registry.npmmirror.com/create-next-app 997ms (cache miss)
+21 silly packumentCache full:https://registry.npmmirror.com/create-next-app set size:1350276 disposed:false
+22 silly placeDep ROOT create-next-app@16.1.6 OK for:  want: 16.1.6
+23 silly reify moves {}
+24 silly audit bulk request { 'create-next-app': [ '16.1.6' ] }
+25 http cache create-next-app@https://registry.npmmirror.com/create-next-app/-/create-next-app-16.1.6.tgz 0ms (cache hit)
+26 silly tarball no local data for create-next-app@https://registry.npmmirror.com/create-next-app/-/create-next-app-16.1.6.tgz. Extracting by manifest.
+27 http fetch POST 404 https://registry.npmmirror.com/-/npm/v1/security/advisories/bulk 277ms
+28 verbose audit error HttpErrorGeneral: 404 Not Found - POST https://registry.npmmirror.com/-/npm/v1/security/advisories/bulk - [NOT_IMPLEMENTED] /-/npm/v1/security/* not implemented yet
+28 verbose audit error     at /usr/local/lib/node_modules/npm/node_modules/npm-registry-fetch/lib/check-response.js:103:15
+28 verbose audit error     at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+28 verbose audit error     at async [getReport] (/usr/local/lib/node_modules/npm/node_modules/@npmcli/arborist/lib/audit-report.js:294:19)
+28 verbose audit error     at async AuditReport.run (/usr/local/lib/node_modules/npm/node_modules/@npmcli/arborist/lib/audit-report.js:106:19) {
+28 verbose audit error   headers: [Object: null prototype] {
+28 verbose audit error     server: [ 'Tengine' ],
+28 verbose audit error     date: [ 'Sun, 01 Feb 2026 10:25:54 GMT' ],
+28 verbose audit error     'content-type': [ 'application/json' ],
+28 verbose audit error     'transfer-encoding': [ 'chunked' ],
+28 verbose audit error     connection: [ 'keep-alive' ],
+28 verbose audit error     'strict-transport-security': [ 'max-age=5184000' ],
+28 verbose audit error     via: [ 'ens-cache7.us33[,404666]' ],
+28 verbose audit error     'timing-allow-origin': [ '*' ],
+28 verbose audit error     eagleid: [ 'a3b5f69b17699415543071171e' ],
+28 verbose audit error     'x-fetch-attempts': [ '1' ]
+28 verbose audit error   },
+28 verbose audit error   statusCode: 404,
+28 verbose audit error   code: 'E404',
+28 verbose audit error   method: 'POST',
+28 verbose audit error   uri: 'https://registry.npmmirror.com/-/npm/v1/security/advisories/bulk',
+28 verbose audit error   body: {
+28 verbose audit error     error: '[NOT_IMPLEMENTED] /-/npm/v1/security/* not implemented yet'
+28 verbose audit error   },
+28 verbose audit error   pkgid: undefined
+28 verbose audit error }
+29 silly audit error [object Object]
+30 silly audit report null
+31 http fetch GET 200 https://cdn.npmmirror.com/packages/create-next-app/16.1.6/create-next-app-16.1.6.tgz 1747ms (cache miss)
+32 verbose cwd /Users/x/OpenGit
+33 verbose os Darwin 25.2.0
+34 verbose node v22.14.0
+35 verbose npm  v11.4.2
+36 notice
+36 notice New [33mminor[39m version of npm available! [33m11.4.2[39m -> [34m11.8.0[39m
+36 notice Changelog: [34mhttps://github.com/npm/cli/releases/tag/v11.8.0[39m
+36 notice To update run: [4mnpm install -g npm@11.8.0[24m
+36 notice  { force: true, [Symbol(proc-log.meta)]: true }
+37 verbose exit 0
+38 info ok

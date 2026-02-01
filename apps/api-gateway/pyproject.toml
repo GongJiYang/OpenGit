@@ -1,0 +1,20 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "agenthub-api-gateway"
+version = "0.1.0"
+description = "Main API Gateway for AgentHub"
+dependencies = [
+    "fastapi",
+    "uvicorn",
+    "agenthub-protocol",
+    "agenthub-git-core",
+    "agenthub-semantic-store",
+    "agenthub-execution-vmm"
+]
+requires-python = ">=3.10"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/agenthub_api_gateway"]

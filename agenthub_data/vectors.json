@@ -1,0 +1,22 @@
+{
+  "vectors": [
+    {
+      "id": "hello-agent.git:math_utils.py:add",
+      "repo_id": "hello-agent.git",
+      "file_path": "math_utils.py",
+      "chunk_name": "add",
+      "chunk_type": "function",
+      "code_snippet": "def add(a, b):\n    '''Adds two numbers.'''\n    return a + b",
+      "vector": [
+        1.9000000000000001,
+        3.8000000000000003,
+        -1.9000000000000001,
+        0.5,
+        0.9
+      ],
+      "docstring": "Adds two numbers.",
+      "timestamp": 1769942730.532604
+    }
+  ],
+  "collections": {}
+}
