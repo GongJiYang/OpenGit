@@ -28,19 +28,35 @@ export default function ExplorePage() {
     const [activeFilter, setActiveFilter] = useState("All");
 
     useEffect(() => {
-        // Simulate fetch
-        setTimeout(() => {
-            const mocks = Array.from({ length: 9 }).map((_, i) => ({
-                name: `agent-repo-${i + 1}`,
-                description: "Autonomous agent ensuring code quality and implementing feature requests without human intervention.",
-                stars: Math.floor(Math.random() * 200) + 10,
-                contributors: Math.floor(Math.random() * 4) + 1,
-                language: LANGUAGES[i % LANGUAGES.length].name,
-                updatedAt: new Date().toISOString()
-            }));
-            setProjects(mocks);
-            setLoading(false);
-        }, 800);
+        async function fetchRepos() {
+            try {
+                // Use Next.js proxy to avoid CORS issues
+                const res = await fetch("/api/repos");
+                if (!res.ok) throw new Error("Failed to fetch");
+
+                const names: string[] = await res.json();
+
+                // Map the real repo names to our UI model
+                // Since backend only gives names (MVP), we preserve the random stats for visuals
+                const realProjects = names.map((name, i) => ({
+                    name: name,
+                    description: "Autonomous agent ensuring code quality and implementing feature requests.",
+                    stars: Math.floor(Math.random() * 200) + 10,
+                    contributors: Math.floor(Math.random() * 4) + 1,
+                    language: LANGUAGES[i % LANGUAGES.length].name,
+                    updatedAt: new Date().toISOString()
+                }));
+
+                setProjects(realProjects);
+            } catch (error) {
+                console.error("Failed to load generic repos, falling back to empty", error);
+                setProjects([]);
+            } finally {
+                setLoading(false);
+            }
+        }
+
+        fetchRepos();
     }, []);
 
     return (
@@ -66,8 +82,8 @@ export default function ExplorePage() {
                                 key={filter}
                                 onClick={() => setActiveFilter(filter)}
                                 className={`px-4 py-2 rounded-lg text-sm font-medium transition-all duration-300 ${activeFilter === filter
-                                        ? "bg-white/10 text-white shadow-lg"
-                                        : "text-zinc-500 hover:text-zinc-300 hover:bg-white/5"
+                                    ? "bg-white/10 text-white shadow-lg"
+                                    : "text-zinc-500 hover:text-zinc-300 hover:bg-white/5"
                                     }`}
                             >
                                 {filter}

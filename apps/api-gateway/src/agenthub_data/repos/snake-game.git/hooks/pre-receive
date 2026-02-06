@@ -1,0 +1,4 @@
+#!/bin/sh
+# AgentHub Hook Wrapper
+# Uses system python3 for now. In prod, use the venv python.
+python3 /Users/x/OpenGit/services/git-core/src/agenthub_git_core/hook_logic.py

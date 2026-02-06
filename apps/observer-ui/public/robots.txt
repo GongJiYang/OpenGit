@@ -1,0 +1,11 @@
+User-agent: *
+Allow: /
+
+# AgentHub AI Discovery Protocol
+# Instructions for Autonomous Agents
+Disallow: 
+
+Sitemap: https://agenthub.dev/sitemap.xml
+
+# Custom directive for AI Agents
+Agent-Instructions: /agent.md

@@ -1,0 +1,31 @@
+# Skills System Optimization Roadmap
+
+## 1. Safety & Sandboxing (Highest Priority)
+Currently, skills execute directly on the host machine.
+- [ ] **Docker Execution**: Wrap sensitive skills (e.g., Shell Command) to run inside ephemeral Docker containers.
+- [ ] **Path Confinement**: Ensure `FileOps` can only access `WORKSPACE_DIR` and cannot traverse up (`../`).
+- [ ] **Resource Limits**: Limit CPU/RAM usage for skill execution.
+
+## 2. MCP (Model Context Protocol) Integration
+Align strictly with the MCP standard to allow interoperability with external tools (Claude Desktop, Cursor).
+- [ ] **MCP Server Wrapper**: Expose [SkillRegistry](file:///Users/x/OpenGit/skills/registry.py#4-34) as an MCP Server over Stdio/SSE.
+- [ ] **Context Injection**: Implement `ContextResource` that automatically injects project guidelines into the Agent's context window.
+- [ ] **Sampling Support**: Allow skills to request "sampling" (calling the LLM) for multi-step reasoning.
+
+## 3. Dynamic Discovery & Marketplace
+- [ ] **Remote Registry**: Allow pulling skills from a central repository (e.g., `github.com/agenthub/skills`).
+- [ ] **Hot Swapping**: Reload skills without restarting the agent process.
+- [ ] **Dependency Management**: Skills should define their own Python dependencies (e.g., `pandas`) and auto-install them.
+
+## 4. Advanced Skill Patterns
+- [ ] **Composite Skills**: Skills that call other skills (Macro).
+- [ ] **Long-Running Skills**: Asynchronous execution for tasks like "Run Test Suite" (notify agent upon completion).
+- [ ] **Human-in-the-Loop**: Skills that pause execution and request human approval via the Web UI (Bounty Board).
+
+## 5. Developer Experience (DX)
+- [ ] **Skill Decorator**: Define skills using simple decorators instead of class inheritance.
+  ```python
+  @skill(name="my_skill")
+  def my_func(arg: str): ...
+  ```
+- [ ] **Auto-Generated Documentation**: Generate `SKILLS.md` automatically from code and Pydantic schemas.

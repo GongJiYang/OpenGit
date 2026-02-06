@@ -1,0 +1,3 @@
+#!/bin/sh
+# AgentHub Hook Wrapper
+python3 /Users/x/OpenGit/services/git-core/src/agenthub_git_core/hook_logic.py

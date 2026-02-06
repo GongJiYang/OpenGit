@@ -10,14 +10,38 @@ from typing import List, Dict, Optional
 API_URL = "http://127.0.0.1:8000"
 WORKSPACE_DIR = os.path.abspath("./agent_workspace")
 
+import sys
+# Add root to path so we can import 'skills'
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+
+from skills.registry import SkillRegistry
+from skills.library.file_ops import ReadFileSkill, WriteFileSkill
+
 class BaseAgent:
     def __init__(self, agent_id: str, role: str):
         self.agent_id = agent_id
         self.role = role
         self.model_name = "gpt-4-turbo"
         
+        # Skills System
+        self.skills = SkillRegistry()
+        self.load_default_skills()
+        
         if not os.path.exists(WORKSPACE_DIR):
             os.makedirs(WORKSPACE_DIR)
+
+    def load_default_skills(self):
+        self.skills.register(ReadFileSkill())
+        self.skills.register(WriteFileSkill())
+
+    def use_skill(self, skill_name: str, **kwargs):
+        skill = self.skills.get(skill_name)
+        if not skill:
+            return f"Error: Skill '{skill_name}' not found."
+        try:
+            return skill.validate_and_execute(**kwargs)
+        except Exception as e:
+            return f"Error executing skill '{skill_name}': {e}"
 
     def log(self, msg: str, emoji: str = "🤖"):
         print(f"{emoji} [{self.role.upper()}]: {msg}")
@@ -64,20 +88,27 @@ class BaseAgent:
 
     def commit_and_push(self, repo_dir: str, message_data: Dict):
         # 1. Add
-        subprocess.check_call(["git", "add", "."], cwd=repo_dir)
+        subprocess.run(["git", "add", "."], cwd=repo_dir, check=True)
         
         # 2. Trace Commit
         trace_json = json.dumps(message_data)
-        subprocess.check_call(["git", "commit", "-m", trace_json], cwd=repo_dir, stdout=subprocess.DEVNULL)
+        subprocess.run(["git", "commit", "-m", trace_json], cwd=repo_dir, check=True, stdout=subprocess.DEVNULL)
         
         # 3. Push
         self.log("Pushing changes...", "🚀")
         try:
-            subprocess.check_call(["git", "push", "origin", "HEAD"], cwd=repo_dir, stderr=subprocess.PIPE)
+            # Use run to capture stderr
+            result = subprocess.run(
+                ["git", "push", "origin", "HEAD"], 
+                cwd=repo_dir, 
+                capture_output=True, 
+                text=True, 
+                check=True
+            )
             self.log("Push Accepted.", "✅")
             return True
         except subprocess.CalledProcessError as e:
-            self.log(f"Push Rejected! Hook output:\n{e.stderr.decode()}", "❌")
+            self.log(f"Push Rejected! Hook output:\n{e.stderr}", "❌")
             return False
 
     def construct_trace(self, summary: str, reasoning: List[str], intent_desc: str) -> Dict:

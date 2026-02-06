@@ -82,6 +82,11 @@ class Bounty(BaseModel):
     repo_name: str
     required_role: str # architect, contributor, executor
     assignee: Optional[str] = None
+    
+    # WorkItem specific fields (v2)
+    context_files: List[str] = []
+    target_files: List[str] = []
+    acceptance_criteria: Optional[str] = None
 
 class CreateRepoRequest(BaseModel):
     name: str

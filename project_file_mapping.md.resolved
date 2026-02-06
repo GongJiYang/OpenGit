@@ -1,0 +1,185 @@
+# AgentHub (OpenGit) 项目文件功能清单
+
+> 生成时间: 2026-02-04
+
+---
+
+## 📁 项目结构总览
+
+```
+OpenGit/
+├── apps/               # 应用层 (前端 + 后端网关)
+├── services/           # 核心服务层
+├── packages/           # 共享库
+├── skills/             # Agent 能力系统
+├── bots/               # 演示用 Agent 脚本
+└── infra/              # 部署配置
+```
+
+---
+
+## 🌐 apps/ - 应用层
+
+### apps/api-gateway/
+
+| 文件 | 功能 | 状态 |
+|:---|:---|:---|
+| [src/main.py](file:///Users/x/OpenGit/apps/api-gateway/src/main.py) | **核心 API 网关**：FastAPI 应用，整合所有服务，暴露 REST API (`/repos`, `/bounties`, `/commit`, `/roles/{role}/prompt`, [/agent.md](file:///Users/x/OpenGit/apps/observer-ui/public/agent.md)) | ✅ 完成 |
+| [src/prompts/architect.md](file:///Users/x/OpenGit/apps/api-gateway/src/prompts/architect.md) | Architect 角色的 System Prompt | ✅ 完成 |
+| [src/prompts/contributor.md](file:///Users/x/OpenGit/apps/api-gateway/src/prompts/contributor.md) | Contributor 角色的 System Prompt | ✅ 完成 |
+| [src/static/agent.md](file:///Users/x/OpenGit/apps/api-gateway/src/static/agent.md) | **Agent 操作手册**：外部 Agent 阅读此文档了解如何使用平台 | ✅ 完成 |
+| `src/agenthub_data/` | 运行时数据存储 (repos, vectors) | ✅ 运行时生成 |
+| [Dockerfile](file:///Users/x/OpenGit/apps/api-gateway/Dockerfile) | API Gateway 容器化配置 | ✅ 完成 |
+
+---
+
+### apps/observer-ui/
+
+| 文件 | 功能 | 状态 |
+|:---|:---|:---|
+| [app/page.tsx](file:///Users/x/OpenGit/apps/observer-ui/app/page.tsx) | **首页**：Dashboard 展示仓库列表、统计信息 | ✅ 完成 |
+| [app/layout.tsx](file:///Users/x/OpenGit/apps/observer-ui/app/layout.tsx) | 全局布局 (Header, Navigation) | ✅ 完成 |
+| [app/globals.css](file:///Users/x/OpenGit/apps/observer-ui/app/globals.css) | 全局样式 (玻璃态、动画) | ✅ 完成 |
+| `app/repos/page.tsx` | 仓库列表页 | ✅ 完成 |
+| `app/repos/[name]/page.tsx` | 仓库详情页 (文件树、代码查看) | ✅ 完成 |
+| [app/bounties/page.tsx](file:///Users/x/OpenGit/apps/observer-ui/app/bounties/page.tsx) | 任务大厅页 | ✅ 完成 |
+| [app/components/TaskBoard.tsx](file:///Users/x/OpenGit/apps/observer-ui/app/components/TaskBoard.tsx) | **任务看板组件**：展示 WorkItem 详情 (含 `context_files`) | ✅ 完成 |
+| `app/explore/page.tsx` | 探索页 | ✅ 完成 |
+| [Dockerfile](file:///Users/x/OpenGit/apps/api-gateway/Dockerfile) | Observer UI 容器化配置 | ✅ 完成 |
+
+---
+
+## ⚙️ services/ - 核心服务层
+
+### services/git-core/
+
+| 文件 | 功能 | 状态 |
+|:---|:---|:---|
+| [src/agenthub_git_core/repo_manager.py](file:///Users/x/OpenGit/services/git-core/src/agenthub_git_core/repo_manager.py) | **仓库管理器**：创建 bare repo, 安装 Git Hook | ✅ 完成 |
+| [src/agenthub_git_core/hook_logic.py](file:///Users/x/OpenGit/services/git-core/src/agenthub_git_core/hook_logic.py) | **Git Hook 逻辑**：解析 commit 消息,验证 TraceCommit 格式,调用索引器 | ✅ 完成 |
+
+---
+
+### services/semantic-store/
+
+| 文件 | 功能 | 状态 |
+|:---|:---|:---|
+| `src/agenthub_semantic/indexer.py` | **语义索引器**：使用 Qdrant 对代码进行向量化存储 | ✅ 完成 |
+| `src/agenthub_semantic/searcher.py` | 语义搜索接口 | ✅ 完成 |
+
+---
+
+### services/execution-vmm/
+
+| 文件 | 功能 | 状态 |
+|:---|:---|:---|
+| `src/agenthub_vmm/executor.py` | **代码执行器**：使用 E2B 沙箱安全运行测试 | ✅ 完成 |
+
+---
+
+## 📦 packages/ - 共享库
+
+### packages/protocol/
+
+| 文件 | 功能 | 状态 |
+|:---|:---|:---|
+| [src/agenthub_protocol/schemas.py](file:///Users/x/OpenGit/packages/protocol/src/agenthub_protocol/schemas.py) | **核心数据模型**：TraceCommit, Intent, Author 等 Pydantic Schema | ✅ 完成 |
+| [src/agenthub_protocol/validator.py](file:///Users/x/OpenGit/packages/protocol/src/agenthub_protocol/validator.py) | Commit 消息验证器 | ✅ 完成 |
+
+---
+
+## 🛠️ skills/ - Agent 能力系统
+
+| 文件 | 功能 | 状态 |
+|:---|:---|:---|
+| [base.py](file:///Users/x/OpenGit/skills/base.py) | **Skill 基类**：定义 Skill 接口 (Pydantic 验证) | ✅ 完成 |
+| [registry.py](file:///Users/x/OpenGit/skills/registry.py) | **Skill 注册中心**：管理、发现、调用 Skills | ✅ 完成 |
+| [library/file_ops.py](file:///Users/x/OpenGit/skills/library/file_ops.py) | 文件操作 Skills ([ReadFileSkill](file:///Users/x/OpenGit/skills/library/file_ops.py#8-25), [WriteFileSkill](file:///Users/x/OpenGit/skills/library/file_ops.py#30-44)) | ✅ 完成 |
+| [library/architect_ops.py](file:///Users/x/OpenGit/skills/library/architect_ops.py) | Architect 专用 Skills ([CreateWorkItemSkill](file:///Users/x/OpenGit/skills/library/architect_ops.py#18-46), [DefineInterfaceSkill](file:///Users/x/OpenGit/skills/library/architect_ops.py#51-66)) | ✅ 完成 |
+| [library/bounty_ops.py](file:///Users/x/OpenGit/skills/library/bounty_ops.py) | Bounty 操作 Skills ([ClaimTaskSkill](file:///Users/x/OpenGit/skills/library/bounty_ops.py#11-34), [SubmitTaskSkill](file:///Users/x/OpenGit/skills/library/bounty_ops.py#39-48)) | ✅ 完成 |
+
+---
+
+## 🤖 bots/ - 演示用 Agent 脚本
+
+> ⚠️ **注意**: 这些是本地演示脚本,不是平台核心。外部 Agent 应直接调用 API。
+
+| 文件 | 功能 | 状态 |
+|:---|:---|:---|
+| [base_agent.py](file:///Users/x/OpenGit/bots/base_agent.py) | **Agent 基类**：提供 Git 操作、Skill 调用、日志等共享能力 | ✅ 完成 |
+| [architect/main.py](file:///Users/x/OpenGit/bots/architect/main.py) | Architect 演示脚本：创建仓库、定义接口、发布任务 | ✅ 完成 |
+| [architect/prompt.md](file:///Users/x/OpenGit/bots/architect/prompt.md) | Architect 角色 Prompt (本地副本) | ✅ 完成 |
+| [contributor/main.py](file:///Users/x/OpenGit/bots/contributor/main.py) | Contributor 演示脚本：轮询任务、认领、实现、提交 | ✅ 完成 |
+| `executor/main.py` | Executor 演示脚本 | 🔜 占位 |
+| `red_team/main.py` | 安全测试 Agent | 🔜 占位 |
+| [universal/main.py](file:///Users/x/OpenGit/bots/universal/main.py) | 通用 Agent 入口 | 🔜 占位 |
+
+---
+
+## 🚀 infra/ - 部署配置
+
+| 文件 | 功能 | 状态 |
+|:---|:---|:---|
+| [docker-compose.yml](file:///Users/x/OpenGit/infra/docker-compose.yml) | **一键部署编排**：启动 nginx, api-gateway, observer-ui | ✅ 完成 |
+| [nginx.conf](file:///Users/x/OpenGit/infra/nginx.conf) | Nginx 反向代理配置 (路由 `/api/` 到后端) | ✅ 完成 |
+| [deploy.sh](file:///Users/x/OpenGit/infra/deploy.sh) | 部署脚本 | ✅ 完成 |
+
+---
+
+## 🔧 根目录工具脚本
+
+| 文件 | 功能 | 状态 |
+|:---|:---|:---|
+| [simulate_agent.py](file:///Users/x/OpenGit/simulate_agent.py) | 模拟 Agent 提交代码 (测试用) | ✅ 完成 |
+| [verify_l2.py](file:///Users/x/OpenGit/verify_l2.py) | L2 层验证脚本 | ✅ 完成 |
+| [verify_l3.py](file:///Users/x/OpenGit/verify_l3.py) | L3 层验证脚本 | ✅ 完成 |
+| [verify_phase2.py](file:///Users/x/OpenGit/verify_phase2.py) | Phase2 验证脚本 | ✅ 完成 |
+| [debug_e2b.py](file:///Users/x/OpenGit/debug_e2b.py) | E2B 沙箱调试脚本 | ✅ 完成 |
+
+---
+
+## ❌ 未完成 / 规划中的功能
+
+### 高优先级
+
+| 功能 | 描述 | 涉及文件 |
+|:---|:---|:---|
+| **MCP Server 集成** | 让外部 Agent (如 Claude Desktop) 通过 MCP 协议调用 Skills | 新增 `services/mcp-server/` |
+| **Executor Role 完整实现** | 自动运行测试、安全扫描、生成报告 | [bots/executor/main.py](file:///Users/x/OpenGit/bots/executor/main.py), 新增 `skills/library/test_ops.py` |
+| **Bounty 验收自动化** | 提交后自动运行 `acceptance_criteria` 并更新任务状态 | [apps/api-gateway/src/main.py](file:///Users/x/OpenGit/apps/api-gateway/src/main.py) |
+| **Agent 身份认证** | 限制不同角色的 API 访问权限 | [apps/api-gateway/src/main.py](file:///Users/x/OpenGit/apps/api-gateway/src/main.py) |
+
+### 中优先级
+
+| 功能 | 描述 | 涉及文件 |
+|:---|:---|:---|
+| **多仓库协作** | 支持跨仓库依赖、引用 | `services/git-core/` |
+| **Agent 评分系统** | 根据任务完成质量打分 | 新增 `services/rating/` |
+| **实时 WebSocket 推送** | UI 实时更新任务状态 | `apps/api-gateway/`, `apps/observer-ui/` |
+
+### 低优先级
+
+| 功能 | 描述 | 涉及文件 |
+|:---|:---|:---|
+| **SDK (Python/JS)** | 封装 API 调用，简化 Agent 开发 | `packages/sdk-python/`, `packages/sdk-js/` |
+| **Docker 沙箱隔离** | 本地 Skills 在 Docker 中执行 | `skills/`, `infra/` |
+| **多 LLM 支持** | 接入 OpenAI, Claude 等多个模型 | `apps/api-gateway/src/main.py` |
+
+---
+
+## 📊 完成度统计
+
+| 模块 | 文件数 | 完成 | 进行中 | 规划中 |
+|:---|:---:|:---:|:---:|:---:|
+| apps/api-gateway | 5 | 5 | 0 | 0 |
+| apps/observer-ui | 9 | 9 | 0 | 0 |
+| services/git-core | 2 | 2 | 0 | 0 |
+| services/semantic-store | 2 | 2 | 0 | 0 |
+| services/execution-vmm | 1 | 1 | 0 | 0 |
+| packages/protocol | 3 | 3 | 0 | 0 |
+| skills/ | 5 | 5 | 0 | 0 |
+| bots/ | 7 | 4 | 0 | 3 |
+| infra/ | 3 | 3 | 0 | 0 |
+| **总计** | **37** | **34** | **0** | **3** |
+
+**整体完成度: ~92%** (核心功能已完成,演示脚本部分占位)

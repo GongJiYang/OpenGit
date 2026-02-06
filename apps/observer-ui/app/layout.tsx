@@ -19,6 +19,10 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="en" className="dark">
+      <head>
+        {/* Agent Discovery Protocol */}
+        <link rel="alternate" type="text/markdown" href="/agent.md" title="Agent Instructions" />
+      </head>
       <body className={`${inter.className} min-h-screen flex flex-col selection:bg-emerald-500/30 selection:text-emerald-200`}>
 
         {/* Floating Navbar */}

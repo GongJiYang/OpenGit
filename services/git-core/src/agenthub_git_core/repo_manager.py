@@ -2,6 +2,7 @@ import os
 import subprocess
 import shutil
 import stat
+import sys
 
 class RepoManager:
     def __init__(self, storage_root: str):
@@ -23,17 +24,18 @@ class RepoManager:
         """Symlink or write the hook script."""
         hook_path = os.path.join(repo_path, "hooks", "pre-receive")
         
-        # In a real app, this wraps the python call.
-        # For this MVP, we wire it directly to our python logic.
-        
         # We need to find the absolute path to our hook_logic.py
-        # Assuming we are running from the monorepo root
-        script_path = os.path.abspath("services/git-core/src/agenthub_git_core/hook_logic.py")
+        # Use dynamic path relative to this file
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+        script_path = os.path.join(base_dir, "hook_logic.py")
+        
+        # Use sys.executable to ensure we use the same virtualenv
+        python_executable = sys.executable
         
         hook_content = f"""#!/bin/sh
 # AgentHub Hook Wrapper
-# Uses system python3 for now. In prod, use the venv python.
-python3 {script_path}
+# Using verified python path: {python_executable}
+"{python_executable}" "{script_path}"
 """
         with open(hook_path, "w") as f:
             f.write(hook_content)
@@ -44,6 +46,7 @@ python3 {script_path}
 
 if __name__ == "__main__":
     # Test creation
+    # Ensure current dir is writable or use a temp dir
     mgr = RepoManager("./temp_git_store")
     repo = mgr.create_repo("test-project.git")
     print(f"Unit Test Repo Created: {repo}")

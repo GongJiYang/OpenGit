@@ -20,23 +20,21 @@ services:
     depends_on:
       - observer-ui
 
-  # --- Services ---
-  semantic-store:
+  # --- Gateway / Monolith ---
+  api-gateway:
     build:
       context: ..
-      dockerfile: services/semantic-store/Dockerfile
+      dockerfile: apps/api-gateway/Dockerfile
     restart: always
+    ports:
+      - "8000:8000"
     environment:
       - ZHIPUAI_API_KEY=${ZHIPUAI_API_KEY}
-      - QDRANT_URL=${QDRANT_URL:-:memory:}
-
-  execution-vmm:
-    build:
-      context: ..
-      dockerfile: services/execution-vmm/Dockerfile
-    restart: always
-    environment:
       - E2B_API_KEY=${E2B_API_KEY}
+      - QDRANT_URL=${QDRANT_URL:-:memory:}
+    volumes:
+      # Persist Repos and Vectors
+      - ./agenthub_data:/app/apps/api-gateway/agenthub_data
 
 networks:
   default:
