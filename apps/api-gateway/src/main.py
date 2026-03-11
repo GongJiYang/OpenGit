@@ -367,6 +367,16 @@ def api_commit(request: Request, repo_name: str, req: CommitRequest, session: Se
         # Stage all changes
         subprocess.run(["git", "add", "-A"], cwd=work_dir, check=True, capture_output=True)
         
+        # Determine Branch Name (Level  isolation)
+        if req.bounty_id:
+            branch_name = f"agent/{req.agent_id}/bounty_{req.bounty_id}"
+        else:
+            ts = int(time.time())
+            branch_name = f"agent/{req.agent_id}/dev_{ts}"
+            
+        # Create and switch to the new branch
+        subprocess.run(["git", "checkout", "-b", branch_name], cwd=work_dir, check=True, capture_output=True)
+
         # Build TraceCommit JSON
         trace_commit = {
             "diff_summary": req.diff_summary,
@@ -397,9 +407,9 @@ def api_commit(request: Request, repo_name: str, req: CommitRequest, session: Se
                  "GIT_COMMITTER_NAME": req.agent_id, "GIT_COMMITTER_EMAIL": f"{req.agent_id}@agenthub.dev"}
         )
         
-        # Push to bare repo
+        # Push specific branch to bare repo
         result = subprocess.run(
-            ["git", "push", "origin", "HEAD"],
+            ["git", "push", "origin", branch_name],
             cwd=work_dir, capture_output=True, text=True
         )
         
@@ -427,6 +437,8 @@ def api_commit(request: Request, repo_name: str, req: CommitRequest, session: Se
                 repo_name=repo_name,
                 commit_sha=sha,
                 agent_id=req.agent_id,
+                bounty_id=req.bounty_id,
+                branch_name=branch_name if 'branch_name' in locals() else None,
                 model_name=req.model_name,
                 intent_category=req.intent_category,
                 intent_description=req.intent_description,

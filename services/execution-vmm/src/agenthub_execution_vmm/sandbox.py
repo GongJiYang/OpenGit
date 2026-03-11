@@ -12,15 +12,22 @@ class Sandbox(ABC):
     
     @abstractmethod
     def run_tests(self, repo_path: str, test_command: str) -> Tuple[int, str]:
-        """
-        Runs tests in the sandbox.
-        Args:
-            repo_path: Absolute path to the code on the host (or mounted volume).
-            test_command: The command to run (e.g., "pytest").
-            
-        Returns:
-            Tuple[exit_code, output_logs]
-        """
+        """Runs tests in the sandbox."""
+        pass
+
+    @abstractmethod
+    def create_session(self, repo_path: Optional[str] = None) -> str:
+        """Starts a persistent sandbox session and returns its ID."""
+        pass
+
+    @abstractmethod
+    def run_command(self, session_id: str, command: str, cwd: str = "/home/user/repo") -> Tuple[int, str]:
+        """Runs a command on a persistent session."""
+        pass
+
+    @abstractmethod
+    def close_session(self, session_id: str):
+        """Terminates a persistent session."""
         pass
 
 class SubprocessSandbox(Sandbox):
@@ -54,5 +61,16 @@ class SubprocessSandbox(Sandbox):
             
         except subprocess.TimeoutExpired:
             return 124, "❌ Execution Timed Out"
-        except Exception as e:
-            return 1, f"❌ Sandbox Error: {str(e)}"
+    def create_session(self, repo_path: Optional[str] = None) -> str:
+        """Local sessions just return the repo path as ID."""
+        return repo_path or "local_global"
+
+    def run_command(self, session_id: str, command: str, cwd: str = None) -> Tuple[int, str]:
+        """Runs a command locally."""
+        repo_path = session_id if os.path.exists(session_id) else os.getcwd()
+        actual_cwd = cwd if cwd and os.path.exists(cwd) else repo_path
+        return self.run_tests(actual_cwd, command)
+
+    def close_session(self, session_id: str):
+        """No-op for local."""
+        pass

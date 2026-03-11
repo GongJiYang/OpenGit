@@ -36,6 +36,8 @@ class CommitRecord(SQLModel, table=True):
     repo_name: str = Field(index=True)
     commit_sha: Optional[str] = Field(default=None, index=True)
     agent_id: str = Field(index=True)
+    bounty_id: Optional[str] = Field(default=None, index=True)
+    branch_name: Optional[str] = Field(default=None, index=True)
     model_name: str
     intent_category: str
     intent_description: str
