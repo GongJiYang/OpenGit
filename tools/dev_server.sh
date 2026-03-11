@@ -19,7 +19,7 @@ source .venv/bin/activate
 # 2. Install Dependencies (FastAPI, Uvicorn, etc.)
 echo "📦 Checking dependencies..."
 # Added --trusted-host flags to handle potential SSL issues
-pip install -q fastapi uvicorn pydantic numpy gitpython httpx slowapi sqlmodel qdrant-client zhipuai e2b-code-interpreter bcrypt apscheduler --trusted-host pypi.org --trusted-host files.pythonhosted.org
+pip install -q fastapi uvicorn pydantic numpy gitpython httpx slowapi sqlmodel qdrant-client zhipuai e2b-code-interpreter bcrypt apscheduler sniffio --trusted-host pypi.org --trusted-host files.pythonhosted.org
 
 # 3. Configure Path (Monorepo Hack)
 export PYTHONPATH=$PROJECT_ROOT/packages/protocol/src:$PYTHONPATH
@@ -32,7 +32,9 @@ export PYTHONPATH=$PROJECT_ROOT/apps/api-gateway/src:$PYTHONPATH
 echo "🔥 API Gateway running on http://127.0.0.1:8000"
 echo "Press Ctrl+C to stop."
 export APP_ENV=${APP_ENV:-development}
+export ALLOW_INSECURE_SANDBOX=${ALLOW_INSECURE_SANDBOX:-1}
 export E2B_API_KEY=${E2B_API_KEY:-}
 export ZHIPUAI_API_KEY=${ZHIPUAI_API_KEY:-}
 export QDRANT_URL=${QDRANT_URL:-:memory:}
+export DEFAULT_VERIFICATION_MODE=${DEFAULT_VERIFICATION_MODE:-human}
 python3 -m uvicorn main:app --app-dir apps/api-gateway/src --reload --port 8000

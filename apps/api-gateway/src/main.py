@@ -13,6 +13,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
+from sqlmodel import Session, select
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
@@ -38,7 +39,7 @@ from agent_auth.database import get_db as get_auth_session, get_engine as get_au
 from agent_auth.models import Agent, AgentStatus
 from agent_auth.services import start_scheduler, stop_scheduler
 from agent_auth.utils import verify_api_key, get_api_key_prefix, is_valid_api_key_format
-from persistence import Bounty, CommitRecord, get_session
+from persistence import Bounty, CommitRecord, get_session, create_db_and_tables
 
 # --- Execution & Cost Guards ---
 # [Blind-Spot 2] Global Concurrency Limit
@@ -436,6 +437,8 @@ def list_bounties(request: Request, session: Session = Depends(get_session)):
 @limiter.limit("20/minute")
 def create_bounty(request: Request, bounty: Bounty, session: Session = Depends(get_session), agent: Agent = Depends(require_agent)):
     """Post a new job."""
+    if not bounty.verification_mode:
+        bounty.verification_mode = os.getenv("DEFAULT_VERIFICATION_MODE", "auto")
     if bounty.verification_mode and bounty.verification_mode.lower() not in {"auto", "human", "external"}:
         raise HTTPException(status_code=400, detail="Invalid verification_mode")
     session.add(bounty)
