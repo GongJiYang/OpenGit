@@ -47,13 +47,11 @@ class Game:
         self.use_skill("define_interface", path=os.path.join(local_path, "README.md"), content=readme_content)
 
         # 4. Commit Interfaces
-        self.commit_and_push(local_path, {
-            "diff_summary": "Added architectural skeletons", 
-            "reasoning_trace": ["Defined Game interface"], 
-            "intent": {"description": "Scaffold project", "category": "chore", "confidence_score": 1.0},
-             "author": {"agent_id": self.agent_id, "model_name": self.model_name},
-             "timestamp": time.time()
-        })
+        self.commit_and_push(local_path, self.construct_trace(
+            summary="Added architectural skeletons",
+            reasoning=["Defined Game interface"],
+            intent_desc="Scaffold project"
+        ))
 
         # 5. Distribute Tasks (WorkItems)
         self.log("Distributing implementation tasks...", "💼")

@@ -28,6 +28,7 @@ class ContextSnapshot(BaseModel):
 class IntentVector(BaseModel):
     """Semantic vector representation of the change intent."""
     description: str = Field(..., description="Natural language intent description for generation")
+    category: Optional[str] = Field(None, description="Intent category, e.g. feature/fix/refactor")
     vector: List[float] = Field(default_factory=list, description="Embedding vector (e.g. 1536 dim)")
     model_version: str = "openai/text-embedding-3-small"
 
@@ -94,4 +95,3 @@ class PullRequestSpec(BaseModel):
     bounty_claim_id: Optional[str] = None
     royalty_recipient: Optional[str] = None
     license_compatibility: str = "MIT"
-

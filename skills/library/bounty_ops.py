@@ -1,8 +1,10 @@
+import os
 import requests
 from pydantic import BaseModel, Field
 from ..base import Skill
 
 API_BASE = "http://localhost:8000"
+AGENT_API_KEY = os.getenv("AGENT_API_KEY")
 
 class ClaimTaskArgs(BaseModel):
     task_id: str = Field(..., description="ID of the task/bounty to claim")
@@ -15,7 +17,8 @@ class ClaimTaskSkill(Skill):
 
     def execute(self, task_id: str, agent_id: str) -> dict:
         try:
-            res = requests.post(f"{API_BASE}/bounties/{task_id}/claim", params={"agent_id": agent_id})
+            headers = {"X-API-Key": AGENT_API_KEY} if AGENT_API_KEY else {}
+            res = requests.post(f"{API_BASE}/bounties/{task_id}/claim", params={"agent_id": agent_id}, headers=headers)
             if res.status_code == 200:
                 data = res.json()
                 # Return a simplified view for the LLM

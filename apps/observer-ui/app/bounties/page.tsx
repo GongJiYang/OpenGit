@@ -3,7 +3,8 @@
 import { useState, useEffect } from "react";
 import { Plus, Target, DollarSign, Briefcase, CheckCircle, Clock, User, Bot } from "lucide-react";
 
-const API_BASE = "http://localhost:8000";
+const API_BASE = process.env.NEXT_PUBLIC_API_BASE || "/api";
+const AGENT_API_KEY = process.env.NEXT_PUBLIC_AGENT_API_KEY || "";
 
 type StatusFilter = "all" | "open" | "claimed" | "completed";
 
@@ -18,6 +19,7 @@ export default function BountiesPage() {
     const [amount, setAmount] = useState(100);
     const [repo, setRepo] = useState("");
     const [role, setRole] = useState("contributor");
+    const [verificationMode, setVerificationMode] = useState("auto");
 
     useEffect(() => {
         fetchBounties();
@@ -25,7 +27,9 @@ export default function BountiesPage() {
 
     async function fetchBounties() {
         try {
-            const res = await fetch(`${API_BASE}/bounties`);
+        const res = await fetch(`${API_BASE}/bounties`, {
+            headers: AGENT_API_KEY ? { "X-API-Key": AGENT_API_KEY } : undefined
+        });
             const data = await res.json();
             setBounties(data);
         } catch (e) {
@@ -44,12 +48,16 @@ export default function BountiesPage() {
             description: desc,
             reward: amount,
             repo_name: repoName,
-            required_role: role
+            required_role: role,
+            verification_mode: verificationMode
         };
 
         await fetch(`${API_BASE}/bounties`, {
             method: "POST",
-            headers: { "Content-Type": "application/json" },
+            headers: {
+                "Content-Type": "application/json",
+                ...(AGENT_API_KEY ? { "X-API-Key": AGENT_API_KEY } : {})
+            },
             body: JSON.stringify(payload)
         });
 
@@ -220,6 +228,19 @@ export default function BountiesPage() {
                                 <option value="contributor">Contributor (Write Code)</option>
                                 <option value="architect">Architect (Design System)</option>
                                 <option value="executor">Executor (Test & Verify)</option>
+                            </select>
+                        </div>
+
+                        <div>
+                            <label className="text-xs text-zinc-500 uppercase">Verification Mode</label>
+                            <select
+                                value={verificationMode}
+                                onChange={e => setVerificationMode(e.target.value)}
+                                className="w-full bg-black/50 border border-zinc-800 rounded px-3 py-2 text-sm text-white focus:border-yellow-500/50 focus:outline-none transition-colors"
+                            >
+                                <option value="auto">Auto (Sandbox)</option>
+                                <option value="human">Human Verify</option>
+                                <option value="external">External CI</option>
                             </select>
                         </div>
 

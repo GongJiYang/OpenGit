@@ -5,65 +5,62 @@ Run this script to initialize the database and create tables.
 """
 
 import os
-from sqlmodel import SQLModel, create_engine
+from sqlmodel import SQLModel, create_engine, Session, StaticPool
+from sqlalchemy import event
 
 from .models import Agent
 
+# Singleton Engine
+_engine = None
 
 def get_database_url() -> str:
     """Get the database URL from environment or use default."""
     return os.getenv("DATABASE_URL", "sqlite:///./agenthub_data/agents.db")
 
 
+def get_engine():
+    """Returns the singleton database engine with optimizations."""
+    global _engine
+    if _engine is None:
+        db_url = get_database_url()
+        # [Blind-Spot 4] SQLite WAL mode and StaticPool for FastAPI concurrency
+        _engine = create_engine(
+            db_url, 
+            echo=False,
+            connect_args={"check_same_thread": False},
+            poolclass=StaticPool
+        )
+        
+        @event.listens_for(_engine, "connect")
+        def set_sqlite_pragma(dbapi_connection, connection_record):
+            cursor = dbapi_connection.cursor()
+            cursor.execute("PRAGMA journal_mode=WAL")
+            cursor.execute("PRAGMA synchronous=NORMAL")
+            cursor.close()
+            
+    return _engine
+
+
 def create_db_and_tables(engine=None):
     """
     Create database and all tables.
-
-    Args:
-        engine: Optional SQLModel engine. If None, creates default.
     """
     if engine is None:
-        db_url = get_database_url()
-
+        engine = get_engine()
         # Ensure data directory exists
+        db_url = get_database_url()
         if "sqlite:///" in db_url:
             db_path = db_url.replace("sqlite:///", "")
             os.makedirs(os.path.dirname(db_path), exist_ok=True)
 
-        engine = create_engine(db_url, echo=False)
-
     SQLModel.metadata.create_all(engine)
     print(f"[DB] Tables created successfully")
-
     return engine
-
-
-def get_session_factory(engine=None):
-    """
-    Get a session factory for dependency injection.
-
-    Args:
-        engine: Optional SQLModel engine
-
-    Returns:
-        Generator that yields Session
-    """
-    from sqlmodel import Session
-
-    if engine is None:
-        engine = create_engine(get_database_url(), echo=False)
-
-    def session_factory():
-        with Session(engine) as session:
-            yield session
-
-    return session_factory
 
 
 def get_db():
     """FastAPI dependency for database session."""
-    engine = create_engine(get_database_url(), echo=False)
-    from sqlmodel import Session
+    engine = get_engine()
     with Session(engine) as session:
         yield session
 

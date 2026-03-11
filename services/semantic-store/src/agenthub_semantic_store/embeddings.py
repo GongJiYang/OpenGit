@@ -4,9 +4,9 @@ from zhipuai import ZhipuAI
 
 class ZhipuEmbedding:
     def __init__(self, model: str = "embedding-2"):
-        # API Key should be set in env ZHIPUAI_API_KEY or passed here
-        api_key = os.getenv("ZHIPUAI_API_KEY")
-        self.client = ZhipuAI(api_key=api_key)
+        # API Key should be set in env ZHIPUAI_API_KEY
+        self.api_key = os.getenv("ZHIPUAI_API_KEY")
+        self.client = ZhipuAI(api_key=self.api_key) if self.api_key else None
         self.model = model
 
     def get_embedding(self, text: str) -> List[float]:

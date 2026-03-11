@@ -25,13 +25,21 @@ class RepoManager:
             repo_path = str(repo_path_obj)
         except ValueError as e:
             raise ValueError(str(e))
+        # Enforce simple naming: single level and .git suffix
+        if "/" in repo_name or "\\" in repo_name:
+            raise ValueError("Invalid repository name: nested paths are not allowed")
+        if not repo_name.endswith(".git"):
+            raise ValueError("Invalid repository name: must end with .git")
             
         if os.path.exists(repo_path):
-            shutil.rmtree(repo_path)
+            raise ValueError("Repository already exists")
             
         subprocess.run(["git", "init", "--bare", repo_path], check=True, capture_output=True)
-        
-        self.install_hook(repo_path)
+        try:
+            self.install_hook(repo_path)
+        except Exception as e:
+            shutil.rmtree(repo_path, ignore_errors=True)
+            raise RuntimeError(f"Failed to install hook: {e}")
         return repo_path
     
     def install_hook(self, repo_path: str):

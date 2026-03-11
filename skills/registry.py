@@ -8,7 +8,7 @@ class SkillRegistry:
     def register(self, skill: Skill):
         """Register a new skill instance."""
         if skill.name in self._skills:
-            print(f"Warning: Overwriting skill '{skill.name}'")
+            raise ValueError(f"Skill '{skill.name}' already registered")
         self._skills[skill.name] = skill
 
     def get(self, name: str) -> Optional[Skill]:

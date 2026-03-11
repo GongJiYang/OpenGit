@@ -2,12 +2,13 @@ import sys
 import os
 from pathlib import Path
 import random
+import re
 import subprocess
 import tempfile
 import shutil
 import json
 from typing import List, Optional
-from fastapi import FastAPI, HTTPException, Body, Depends, Request
+from fastapi import FastAPI, HTTPException, Body, Depends, Request, Header, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -23,13 +24,83 @@ sys.path.append(os.path.abspath(os.path.join(BASE_DIR, "../../../services/git-co
 sys.path.append(os.path.abspath(os.path.join(BASE_DIR, "../../../services/semantic-store/src")))
 sys.path.append(os.path.abspath(os.path.join(BASE_DIR, "../../../services/execution-vmm/src")))
 
+import asyncio
 from agenthub_git_core.repo_manager import RepoManager
 from agenthub_semantic_store.indexer import VectorIndexer
 from agenthub_semantic_store.ast_parser import PythonASTParser
 from agenthub_execution_vmm.sandbox import SubprocessSandbox
 from agenthub_execution_vmm.e2b_sandbox import E2BSandbox
+from agenthub_execution_vmm.guard import ExecutionGuard
 from agenthub_protocol.path_utils import ensure_safe_path
+from agenthub_protocol.validator import TraceValidator
 from agent_auth import agent_router, claim_router, wechat_router
+from agent_auth.database import get_db as get_auth_session, get_engine as get_auth_engine
+from agent_auth.models import Agent, AgentStatus
+from agent_auth.services import start_scheduler, stop_scheduler
+from agent_auth.utils import verify_api_key, get_api_key_prefix, is_valid_api_key_format
+from persistence import Bounty, CommitRecord, get_session
+
+# --- Execution & Cost Guards ---
+# [Blind-Spot 2] Global Concurrency Limit
+MAX_CONCURRENT_RUNS = int(os.getenv("MAX_CONCURRENT_RUNS", "3"))
+execution_semaphore = asyncio.Semaphore(MAX_CONCURRENT_RUNS)
+
+from datetime import date
+
+class DailyBudgetTracker:
+    """Simple JSON-based daily budget tracker."""
+    def __init__(self, limit: float = 10.0):
+        self.limit = limit
+        self.path = os.path.abspath("./agenthub_data/daily_budget.json")
+        self.lock_path = os.path.abspath("./agenthub_data/daily_budget.lock")
+        self._ensure_file()
+
+    def _ensure_file(self):
+        if not os.path.exists(self.path):
+            os.makedirs(os.path.dirname(self.path), exist_ok=True)
+            with open(self.path, "w") as f:
+                json.dump({"date": str(date.today()), "spent": 0.0}, f)
+
+    def check_and_record(self, amount: float) -> bool:
+        lockf = None
+        try:
+            today_str = str(date.today())
+            os.makedirs(os.path.dirname(self.lock_path), exist_ok=True)
+            lockf = open(self.lock_path, "w")
+            try:
+                import fcntl
+                fcntl.flock(lockf, fcntl.LOCK_EX)
+            except Exception:
+                pass
+
+            with open(self.path, "r") as f:
+                data = json.load(f)
+
+            if data.get("date") != today_str:
+                data = {"date": today_str, "spent": 0.0}
+
+            data["spent"] += amount
+            if data["spent"] > self.limit:
+                return False
+
+            with open(self.path, "w") as f:
+                json.dump(data, f)
+            return True
+        except Exception:
+            return True
+        finally:
+            if lockf:
+                try:
+                    import fcntl
+                    fcntl.flock(lockf, fcntl.LOCK_UN)
+                except Exception:
+                    pass
+                try:
+                    lockf.close()
+                except Exception:
+                    pass
+
+budget_tracker = DailyBudgetTracker(limit=10.0)
 # ... (rest of imports)
 
 # --- Rate Limiting ---
@@ -88,6 +159,8 @@ def validate_blob_path(path: str):
     # However, for git blobs, the path is relative to the repo root.
     if ".." in path or path.startswith("/"):
         raise HTTPException(status_code=400, detail="Invalid file path")
+    if any(ch in path for ch in [":", "\\", "\x00"]) or path.startswith("-"):
+        raise HTTPException(status_code=400, detail="Invalid file path")
 
 # Ensure dirs exist
 if not os.path.exists(STORE_ROOT):
@@ -99,16 +172,21 @@ create_db_and_tables() # Persistence DB
 init_auth_db()         # Agent Auth DB
 
 repo_manager = RepoManager(STORE_ROOT)
-# Updated to match the new Qdrant-based VectorIndexer signature
+# [AI-Note] Decoupled: Indexer will self-disable if ZHIPU_API_KEY is missing.
 indexer = VectorIndexer(collection_name="agenthub_prod", embedding_dim=1024)
+if not indexer.embedder.client:
+    print("ℹ️  [Core] Semantic Indexing is DISABLED (Missing ZHIPUAI_API_KEY). Running in Pure Git Mode.")
+else:
+    print("🧠 [Core] Semantic Indexing is ENABLED (Using Zhipu AI).")
 parser = PythonASTParser()
 
 # Memory Store removed, using SQLite via SQLModel
 
 # --- Security Configuration & Sandbox Selection ---
 # [AI-Note] APP_ENV='production' forces E2B Cloud Sandbox. SubprocessSandbox is for development ONLY.
-APP_ENV = os.getenv("APP_ENV", "development").lower()
+APP_ENV = os.getenv("APP_ENV", "production").lower()
 E2B_API_KEY = os.getenv("E2B_API_KEY")
+ALLOW_INSECURE_SANDBOX = os.getenv("ALLOW_INSECURE_SANDBOX", "0") == "1"
 
 if APP_ENV == "production":
     if not E2B_API_KEY:
@@ -123,6 +201,8 @@ else:
         print("🔐 [Core] DEV MODE: E2B_API_KEY detected. Using Secure Cloud Sandbox.")
         sandbox = E2BSandbox()
     else:
+        if not ALLOW_INSECURE_SANDBOX:
+            raise RuntimeError("E2B_API_KEY missing and ALLOW_INSECURE_SANDBOX=0. Refusing to use SubprocessSandbox.")
         print("⚠️ [Core] DEV MODE: E2B_API_KEY not found. Fallback to INSECURE SubprocessSandbox.")
         print("⚠️ [Security] This mode is strictly for local development and should not be used with untrusted code.")
         sandbox = SubprocessSandbox()
@@ -160,7 +240,41 @@ class CommitRequest(BaseModel):
     model_name: str
     bounty_id: Optional[str] = None
 
+class VerificationRequest(BaseModel):
+    exit_code: Optional[int] = None
+    stdout: Optional[str] = None
+    note: Optional[str] = None
+
 ALLOWED_TEST_COMMANDS = ["pytest", "python", "python3", "tox", "nose"]
+
+def require_agent(
+    x_api_key: str = Header(None, alias="X-API-Key"),
+    auth_session: Session = Depends(get_auth_session)
+) -> Agent:
+    if not x_api_key:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Missing X-API-Key")
+    if not is_valid_api_key_format(x_api_key):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid API key format")
+    key_prefix = get_api_key_prefix(x_api_key)
+    agent = auth_session.exec(select(Agent).where(Agent.api_key_prefix == key_prefix)).first()
+    if not agent:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid API key")
+    if not verify_api_key(x_api_key, agent.api_key_hash):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid API key")
+    if agent.status == AgentStatus.SUSPENDED:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Agent is suspended")
+    if agent.status != AgentStatus.CLAIMED:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Agent is not claimed")
+    return agent
+
+_REF_ALLOWED_RE = re.compile(r"^[A-Za-z0-9/_\-\.]+$")
+def ensure_safe_ref(ref: str):
+    if not _REF_ALLOWED_RE.match(ref):
+        raise HTTPException(status_code=400, detail="Invalid ref name")
+    if ".." in ref or ref.startswith("/") or ref.endswith("/") or ref.startswith("."):
+        raise HTTPException(status_code=400, detail="Invalid ref name")
+    if any(ch in ref for ch in [":", "~", "^", " ", "\\"]):
+        raise HTTPException(status_code=400, detail="Invalid ref name")
 
 # --- Routes ---
 
@@ -211,7 +325,7 @@ def list_repos(request: Request):
 
 @app.post("/repos")
 @limiter.limit("10/minute")
-def create_repo(request: Request, req: CreateRepoRequest):
+def create_repo(request: Request, req: CreateRepoRequest, agent: Agent = Depends(require_agent)):
     """Creates a new AgentHub repository with Protocol Hooks."""
     # Security validation
     get_secure_repo_path(req.name)
@@ -222,7 +336,7 @@ def create_repo(request: Request, req: CreateRepoRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/index")
-def index_code(repo_name: str, file_path: str, content: str = Body(..., media_type="text/plain")):
+def index_code(repo_name: str, file_path: str, content: str = Body(..., media_type="text/plain"), agent: Agent = Depends(require_agent)):
     """
     Manually index code content. 
     """
@@ -233,21 +347,31 @@ def index_code(repo_name: str, file_path: str, content: str = Body(..., media_ty
     return {"indexed_chunks": len(chunks)}
 
 @app.get("/search", response_model=List[SearchResponse])
-def search_code(query: str):
+def search_code(query: str, repo_id: Optional[str] = None, limit: int = 3, offset: int = 0):
     """Semantic search for code chunks."""
-    results = indexer.search(query, limit=3)
+    if limit < 1:
+        raise HTTPException(status_code=400, detail="limit must be >= 1")
+    if limit > 20:
+        limit = 20
+    if offset < 0:
+        raise HTTPException(status_code=400, detail="offset must be >= 0")
+
+    fetch_limit = min(limit + offset, 50)
+    results = indexer.search(query, limit=fetch_limit, repo_id=repo_id)
+    results = results[offset:offset + limit] if offset else results[:limit]
     response = []
     for r in results:
+        payload = r.get("payload", {}) if isinstance(r, dict) else {}
         response.append(SearchResponse(
-            chunk_name=r["chunk_name"],
-            code_snippet=r["code_snippet"],
-            score=0.99 
+            chunk_name=payload.get("chunk_name", ""),
+            code_snippet=payload.get("code_snippet", ""),
+            score=r.get("score", 0.0) if isinstance(r, dict) else 0.0
         ))
     return response
 
 @app.post("/verify")
 @limiter.limit("10/minute")
-def verify_repo(request: Request, repo_name: str, cmd: str = "pytest"):
+def verify_repo(request: Request, repo_name: str, cmd: str = "pytest", agent: Agent = Depends(require_agent)):
     """Trigger the Sandbox to run tests on a repo (with command validation)."""
     # Simple whitelist check for the base command
     # Ensures only authorized test runners are executed
@@ -310,23 +434,74 @@ def list_bounties(request: Request, session: Session = Depends(get_session)):
 
 @app.post("/bounties")
 @limiter.limit("20/minute")
-def create_bounty(request: Request, bounty: Bounty, session: Session = Depends(get_session)):
+def create_bounty(request: Request, bounty: Bounty, session: Session = Depends(get_session), agent: Agent = Depends(require_agent)):
     """Post a new job."""
+    if bounty.verification_mode and bounty.verification_mode.lower() not in {"auto", "human", "external"}:
+        raise HTTPException(status_code=400, detail="Invalid verification_mode")
     session.add(bounty)
     session.commit()
     session.refresh(bounty)
     return bounty
 
+@app.post("/bounties/{parent_id}/decompose")
+def decompose_task(parent_id: str, sub_tasks: List[Bounty], agent_id: str, session: Session = Depends(get_session), auth_session: Session = Depends(get_auth_session), agent: Agent = Depends(require_agent)):
+    """[Task Board] Allow Architect agents to split a task into atomic sub-tasks."""
+    if str(agent.id) != agent_id:
+        raise HTTPException(status_code=403, detail="Agent ID mismatch")
+    parent = session.get(Bounty, parent_id)
+    if not parent:
+        raise HTTPException(status_code=404, detail="Parent task not found")
+    
+    # Verify Architect Role
+    agent = auth_session.exec(select(Agent).where(Agent.id == agent_id)).first()
+    if not agent or agent.role.lower() != "architect":
+        raise HTTPException(status_code=403, detail="Forbidden: Only Architect agents can decompose tasks.")
+
+    created_tasks = []
+    for st in sub_tasks:
+        st.parent_id = parent_id
+        st.status = "open"
+        st.repo_name = parent.repo_name # Inherit repo
+        session.add(st)
+        created_tasks.append(st)
+    
+    session.commit()
+    for t in created_tasks:
+        session.refresh(t)
+    return {"parent_id": parent_id, "children": created_tasks}
+
 @app.post("/bounties/{bounty_id}/claim")
-def claim_bounty(bounty_id: str, agent_id: str, session: Session = Depends(get_session)):
+def claim_bounty_route(bounty_id: str, agent_id: str, session: Session = Depends(get_session), auth_session: Session = Depends(get_auth_session), agent: Agent = Depends(require_agent)):
+    """Agent claims a job."""
+    if str(agent.id) != agent_id:
+        raise HTTPException(status_code=403, detail="Agent ID mismatch")
+    return claim_bounty(bounty_id=bounty_id, agent_id=agent_id, session=session, auth_session=auth_session)
+def claim_bounty(bounty_id: str, agent_id: str, session: Session = Depends(get_session), auth_session: Session = Depends(get_auth_session)):
     """Agent claims a job."""
     bounty = session.get(Bounty, bounty_id)
     if not bounty:
         raise HTTPException(status_code=404, detail="Bounty not found")
         
+    # [Task Board] Pessimistic Locking
     if bounty.status != "open":
-        raise HTTPException(status_code=400, detail="Bounty already claimed")
+        raise HTTPException(status_code=409, detail=f"Conflict: Task already claimed by Agent {bounty.assignee}")
         
+    # Verify Agent exists and Check Role Separation
+    agent = auth_session.exec(select(Agent).where(Agent.id == agent_id)).first()
+    if not agent:
+        # Fallback for UUID search if agent_id is string
+        try:
+            from uuid import UUID
+            agent = auth_session.get(Agent, UUID(agent_id))
+        except:
+            raise HTTPException(status_code=404, detail="Agent not found in registry")
+
+    if not agent:
+        raise HTTPException(status_code=404, detail="Agent identity not found")
+
+    if agent.role.lower() != bounty.required_role.lower():
+        raise HTTPException(status_code=403, detail=f"Role Mismatch: This task requires Architect/Contributor/Reviewer: {bounty.required_role}")
+
     bounty.status = "claimed"
     bounty.assignee = agent_id
     session.add(bounty)
@@ -338,11 +513,14 @@ def claim_bounty(bounty_id: str, agent_id: str, session: Session = Depends(get_s
 
 @app.post("/repos/{repo_name}/commit")
 @limiter.limit("10/minute")
-def api_commit(request: Request, repo_name: str, req: CommitRequest, session: Session = Depends(get_session)):
+async def api_commit(request: Request, repo_name: str, req: CommitRequest, session: Session = Depends(get_session), agent: Agent = Depends(require_agent)):
     """
     Submit code via API (no git client needed).
     Creates files and commits to the bare repo.
     """
+    trusted_agent_id = str(agent.id)
+    if trusted_agent_id != req.agent_id:
+        raise HTTPException(status_code=403, detail="Agent ID mismatch")
     bare_repo_path = get_secure_repo_path(repo_name)
     if not os.path.exists(bare_repo_path):
         raise HTTPException(status_code=404, detail="Repo not found")
@@ -359,9 +537,9 @@ def api_commit(request: Request, repo_name: str, req: CommitRequest, session: Se
         
         # Write files
         for file_path, content in req.files.items():
-            full_path = os.path.join(work_dir, file_path)
-            os.makedirs(os.path.dirname(full_path), exist_ok=True)
-            with open(full_path, "w") as f:
+            full_path = ensure_safe_path(work_dir, file_path, "Invalid file path")
+            os.makedirs(full_path.parent, exist_ok=True)
+            with open(full_path, "w", encoding="utf-8") as f:
                 f.write(content)
         
         # Stage all changes
@@ -369,10 +547,11 @@ def api_commit(request: Request, repo_name: str, req: CommitRequest, session: Se
         
         # Determine Branch Name (Level  isolation)
         if req.bounty_id:
-            branch_name = f"agent/{req.agent_id}/bounty_{req.bounty_id}"
+            branch_name = f"agent/{trusted_agent_id}/bounty_{req.bounty_id}"
         else:
             ts = int(time.time())
-            branch_name = f"agent/{req.agent_id}/dev_{ts}"
+            branch_name = f"agent/{trusted_agent_id}/dev_{ts}"
+        ensure_safe_ref(branch_name)
             
         # Create and switch to the new branch
         subprocess.run(["git", "checkout", "-b", branch_name], cwd=work_dir, check=True, capture_output=True)
@@ -393,18 +572,24 @@ def api_commit(request: Request, repo_name: str, req: CommitRequest, session: Se
                 "category": req.intent_category
             },
             "author": {
-                "agent_id": req.agent_id,
+                "agent_id": trusted_agent_id,
                 "model_name": req.model_name
             }
         }
+
+        # Validate TraceCommit schema and logic before committing
+        try:
+            TraceValidator.validate_commit(trace_commit)
+        except ValueError as ve:
+            raise HTTPException(status_code=400, detail=str(ve))
         
         # Commit with TraceCommit JSON as message
         commit_msg = json.dumps(trace_commit)
         subprocess.run(
             ["git", "commit", "-m", commit_msg],
             cwd=work_dir, check=True, capture_output=True,
-            env={**os.environ, "GIT_AUTHOR_NAME": req.agent_id, "GIT_AUTHOR_EMAIL": f"{req.agent_id}@agenthub.dev",
-                 "GIT_COMMITTER_NAME": req.agent_id, "GIT_COMMITTER_EMAIL": f"{req.agent_id}@agenthub.dev"}
+            env={**os.environ, "GIT_AUTHOR_NAME": trusted_agent_id, "GIT_AUTHOR_EMAIL": f"{trusted_agent_id}@agenthub.dev",
+                 "GIT_COMMITTER_NAME": trusted_agent_id, "GIT_COMMITTER_EMAIL": f"{trusted_agent_id}@agenthub.dev"}
         )
         
         # Push specific branch to bare repo
@@ -423,9 +608,37 @@ def api_commit(request: Request, repo_name: str, req: CommitRequest, session: Se
         if req.bounty_id:
             bounty = session.get(Bounty, req.bounty_id)
             if bounty:
+                # [Task Board] Ownership Verification
+                if bounty.assignee and bounty.assignee != trusted_agent_id:
+                    raise HTTPException(status_code=403, detail=f"Forbidden: Task {req.bounty_id} is locked by Agent {bounty.assignee}")
+
+                # [Blind-Spot 2] Cost Control: Max Steps
+                if bounty.current_steps >= bounty.max_steps:
+                    raise HTTPException(status_code=403, detail=f"Bounty {req.bounty_id} has exceeded the execution step limit ({bounty.max_steps}).")
+                
+                # [Blind-Spot 2] Rough Cost Check
+                est_cost = ExecutionGuard.estimate_cost(is_new_session=True)
+                if not budget_tracker.check_and_record(est_cost):
+                    raise HTTPException(status_code=402, detail="Daily platform budget exceeded. Try again tomorrow.")
+
+                bounty.current_steps += 1
+                session.add(bounty)
+
+                verification_mode = (bounty.verification_mode or "auto").lower()
                 test_cmd = bounty.test_command or "pytest"
-                print(f"🛠️ [Automation] Running validation for Bounty {bounty.id}: {test_cmd}")
-                v_exit_code, v_stdout = sandbox.run_tests(bare_repo_path, test_cmd)
+                if verification_mode == "auto":
+                    print(f"🛠️ [Automation] Running validation for Bounty {bounty.id}: {test_cmd}")
+                    try:
+                        async with execution_semaphore:
+                             v_exit_code, v_stdout = sandbox.run_tests(bare_repo_path, test_cmd)
+                    except Exception as e:
+                        v_exit_code, v_stdout = -1, f"Execution failed under semaphore: {str(e)}"
+                elif verification_mode == "human":
+                    v_exit_code, v_stdout = None, "Human verification required"
+                elif verification_mode == "external":
+                    v_exit_code, v_stdout = None, "External CI verification required"
+                else:
+                    v_exit_code, v_stdout = -1, f"Unknown verification_mode: {verification_mode}"
         
         # Save record to history
         try:
@@ -433,19 +646,21 @@ def api_commit(request: Request, repo_name: str, req: CommitRequest, session: Se
             sha_result = subprocess.run(["git", "rev-parse", "HEAD"], cwd=work_dir, capture_output=True, text=True)
             sha = sha_result.stdout.strip() if sha_result.returncode == 0 else None
             
+            # [Blind-Spot 1] Human-in-the-loop: status='pending'
             record = CommitRecord(
                 repo_name=repo_name,
                 commit_sha=sha,
                 agent_id=req.agent_id,
                 bounty_id=req.bounty_id,
                 branch_name=branch_name if 'branch_name' in locals() else None,
+                status="pending",
                 model_name=req.model_name,
                 intent_category=req.intent_category,
                 intent_description=req.intent_description,
                 diff_summary=req.diff_summary,
-                trace_json=trace_commit, # JSON column handles dict
+                trace_json=trace_commit, 
                 verification_exit_code=v_exit_code,
-                verification_stdout=v_stdout[:5000] # Limit size
+                verification_stdout=v_stdout[:5000] if v_stdout else None
             )
             session.add(record)
             session.commit()
@@ -471,11 +686,184 @@ def api_commit(request: Request, repo_name: str, req: CommitRequest, session: Se
         shutil.rmtree(work_dir, ignore_errors=True)
 
 
+# --- Review & Human-in-the-loop ---
+
+@app.get("/api/v1/commits/pending")
+def list_pending_submissions(session: Session = Depends(get_session)):
+    """[Blind-Spot 1] List submissions awaiting human approval."""
+    return session.exec(select(CommitRecord).where(CommitRecord.status == "pending")).all()
+
+@app.get("/api/v1/commits/pending/verification")
+def list_pending_verifications(repo_name: Optional[str] = None, session: Session = Depends(get_session)):
+    """List commits pending manual/external verification."""
+    statement = select(CommitRecord, Bounty).where(CommitRecord.bounty_id == Bounty.id)
+    statement = statement.where(CommitRecord.status == "pending")
+    statement = statement.where(Bounty.verification_mode.in_(["human", "external"]))
+    if repo_name:
+        statement = statement.where(CommitRecord.repo_name == repo_name)
+    rows = session.exec(statement).all()
+    results = []
+    for record, bounty in rows:
+        results.append({
+            "commit_id": record.id,
+            "repo_name": record.repo_name,
+            "bounty_id": record.bounty_id,
+            "verification_mode": bounty.verification_mode,
+            "verification_exit_code": record.verification_exit_code,
+            "verification_stdout": record.verification_stdout,
+            "diff_summary": record.diff_summary,
+            "agent_id": record.agent_id,
+        })
+    return results
+
+@app.post("/api/v1/commits/{commit_id}/approve")
+def approve_commit(commit_id: int, session: Session = Depends(get_session)):
+    """Approve an agent's submission and 'merge' it."""
+    record = session.get(CommitRecord, commit_id)
+    if not record:
+        raise HTTPException(status_code=404, detail="Commit record not found")
+    
+    record.status = "approved"
+    session.add(record)
+
+    # Fast-forward main to the approved branch head
+    if record.branch_name:
+        repo_path = get_secure_repo_path(record.repo_name)
+        ref_name = f"refs/heads/{record.branch_name}"
+        try:
+            # If main exists, require fast-forward only
+            main_ref = "refs/heads/main"
+            main_exists = subprocess.run(["git", "show-ref", "--verify", "--quiet", main_ref], cwd=repo_path).returncode == 0
+            if main_exists:
+                ff_check = subprocess.run(
+                    ["git", "merge-base", "--is-ancestor", main_ref, ref_name],
+                    cwd=repo_path
+                )
+                if ff_check.returncode != 0:
+                    record.status = "conflict"
+                    session.add(record)
+                    session.commit()
+                    raise HTTPException(status_code=409, detail="Non-fast-forward merge detected; manual review required.")
+
+            sha = subprocess.check_output(["git", "rev-parse", ref_name], cwd=repo_path).decode().strip()
+            subprocess.run(["git", "update-ref", "refs/heads/main", sha], cwd=repo_path, check=True)
+        except subprocess.CalledProcessError as e:
+            raise HTTPException(status_code=500, detail=f"Failed to update main: {e}")
+    
+    if record.bounty_id:
+        bounty = session.get(Bounty, record.bounty_id)
+        if bounty:
+            bounty.status = "completed"
+            session.add(bounty)
+            
+    session.commit()
+    return {"message": f"Commit {commit_id} approved."}
+
+@app.post("/api/v1/commits/{commit_id}/reject")
+def reject_commit(commit_id: int, session: Session = Depends(get_session)):
+    """Reject an agent's submission."""
+    record = session.get(CommitRecord, commit_id)
+    if not record:
+        raise HTTPException(status_code=404, detail="Commit record not found")
+    
+    record.status = "rejected"
+    session.add(record)
+    session.commit()
+    return {"message": f"Commit {commit_id} rejected.", "branch": record.branch_name}
+
+@app.post("/api/v1/commits/{commit_id}/verify")
+def verify_commit(commit_id: int, req: VerificationRequest, session: Session = Depends(get_session), agent: Agent = Depends(require_agent)):
+    """Manual verification from executor/reviewer agents."""
+    if agent.role.lower() not in {"executor", "reviewer"}:
+        raise HTTPException(status_code=403, detail="Only executor/reviewer can verify")
+    record = session.get(CommitRecord, commit_id)
+    if not record:
+        raise HTTPException(status_code=404, detail="Commit record not found")
+    if record.status not in {"pending", "conflict"}:
+        raise HTTPException(status_code=409, detail="Commit not in a verifiable state")
+
+    record.verification_exit_code = req.exit_code
+    record.verification_stdout = (req.stdout or "")[:5000] if req.stdout is not None else None
+    session.add(record)
+    session.commit()
+    return {"message": "Verification recorded", "commit_id": commit_id}
+
+@app.post("/api/v1/commits/{commit_id}/verify/external")
+async def verify_commit_external(commit_id: int, request: Request, req: VerificationRequest, x_ci_token: str = Header(None, alias="X-CI-Token"), x_ci_signature: str = Header(None, alias="X-CI-Signature"), session: Session = Depends(get_session)):
+    """External CI callback verification."""
+    expected_token = os.getenv("EXTERNAL_CI_TOKEN")
+    expected_secret = os.getenv("EXTERNAL_CI_SECRET")
+    if expected_secret:
+        body_bytes = await request.body()
+        import hmac, hashlib
+        computed = hmac.new(expected_secret.encode("utf-8"), body_bytes, hashlib.sha256).hexdigest()
+        if not x_ci_signature or not hmac.compare_digest(x_ci_signature, computed):
+            raise HTTPException(status_code=401, detail="Invalid CI signature")
+    else:
+        if not expected_token or not x_ci_token or x_ci_token != expected_token:
+            raise HTTPException(status_code=401, detail="Invalid CI token")
+    record = session.get(CommitRecord, commit_id)
+    if not record:
+        raise HTTPException(status_code=404, detail="Commit record not found")
+    if record.status not in {"pending", "conflict"}:
+        raise HTTPException(status_code=409, detail="Commit not in a verifiable state")
+
+    record.verification_exit_code = req.exit_code
+    record.verification_stdout = (req.stdout or "")[:5000] if req.stdout is not None else None
+    session.add(record)
+    session.commit()
+    return {"message": "External verification recorded", "commit_id": commit_id}
+
+# --- Leaderboard & Stats ---
+
+@app.get("/api/v1/stats/leaderboard")
+def get_leaderboard(session: Session = Depends(get_session)):
+    """[Blind-Spot 5] Leaderboard based on success rate."""
+    records = session.exec(select(CommitRecord)).all()
+    stats = {}
+    for r in records:
+        if r.agent_id not in stats:
+            stats[r.agent_id] = {"total": 0, "success": 0}
+        stats[r.agent_id]["total"] += 1
+        if r.status == "approved":
+            stats[r.agent_id]["success"] += 1
+            
+    leaderboard = []
+    for aid, data in stats.items():
+        rate = (data["success"] / data["total"]) * 100
+        leaderboard.append({
+            "agent_id": aid,
+            "success_rate": f"{rate:.1f}%",
+            "total_commits": data["total"],
+            "rank": "Gold 🦞" if rate > 90 else "Silver 🦞"
+        })
+    
+    return sorted(leaderboard, key=lambda x: float(x["success_rate"].replace('%','')), reverse=True)
+
 # --- Router Registration ---
 app.include_router(agent_router)
 app.include_router(claim_router)
 app.include_router(wechat_router)
 
+@app.on_event("startup")
+def start_background_jobs():
+    from sqlmodel import Session as AuthSession
+    def session_factory():
+        return AuthSession(get_auth_engine())
+    start_scheduler(session_factory)
+
+@app.on_event("shutdown")
+def stop_background_jobs():
+    stop_scheduler()
+
 if __name__ == "__main__":
     import uvicorn
+    # Create DB tables on startup
+    print("🚀 Initializing databases with WAL mode...")
+    from persistence import create_db_and_tables
+    # Since agent_auth.database has the same function name, import it locally
+    from agent_auth.database import create_db_and_tables as create_auth_tables
+    create_db_and_tables()
+    create_auth_tables()
+    
     uvicorn.run(app, host="0.0.0.0", port=8000)

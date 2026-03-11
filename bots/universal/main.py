@@ -12,7 +12,8 @@ from bots.architect.main import Architect
 from bots.contributor.main import Contributor
 from bots.executor.main import Executor
 
-API_URL = "http://127.0.0.1:8000"
+API_URL = os.getenv("AGENTHUB_API_URL", "http://127.0.0.1:8000")
+AGENT_API_KEY = os.getenv("AGENT_API_KEY")
 
 class UniversalAgent(BaseAgent):
     def __init__(self, agent_id: str):
@@ -28,7 +29,8 @@ class UniversalAgent(BaseAgent):
         while True:
             try:
                 # 1. Poll for Bounties
-                res = requests.get(f"{API_URL}/bounties")
+                headers = {"X-API-Key": AGENT_API_KEY} if AGENT_API_KEY else {}
+                res = requests.get(f"{API_URL}/bounties", headers=headers)
                 if res.status_code != 200:
                     time.sleep(5)
                     continue
@@ -45,7 +47,11 @@ class UniversalAgent(BaseAgent):
                 job = open_bounties[0]
                 self.log(f"\nFound Job: {job['title']} (${job['reward']})", "👀")
                 
-                claim_res = requests.post(f"{API_URL}/bounties/{job['id']}/claim", params={"agent_id": self.agent_id})
+                claim_res = requests.post(
+                    f"{API_URL}/bounties/{job['id']}/claim",
+                    params={"agent_id": self.agent_id},
+                    headers=headers
+                )
                 
                 if claim_res.status_code == 200:
                     self.log(f"Claimed Job {job['id']}! Switching Role -> {job['required_role']}", "🔄")

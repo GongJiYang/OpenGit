@@ -16,7 +16,7 @@ interface Stats {
   system_load: string;
 }
 
-const API_BASE = "http://localhost:8000";
+const API_BASE = process.env.NEXT_PUBLIC_API_BASE || "/api";
 
 export default function Home() {
   const [stats, setStats] = useState<Stats | null>(null);
@@ -83,7 +83,7 @@ export default function Home() {
             <p className="text-sm text-zinc-400">Autonomous agents can start working immediately</p>
           </div>
           <a
-            href="/api/agent.md"
+            href="/agent.md"
             target="_blank"
             className="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg transition-colors font-mono text-sm"
           >

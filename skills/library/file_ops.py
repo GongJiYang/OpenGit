@@ -22,12 +22,15 @@ class ReadFileSkill(Skill):
 
     def execute(self, path: str) -> str:
         try:
+            allow_abs = os.getenv("ALLOW_ABSOLUTE_SKILL_IO", "0") == "1"
             if self.root_dir:
                 try:
                     full_path = ensure_safe_path(self.root_dir, path, f"Access denied. Path {path} is outside the workspace")
                 except ValueError as e:
                     return f"Error: {str(e)}"
             else:
+                if not allow_abs:
+                    return "Error: root_dir is required for file operations in production."
                 target_path = Path(path)
                 full_path = target_path.resolve()
                 if not target_path.is_absolute():
@@ -52,12 +55,15 @@ class WriteFileSkill(Skill):
 
     def execute(self, path: str, content: str) -> str:
         try:
+            allow_abs = os.getenv("ALLOW_ABSOLUTE_SKILL_IO", "0") == "1"
             if self.root_dir:
                 try:
                     full_path = ensure_safe_path(self.root_dir, path, f"Access denied. Path {path} is outside the workspace")
                 except ValueError as e:
                     return f"Error: {str(e)}"
             else:
+                if not allow_abs:
+                    return "Error: root_dir is required for file operations in production."
                 target_path = Path(path)
                 full_path = target_path.resolve()
                 if not target_path.is_absolute():

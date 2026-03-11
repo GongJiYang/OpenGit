@@ -13,13 +13,15 @@ class Contributor(BaseAgent):
     def run(self, project_name: str = "tetris-game.git"):
         self.log(f"Looking for work on {project_name}...", "👀")
         
-        # 1. Search for repo existence
-        # MVP Hack: Point to the backend's actual storage location
-        remote_path = os.path.abspath(f"apps/api-gateway/src/agenthub_data/repos/{project_name}")
-        
-        if not os.path.exists(remote_path):
-            self.log(f"Repo not found at {remote_path}. Retrying in 5s...")
-            return
+        # 1. Ask API to create or verify repo existence
+        remote_path = self.create_repo(project_name)
+        if not remote_path:
+            # If repo already exists, try to use configured Git remote base
+            if project_name in self.list_repos():
+                remote_path = self.get_remote_path(project_name)
+            if not remote_path:
+                self.log(f"Repo not available: {project_name}. Retrying in 5s...")
+                return
 
         # 2. Clone
         local_path = self.clone_repo(remote_path, project_name)

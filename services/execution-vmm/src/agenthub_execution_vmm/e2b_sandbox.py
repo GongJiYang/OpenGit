@@ -5,6 +5,7 @@ import io
 from typing import Tuple, Optional
 from e2b_code_interpreter import Sandbox as E2BCodeSandbox
 from .sandbox import Sandbox
+from .guard import ExecutionGuard
 
 class E2BSandbox(Sandbox):
     """
@@ -50,15 +51,24 @@ class E2BSandbox(Sandbox):
 
     def run_command(self, session_id: str, command: str, cwd: str = "/home/user/repo") -> Tuple[int, str]:
         """Runs a command on an existing session."""
-        sbx = E2BCodeSandbox.connect(session_id)
-        proc = sbx.commands.run(command, cwd=cwd, timeout=self.timeout_sec)
-        return proc.exit_code, proc.stdout + proc.stderr
+        try:
+            tokens = ExecutionGuard.verify_command(command)
+            sbx = E2BCodeSandbox.connect(session_id)
+            proc = sbx.commands.run(" ".join(tokens), cwd=cwd, timeout=self.timeout_sec)
+            sanitized_out = ExecutionGuard.sanitize_output(proc.stdout + proc.stderr)
+            return proc.exit_code, sanitized_out
+        except ValueError as ve:
+            return -1, f"❌ Security Guard: {str(ve)}"
+        except Exception as e:
+            return -1, f"❌ Runtime Error: {str(e)}"
 
     def close_session(self, session_id: str):
         """Terminates a persistent session."""
-        sbx = E2BCodeSandbox.connect(session_id)
-        # E2B sessions might stay alive until timeout if not explicitly killed
-        sbx.kill()
+        try:
+             sbx = E2BCodeSandbox.connect(session_id)
+             sbx.kill()
+        except Exception:
+             pass
 
     def _upload_repo(self, sbx: E2BCodeSandbox, repo_path: str, sbx_work_dir: str):
         tar_stream = io.BytesIO()
@@ -72,5 +82,12 @@ class E2BSandbox(Sandbox):
         sbx.commands.run(f"tar -xzf {remote_tar} -C {sbx_work_dir}")
 
     def _execute_run(self, sbx: E2BCodeSandbox, sbx_work_dir: str, command: str, timeout: int) -> Tuple[int, str]:
-        proc = sbx.commands.run(command, cwd=sbx_work_dir, timeout=timeout)
-        return proc.exit_code, proc.stdout + proc.stderr
+        try:
+            tokens = ExecutionGuard.verify_command(command)
+            proc = sbx.commands.run(" ".join(tokens), cwd=sbx_work_dir, timeout=timeout)
+            sanitized_out = ExecutionGuard.sanitize_output(proc.stdout + proc.stderr)
+            return proc.exit_code, sanitized_out
+        except ValueError as ve:
+            return -1, f"❌ Security Guard: {str(ve)}"
+        except Exception as e:
+            return -1, f"❌ Runtime Error: {str(e)}"

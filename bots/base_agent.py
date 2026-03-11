@@ -7,7 +7,9 @@ import shutil
 import datetime
 from typing import List, Dict, Optional
 
-API_URL = "http://127.0.0.1:8000"
+API_URL = os.getenv("AGENTHUB_API_URL", "http://127.0.0.1:8000")
+AGENT_API_KEY = os.getenv("AGENT_API_KEY")
+GIT_REMOTE_BASE = os.getenv("AGENTHUB_GIT_REMOTE_BASE")
 WORKSPACE_DIR = os.path.abspath("./agent_workspace")
 
 import sys
@@ -51,7 +53,8 @@ class BaseAgent:
     def create_repo(self, name: str) -> Optional[str]:
         self.log(f"Creating repo '{name}'...", "🏗️")
         try:
-            res = requests.post(f"{API_URL}/repos", json={"name": name})
+            headers = {"X-API-Key": AGENT_API_KEY} if AGENT_API_KEY else {}
+            res = requests.post(f"{API_URL}/repos", json={"name": name}, headers=headers)
             if res.status_code == 200:
                 data = res.json()
                 self.log(f"Repo created at {data['path']}", "✅")
@@ -70,9 +73,24 @@ class BaseAgent:
         except:
             return []
 
+    def list_repos(self) -> List[str]:
+        try:
+            res = requests.get(f"{API_URL}/repos")
+            if res.status_code == 200:
+                return res.json()
+            return []
+        except Exception:
+            return []
+
+    def get_remote_path(self, repo_name: str) -> Optional[str]:
+        if GIT_REMOTE_BASE:
+            return f"{GIT_REMOTE_BASE.rstrip('/')}/{repo_name}"
+        return None
+
     def trigger_verify(self, repo_name: str) -> Dict:
         self.log(f"Requesting verification for {repo_name}...", "🧪")
-        res = requests.post(f"{API_URL}/verify", params={"repo_name": repo_name, "cmd": "pytest"})
+        headers = {"X-API-Key": AGENT_API_KEY} if AGENT_API_KEY else {}
+        res = requests.post(f"{API_URL}/verify", params={"repo_name": repo_name, "cmd": "pytest"}, headers=headers)
         return res.json()
 
     # --- Git Helpers ---
@@ -119,16 +137,17 @@ class BaseAgent:
             "rejected_alternatives": ["None considered"],
             "context_snapshot": {
                 "file_paths": [],
-                "mock_env_vars": {}
+                "doc_references": [],
+                "env_vars_accessed": [],
+                "library_versions": {}
             },
             "intent": {
-                "category": "feature",
-                "confidence_score": 0.95,
-                "description": intent_desc
+                "description": intent_desc,
+                "category": "feature"
             },
             "author": {
                 "agent_id": self.agent_id,
                 "model_name": self.model_name
             },
-            "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat()
+            "timestamp": datetime.datetime.utcnow().isoformat()
         }

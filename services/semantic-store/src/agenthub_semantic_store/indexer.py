@@ -23,15 +23,22 @@ class VectorIndexer:
         url = os.getenv("QDRANT_URL", ":memory:")
         api_key = os.getenv("QDRANT_API_KEY")
         
-        if url == ":memory:":
-             self.client = QdrantClient(location=":memory:")
-        else:
-             self.client = QdrantClient(url=url, api_key=api_key)
+        try:
+            if url == ":memory:":
+                self.client = QdrantClient(location=":memory:")
+            else:
+                self.client = QdrantClient(url=url, api_key=api_key)
+        except Exception as e:
+            print(f"❌ Qdrant init failed: {e}")
+            self.client = None
 
         self.embedder = ZhipuEmbedding()
-        
+        self._warned_embedder = False
+        self._warned_client = False
+
         # Ensure collection exists
-        self._ensure_collection()
+        if self.client:
+            self._ensure_collection()
 
     def _ensure_collection(self):
         collections = self.client.get_collections().collections
@@ -48,12 +55,23 @@ class VectorIndexer:
         """
         Index a single code chunk.
         """
+        if not self.embedder.client:
+            if not self._warned_embedder:
+                print("⚠️ ZHIPUAI_API_KEY missing; semantic indexing disabled.")
+                self._warned_embedder = True
+            return
+        if not self.client:
+            if not self._warned_client:
+                print("⚠️ Qdrant client unavailable; semantic indexing disabled.")
+                self._warned_client = True
+            return
+            
         try:
             # Generate ID
-            # Deterministic ID based on content location so we can support upserts nicely?
-            # Or just random. Random is safer for collision but harder to update.
-            # Let's use deterministic hash for MVP to allow "re-indexing" same file updates.
-            point_id = str(uuid.uuid5(uuid.NAMESPACE_DNS, f"{repo_id}:{file_path}:{chunk.name}"))
+            point_id = str(uuid.uuid5(
+                uuid.NAMESPACE_DNS,
+                f"{repo_id}:{file_path}:{chunk.name}:{chunk.start_line}:{chunk.end_line}"
+            ))
             
             # Embed
             vector = self.embedder.get_embedding(chunk.code)
@@ -87,6 +105,17 @@ class VectorIndexer:
         """
         Semantic search.
         """
+        if not self.embedder.client:
+            if not self._warned_embedder:
+                print("⚠️ ZHIPUAI_API_KEY missing; semantic search disabled.")
+                self._warned_embedder = True
+            return []
+        if not self.client:
+            if not self._warned_client:
+                print("⚠️ Qdrant client unavailable; semantic search disabled.")
+                self._warned_client = True
+            return []
+            
         try:
             vector = self.embedder.get_embedding(query)
             

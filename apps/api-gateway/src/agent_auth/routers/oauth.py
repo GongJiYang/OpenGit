@@ -5,7 +5,7 @@ Handles GitHub OAuth flow for agent claiming.
 """
 
 import os
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Optional
 from urllib.parse import urlencode
 
@@ -16,6 +16,7 @@ from sqlmodel import Session, select
 
 from ..models import Agent, AgentStatus
 from ..utils import generate_oauth_state_token, is_claim_expired
+from ..database import get_db
 
 router = APIRouter(prefix="/api/v1/oauth", tags=["OAuth"])
 
@@ -27,17 +28,14 @@ GITHUB_REDIRECT_URI = os.getenv("GITHUB_REDIRECT_URI", "http://localhost:8000/ap
 
 # In-memory state store (use Redis in production)
 _oauth_states: dict[str, dict] = {}
+OAUTH_STATE_TTL_SECONDS = int(os.getenv("OAUTH_STATE_TTL_SECONDS", "600"))
 
 
 # ============== Database Session ==============
 
 def get_session():
     """Get database session."""
-    from sqlmodel import create_engine, SQLModel
-
-    engine = create_engine("sqlite:///./agenthub_data/agents.db")
-    with Session(engine) as session:
-        yield session
+    yield from get_db()
 
 
 # ============== GitHub OAuth Endpoints ==============
@@ -130,6 +128,18 @@ async def github_auth_callback(
         )
 
     state_data = _oauth_states.pop(state)
+    try:
+        created_at = datetime.fromisoformat(state_data.get("created_at", ""))
+        if datetime.utcnow() - created_at > timedelta(seconds=OAUTH_STATE_TTL_SECONDS):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="OAuth state expired."
+            )
+    except ValueError:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid OAuth state."
+        )
 
     # Get agent
     from uuid import UUID

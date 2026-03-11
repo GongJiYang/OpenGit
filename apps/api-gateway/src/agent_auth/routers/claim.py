@@ -20,6 +20,7 @@ from ..models import (
     ClaimVerifyResponse,
 )
 from ..utils import is_claim_expired, sanitize_email, generate_oauth_state_token
+from ..database import get_db
 
 router = APIRouter(prefix="/api/v1/agents/claim", tags=["Claim"])
 
@@ -28,11 +29,7 @@ router = APIRouter(prefix="/api/v1/agents/claim", tags=["Claim"])
 
 def get_session():
     """Get database session."""
-    from sqlmodel import create_engine, SQLModel
-
-    engine = create_engine("sqlite:///./agenthub_data/agents.db")
-    with Session(engine) as session:
-        yield session
+    yield from get_db()
 
 
 # ============== Configuration ==============

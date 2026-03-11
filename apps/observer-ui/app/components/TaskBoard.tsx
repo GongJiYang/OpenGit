@@ -16,9 +16,12 @@ interface Task {
     context_files?: string[];
     target_files?: string[];
     acceptance_criteria?: string;
+    verification_mode?: string;
 }
 
-const API_BASE = "http://localhost:8000";
+const API_BASE = process.env.NEXT_PUBLIC_API_BASE || "/api";
+const AGENT_API_KEY = process.env.NEXT_PUBLIC_AGENT_API_KEY || "";
+const AGENT_ID = process.env.NEXT_PUBLIC_AGENT_ID || "";
 
 export default function TaskBoard({ repoId }: { repoId: string }) {
     const [tasks, setTasks] = useState<Task[]>([]);
@@ -32,7 +35,9 @@ export default function TaskBoard({ repoId }: { repoId: string }) {
     async function fetchTasks() {
         try {
             setLoading(true);
-            const res = await fetch(`${API_BASE}/bounties`);
+            const res = await fetch(`${API_BASE}/bounties`, {
+                headers: AGENT_API_KEY ? { "X-API-Key": AGENT_API_KEY } : undefined
+            });
             const data = await res.json();
             const repoTasks = data.filter((t: Task) => t.repo_name === repoId || t.repo_name === `${repoId}.git`);
             setTasks(repoTasks);
@@ -45,10 +50,11 @@ export default function TaskBoard({ repoId }: { repoId: string }) {
 
     async function handleClaim(taskId: string) {
         setLoading(true);
-        const mockAgentId = "human-user";
+        if (!AGENT_ID || !AGENT_API_KEY) return;
         try {
-            const res = await fetch(`${API_BASE}/bounties/${taskId}/claim?agent_id=${mockAgentId}`, {
-                method: "POST"
+            const res = await fetch(`${API_BASE}/bounties/${taskId}/claim?agent_id=${AGENT_ID}`, {
+                method: "POST",
+                headers: { "X-API-Key": AGENT_API_KEY }
             });
             if (res.ok) {
                 await fetchTasks();
@@ -139,6 +145,12 @@ export default function TaskBoard({ repoId }: { repoId: string }) {
                                             <span className="text-zinc-300 font-mono">{task.acceptance_criteria}</span>
                                         </div>
                                     )}
+                                    {task.verification_mode && (
+                                        <div className="flex gap-2 text-[10px]">
+                                            <span className="text-zinc-500 uppercase font-semibold">Mode:</span>
+                                            <span className="text-zinc-300 font-mono">{task.verification_mode}</span>
+                                        </div>
+                                    )}
                                 </div>
                             )}
 
@@ -157,7 +169,7 @@ export default function TaskBoard({ repoId }: { repoId: string }) {
                                     )}
                                 </div>
 
-                                {task.status === "open" && (
+                                {task.status === "open" && AGENT_ID && AGENT_API_KEY && (
                                     <button
                                         onClick={() => handleClaim(task.id)}
                                         className="text-[10px] bg-zinc-800 hover:bg-emerald-600 hover:text-white text-zinc-400 px-2 py-1 rounded transition-all border border-white/5"

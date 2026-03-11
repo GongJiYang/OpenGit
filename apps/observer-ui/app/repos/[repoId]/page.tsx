@@ -40,6 +40,17 @@ interface RepoInfo {
     isVerified: boolean;
 }
 
+interface PendingVerification {
+    commit_id: number;
+    repo_name: string;
+    bounty_id: string;
+    verification_mode: string;
+    verification_exit_code?: number | null;
+    verification_stdout?: string | null;
+    diff_summary: string;
+    agent_id: string;
+}
+
 export default function RepoPage() {
     const params = useParams();
     const repoId = params.repoId as string;
@@ -53,6 +64,7 @@ export default function RepoPage() {
     const [fileContent, setFileContent] = useState<string>("");
     const [fileLoading, setFileLoading] = useState(false);
     const [copied, setCopied] = useState(false);
+    const [pendingVerifications, setPendingVerifications] = useState<PendingVerification[]>([]);
 
     // Repo metadata (MVP: mock data, will be replaced with real API)
     const [repoInfo] = useState<RepoInfo>({
@@ -92,10 +104,12 @@ export default function RepoPage() {
         { name: "human-reviewer", commits: 1, isAgent: false }
     ]);
 
+    const API_BASE = process.env.NEXT_PUBLIC_API_BASE || "/api";
+
     useEffect(() => {
         async function fetchTree() {
             try {
-                const res = await fetch(`/api/repos/${repoId}/tree`);
+                const res = await fetch(`${API_BASE}/repos/${repoId}/tree`);
                 if (!res.ok) {
                     if (res.status === 404) throw new Error("Repository not found or empty");
                     throw new Error("Failed to fetch repository tree");
@@ -114,13 +128,34 @@ export default function RepoPage() {
         }
     }, [repoId]);
 
+    useEffect(() => {
+        async function fetchPendingVerifications() {
+            try {
+                const apiBase = process.env.NEXT_PUBLIC_API_BASE || "/api";
+                const agentKey = process.env.NEXT_PUBLIC_AGENT_API_KEY || "";
+                if (!agentKey) return;
+                const res = await fetch(`${apiBase}/api/v1/commits/pending/verification?repo_name=${repoId}`, {
+                    headers: { "X-API-Key": agentKey }
+                });
+                if (!res.ok) return;
+                const data = await res.json();
+                setPendingVerifications(data || []);
+            } catch {
+                // ignore
+            }
+        }
+        if (repoId) {
+            fetchPendingVerifications();
+        }
+    }, [repoId]);
+
     async function handleFileClick(filename: string) {
         setSelectedFile(filename);
         setFileLoading(true);
         setFileContent("");
 
         try {
-            const res = await fetch(`/api/repos/${repoId}/blob?path=${encodeURIComponent(filename)}`);
+            const res = await fetch(`${API_BASE}/repos/${repoId}/blob?path=${encodeURIComponent(filename)}`);
             if (!res.ok) throw new Error("Failed to load file");
             const data = await res.json();
             setFileContent(data.content || "// Empty file");
@@ -338,6 +373,31 @@ export default function RepoPage() {
 
                 {/* Right Column: Sidebar */}
                 <div className="space-y-6">
+                    {pendingVerifications.length > 0 && (
+                        <div className="glass-panel rounded-2xl">
+                            <div className="p-4 border-b border-white/5 flex items-center gap-2">
+                                <Activity className="w-4 h-4 text-zinc-400" />
+                                <h2 className="text-sm font-medium text-zinc-400">Pending Verification</h2>
+                            </div>
+                            <div className="divide-y divide-white/5">
+                                {pendingVerifications.map(v => (
+                                    <div key={v.commit_id} className="p-4 text-xs text-zinc-400">
+                                        <div className="flex items-center justify-between mb-1">
+                                            <span className="text-zinc-300 font-mono">#{v.commit_id}</span>
+                                            <span className="text-zinc-500">{v.verification_mode}</span>
+                                        </div>
+                                        <div className="text-zinc-300 mb-2">{v.diff_summary}</div>
+                                        {v.verification_stdout && (
+                                            <pre className="text-[10px] text-zinc-500 whitespace-pre-wrap break-words">
+                                                {v.verification_stdout}
+                                            </pre>
+                                        )}
+                                    </div>
+                                ))}
+                            </div>
+                        </div>
+                    )}
+
                     {/* Tasks / Bounty Board */}
                     <TaskBoard repoId={repoId} />
 

@@ -33,6 +33,7 @@ from ..utils import (
     sanitize_agent_name,
 )
 from ..utils.heartbeat_cache import get_heartbeat_cache, HeartbeatCache
+from ..database import get_db
 
 router = APIRouter(prefix="/api/v1/agents", tags=["Agent"])
 
@@ -40,14 +41,8 @@ router = APIRouter(prefix="/api/v1/agents", tags=["Agent"])
 # ============== Database Session Dependency ==============
 
 def get_session():
-    """Get database session. Override this in main.py with actual session factory."""
-    from sqlmodel import create_engine, SQLModel
-
-    engine = create_engine("sqlite:///./agenthub_data/agents.db")
-    SQLModel.metadata.create_all(engine)
-
-    with Session(engine) as session:
-        yield session
+    """Get database session."""
+    yield from get_db()
 
 
 # ============== API Key Authentication ==============
@@ -153,6 +148,7 @@ async def register_agent(
         claim_url=claim_url,
         claim_expires_at=claim_expires_at,
         status=AgentStatus.PENDING,
+        role=request.role,
         metadata_json=metadata_json,
     )
 
@@ -169,6 +165,7 @@ async def register_agent(
         claim_url=agent.claim_url,
         claim_expires_at=agent.claim_expires_at,
         status=agent.status,
+        role=agent.role,
         created_at=agent.created_at,
     )
 

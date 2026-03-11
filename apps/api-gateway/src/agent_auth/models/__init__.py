@@ -59,6 +59,9 @@ class Agent(SQLModel, table=True):
 
     # Status
     status: AgentStatus = Field(default=AgentStatus.PENDING, description="Current agent status")
+    
+    # [Task Board] Role Separation
+    role: str = Field(default="contributor", description="Agent role: architect, contributor, reviewer")
 
     # Owner info (filled after claim)
     owner_email: Optional[str] = Field(default=None, max_length=255,
@@ -99,6 +102,7 @@ class AgentRegisterRequest(SQLModel):
     """Request body for agent registration."""
     name: str = Field(max_length=100, description="Agent display name")
     model_name: str = Field(default="unknown", max_length=100, description="LLM model identifier")
+    role: str = Field(default="contributor", description="Agent role: architect, contributor, reviewer")
     metadata: Optional[dict] = Field(default=None, description="Optional agent metadata")
 
 

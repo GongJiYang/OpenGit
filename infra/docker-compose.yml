@@ -19,6 +19,7 @@ services:
       - "80:80"
     depends_on:
       - observer-ui
+      - api-gateway
 
   # --- Gateway / Monolith ---
   api-gateway:
@@ -29,6 +30,7 @@ services:
     ports:
       - "8000:8000"
     environment:
+      - APP_ENV=production
       - ZHIPUAI_API_KEY=${ZHIPUAI_API_KEY}
       - E2B_API_KEY=${E2B_API_KEY}
       - QDRANT_URL=${QDRANT_URL:-:memory:}

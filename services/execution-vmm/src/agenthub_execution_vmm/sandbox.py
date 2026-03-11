@@ -30,6 +30,8 @@ class Sandbox(ABC):
         """Terminates a persistent session."""
         pass
 
+from .guard import ExecutionGuard
+
 class SubprocessSandbox(Sandbox):
     """
     MVP Sandbox that runs commands locally in a subprocess.
@@ -42,13 +44,13 @@ class SubprocessSandbox(Sandbox):
             return -1, f"❌ Repo path does not exist: {repo_path}"
             
         try:
-            # Securely split the command into a list
-            cmd_list = shlex.split(test_command)
+            # [Blind-Spot 2] Security Guard
+            tokens = ExecutionGuard.verify_command(test_command)
             
-            print(f"⚡ [Sandbox] Executing in {repo_path}: {cmd_list}")
+            print(f"⚡ [Sandbox] Executing in {repo_path}: {tokens}")
             
             result = subprocess.run(
-                cmd_list,
+                tokens,
                 cwd=repo_path,
                 shell=False, # Secure: No shell expansion
                 capture_output=True,
@@ -57,10 +59,14 @@ class SubprocessSandbox(Sandbox):
             )
             
             output = f"STDOUT:\n{result.stdout}\n\nSTDERR:\n{result.stderr}"
-            return result.returncode, output
-            
+            sanitized_out = ExecutionGuard.sanitize_output(output)
+            return result.returncode, sanitized_out
         except subprocess.TimeoutExpired:
             return 124, "❌ Execution Timed Out"
+        except ValueError as ve:
+             return -1, f"❌ Security Guard: {str(ve)}"
+        except Exception as e:
+             return -1, f"❌ Runtime Error: {str(e)}"
     def create_session(self, repo_path: Optional[str] = None) -> str:
         """Local sessions just return the repo path as ID."""
         return repo_path or "local_global"

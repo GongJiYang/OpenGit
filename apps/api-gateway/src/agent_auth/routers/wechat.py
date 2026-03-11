@@ -35,7 +35,7 @@ async def wechat_callback(request: Request, db: Session = Depends(get_db)):
     """
     body = await request.body()
     if not body:
-         return Response(content="empty body")
+         raise HTTPException(status_code=400, detail="empty body")
 
     try:
         # 1. Parse XML
@@ -67,7 +67,7 @@ async def wechat_callback(request: Request, db: Session = Depends(get_db)):
 
     except Exception as e:
         print(f"Error processing WeChat message: {e}")
-        return Response(content="success") # Signal to WeChat that we received it, even if internal error occurred
+        raise HTTPException(status_code=500, detail="internal error")
 
 def build_xml_response(to_user: str, from_user: str, content: str) -> Response:
     """
