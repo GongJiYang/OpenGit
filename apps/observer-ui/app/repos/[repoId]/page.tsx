@@ -4,42 +4,12 @@ import { useState, useEffect } from "react";
 import Link from "next/link";
 import {
     FileCode, ArrowLeft, GitCommit, X, Copy, Check,
-    Users, Star, GitFork, Clock, Bot, User, Eye,
-    GitBranch, Code2, Activity, Shield
+    Bot, Code2, Activity
 } from "lucide-react";
 import { useParams } from "next/navigation";
 import TaskBoard from "../../components/TaskBoard";
 
 // Types
-interface Commit {
-    id: string;
-    message: string;
-    author: string;
-    timestamp: string;
-    isAgent: boolean;
-}
-
-interface Contributor {
-    name: string;
-    commits: number;
-    isAgent: boolean;
-    avatar?: string;
-}
-
-interface RepoInfo {
-    name: string;
-    owner: string;
-    description: string;
-    stars: number;
-    forks: number;
-    watchers: number;
-    branches: number;
-    commits: number;
-    createdAt: string;
-    lastActivity: string;
-    isVerified: boolean;
-}
-
 interface PendingVerification {
     commit_id: number;
     repo_name: string;
@@ -65,44 +35,6 @@ export default function RepoPage() {
     const [fileLoading, setFileLoading] = useState(false);
     const [copied, setCopied] = useState(false);
     const [pendingVerifications, setPendingVerifications] = useState<PendingVerification[]>([]);
-
-    // Repo metadata (MVP: mock data, will be replaced with real API)
-    const [repoInfo] = useState<RepoInfo>({
-        name: repoId,
-        owner: "AgentHub System",
-        description: "Autonomous agent-maintained repository with verified commits and security checks.",
-        stars: Math.floor(Math.random() * 50) + 5,
-        forks: Math.floor(Math.random() * 10),
-        watchers: Math.floor(Math.random() * 20) + 3,
-        branches: 1,
-        commits: Math.floor(Math.random() * 20) + 1,
-        createdAt: new Date(Date.now() - Math.random() * 7 * 24 * 60 * 60 * 1000).toISOString(),
-        lastActivity: new Date(Date.now() - Math.random() * 60 * 60 * 1000).toISOString(),
-        isVerified: true
-    });
-
-    const [recentCommits] = useState<Commit[]>([
-        {
-            id: "abc123",
-            message: "Initial commit with main.py",
-            author: "contributor-agent-01",
-            timestamp: new Date(Date.now() - 30 * 60 * 1000).toISOString(),
-            isAgent: true
-        },
-        {
-            id: "def456",
-            message: "Add utility functions",
-            author: "code-review-bot",
-            timestamp: new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString(),
-            isAgent: true
-        }
-    ]);
-
-    const [contributors] = useState<Contributor[]>([
-        { name: "contributor-agent-01", commits: 5, isAgent: true },
-        { name: "code-review-bot", commits: 3, isAgent: true },
-        { name: "human-reviewer", commits: 1, isAgent: false }
-    ]);
 
     const API_BASE = process.env.NEXT_PUBLIC_API_BASE || "/api";
 
@@ -172,16 +104,6 @@ export default function RepoPage() {
         setTimeout(() => setCopied(false), 2000);
     }
 
-    function formatTime(iso: string) {
-        const date = new Date(iso);
-        const now = new Date();
-        const diff = now.getTime() - date.getTime();
-        const hours = Math.floor(diff / (1000 * 60 * 60));
-        if (hours < 1) return "Just now";
-        if (hours < 24) return `${hours}h ago`;
-        return `${Math.floor(hours / 24)}d ago`;
-    }
-
     return (
         <div className="space-y-8">
             {/* Back Link */}
@@ -199,60 +121,8 @@ export default function RepoPage() {
                         <div>
                             <div className="flex items-center gap-3 mb-2">
                                 <h1 className="text-3xl font-bold text-emerald-400 font-mono">{repoId}</h1>
-                                <span className="px-2 py-0.5 rounded-full bg-zinc-800 text-xs text-zinc-400 border border-white/10">Public</span>
-                                {repoInfo.isVerified && (
-                                    <span className="px-2 py-0.5 rounded-full bg-emerald-500/20 text-xs text-emerald-400 border border-emerald-500/30 flex items-center gap-1">
-                                        <Shield className="w-3 h-3" /> Verified
-                                    </span>
-                                )}
                             </div>
-                            <p className="text-zinc-400 text-sm max-w-2xl">{repoInfo.description}</p>
-                        </div>
-
-                        <div className="flex gap-2">
-                            <button className="px-4 py-2 rounded-lg bg-zinc-800 hover:bg-zinc-700 transition-colors text-sm flex items-center gap-2 border border-white/5">
-                                <Star className="w-4 h-4" /> Star
-                            </button>
-                            <button className="px-4 py-2 rounded-lg bg-zinc-800 hover:bg-zinc-700 transition-colors text-sm flex items-center gap-2 border border-white/5">
-                                <GitFork className="w-4 h-4" /> Fork
-                            </button>
-                        </div>
-                    </div>
-
-                    {/* Owner */}
-                    <div className="flex items-center gap-2 mb-6 text-sm">
-                        <span className="text-zinc-500">Owned by</span>
-                        <span className="flex items-center gap-1.5 text-zinc-300">
-                            <Bot className="w-4 h-4 text-purple-400" />
-                            {repoInfo.owner}
-                        </span>
-                    </div>
-
-                    {/* Stats Row */}
-                    <div className="flex flex-wrap gap-6 text-sm">
-                        <div className="flex items-center gap-2 text-zinc-400">
-                            <Star className="w-4 h-4 text-yellow-500" />
-                            <span className="text-white font-medium">{repoInfo.stars}</span> stars
-                        </div>
-                        <div className="flex items-center gap-2 text-zinc-400">
-                            <GitFork className="w-4 h-4 text-blue-400" />
-                            <span className="text-white font-medium">{repoInfo.forks}</span> forks
-                        </div>
-                        <div className="flex items-center gap-2 text-zinc-400">
-                            <Eye className="w-4 h-4 text-green-400" />
-                            <span className="text-white font-medium">{repoInfo.watchers}</span> watching
-                        </div>
-                        <div className="flex items-center gap-2 text-zinc-400">
-                            <GitBranch className="w-4 h-4 text-orange-400" />
-                            <span className="text-white font-medium">{repoInfo.branches}</span> branch
-                        </div>
-                        <div className="flex items-center gap-2 text-zinc-400">
-                            <GitCommit className="w-4 h-4 text-purple-400" />
-                            <span className="text-white font-medium">{repoInfo.commits}</span> commits
-                        </div>
-                        <div className="flex items-center gap-2 text-zinc-400">
-                            <Clock className="w-4 h-4" />
-                            Updated {formatTime(repoInfo.lastActivity)}
+                            <p className="text-zinc-400 text-sm max-w-2xl">No repository metadata available yet.</p>
                         </div>
                     </div>
                 </div>
@@ -339,34 +209,13 @@ export default function RepoPage() {
                         </div>
                     </div>
 
-                    {/* Recent Commits */}
                     <div className="glass-panel rounded-2xl">
                         <div className="p-4 border-b border-white/5 flex items-center gap-2">
                             <Activity className="w-4 h-4 text-zinc-400" />
                             <h2 className="text-sm font-medium text-zinc-400">Recent Activity</h2>
                         </div>
-                        <div className="divide-y divide-white/5">
-                            {recentCommits.map((commit) => (
-                                <div key={commit.id} className="p-4 flex items-start gap-3">
-                                    <div className="mt-0.5">
-                                        {commit.isAgent ? (
-                                            <Bot className="w-5 h-5 text-purple-400" />
-                                        ) : (
-                                            <User className="w-5 h-5 text-blue-400" />
-                                        )}
-                                    </div>
-                                    <div className="flex-1 min-w-0">
-                                        <p className="text-sm text-zinc-200 truncate">{commit.message}</p>
-                                        <p className="text-xs text-zinc-500 mt-1">
-                                            <span className={commit.isAgent ? "text-purple-400" : "text-blue-400"}>{commit.author}</span>
-                                            {" • "}
-                                            <span className="font-mono">{commit.id.slice(0, 7)}</span>
-                                            {" • "}
-                                            {formatTime(commit.timestamp)}
-                                        </p>
-                                    </div>
-                                </div>
-                            ))}
+                        <div className="p-4 text-xs text-zinc-500">
+                            No activity data available yet.
                         </div>
                     </div>
                 </div>
@@ -401,48 +250,13 @@ export default function RepoPage() {
                     {/* Tasks / Bounty Board */}
                     <TaskBoard repoId={repoId} />
 
-                    {/* Contributors */}
                     <div className="glass-panel rounded-2xl">
                         <div className="p-4 border-b border-white/5 flex items-center gap-2">
-                            <Users className="w-4 h-4 text-zinc-400" />
+                            <Bot className="w-4 h-4 text-zinc-400" />
                             <h2 className="text-sm font-medium text-zinc-400">Contributors</h2>
-                            <span className="ml-auto text-xs text-zinc-600">{contributors.length}</span>
                         </div>
-                        <div className="p-4 space-y-3">
-                            {contributors.map((c, i) => (
-                                <div key={i} className="flex items-center gap-3">
-                                    <div className={`w-8 h-8 rounded-full flex items-center justify-center ${c.isAgent ? "bg-purple-500/20" : "bg-blue-500/20"}`}>
-                                        {c.isAgent ? (
-                                            <Bot className="w-4 h-4 text-purple-400" />
-                                        ) : (
-                                            <User className="w-4 h-4 text-blue-400" />
-                                        )}
-                                    </div>
-                                    <div className="flex-1">
-                                        <p className={`text-sm font-medium ${c.isAgent ? "text-purple-300" : "text-blue-300"}`}>{c.name}</p>
-                                        <p className="text-xs text-zinc-500">{c.commits} commits</p>
-                                    </div>
-                                </div>
-                            ))}
-                        </div>
-                    </div>
-
-                    {/* About */}
-                    <div className="glass-panel rounded-2xl p-4">
-                        <h2 className="text-sm font-medium text-zinc-400 mb-3">About</h2>
-                        <div className="space-y-2 text-xs text-zinc-500">
-                            <div className="flex justify-between">
-                                <span>Created</span>
-                                <span className="text-zinc-300">{formatTime(repoInfo.createdAt)}</span>
-                            </div>
-                            <div className="flex justify-between">
-                                <span>Last push</span>
-                                <span className="text-zinc-300">{formatTime(repoInfo.lastActivity)}</span>
-                            </div>
-                            <div className="flex justify-between">
-                                <span>Language</span>
-                                <span className="text-blue-400">Python</span>
-                            </div>
+                        <div className="p-4 text-xs text-zinc-500">
+                            No contributor data available yet.
                         </div>
                     </div>
                 </div>

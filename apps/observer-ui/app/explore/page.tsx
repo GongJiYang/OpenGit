@@ -2,25 +2,13 @@
 
 import { useState, useEffect } from "react";
 import Link from "next/link";
-import { Compass, Star, GitFork, Users, Clock, Code2, Sparkles, Zap } from "lucide-react";
+import { Compass, Code2 } from "lucide-react";
 
 // Types
 interface Project {
     name: string;
-    description: string;
-    stars: number;
-    contributors: number;
-    language: string;
-    updatedAt: string;
+    description?: string | null;
 }
-
-// Mock Data Helpers
-const LANGUAGES = [
-    { name: "Python", color: "text-blue-400 bg-blue-400/10 border-blue-400/20" },
-    { name: "TypeScript", color: "text-blue-300 bg-blue-300/10 border-blue-300/20" },
-    { name: "Rust", color: "text-orange-400 bg-orange-400/10 border-orange-400/20" },
-    { name: "Go", color: "text-cyan-400 bg-cyan-400/10 border-cyan-400/20" },
-];
 
 export default function ExplorePage() {
     const [projects, setProjects] = useState<Project[]>([]);
@@ -35,16 +23,9 @@ export default function ExplorePage() {
                 if (!res.ok) throw new Error("Failed to fetch");
 
                 const names: string[] = await res.json();
-
-                // Map the real repo names to our UI model
-                // Since backend only gives names (MVP), we preserve the random stats for visuals
-                const realProjects = names.map((name, i) => ({
-                    name: name,
-                    description: "Autonomous agent ensuring code quality and implementing feature requests.",
-                    stars: Math.floor(Math.random() * 200) + 10,
-                    contributors: Math.floor(Math.random() * 4) + 1,
-                    language: LANGUAGES[i % LANGUAGES.length].name,
-                    updatedAt: new Date().toISOString()
+                const realProjects = names.map((name) => ({
+                    name,
+                    description: null
                 }));
 
                 setProjects(realProjects);
@@ -112,8 +93,6 @@ export default function ExplorePage() {
 }
 
 function ProjectCard({ project, index }: { project: Project; index: number }) {
-    const langStyle = LANGUAGES.find(l => l.name === project.language) || LANGUAGES[0];
-
     return (
         <Link href={`/repos/${project.name}`} className="group block h-full">
             <div
@@ -127,9 +106,6 @@ function ProjectCard({ project, index }: { project: Project; index: number }) {
                     <div className="p-3 rounded-xl bg-zinc-900/50 border border-white/5 group-hover:scale-110 transition-transform duration-300">
                         <Code2 className="w-6 h-6 text-zinc-400 group-hover:text-purple-400 transition-colors" />
                     </div>
-                    <span className={`text-[10px] px-2 py-1 rounded-full font-medium border ${langStyle.color}`}>
-                        {project.language}
-                    </span>
                 </div>
 
                 <h3 className="text-xl font-bold text-zinc-100 mb-2 group-hover:text-purple-300 transition-colors">
@@ -137,24 +113,11 @@ function ProjectCard({ project, index }: { project: Project; index: number }) {
                 </h3>
 
                 <p className="text-sm text-zinc-400 leading-relaxed mb-6 flex-1">
-                    {project.description}
+                    {project.description || "No description yet."}
                 </p>
 
-                <div className="flex items-center justify-between pt-4 border-t border-white/5 text-xs text-zinc-500 font-mono">
-                    <div className="flex items-center gap-4">
-                        <span className="flex items-center gap-1.5 group-hover:text-yellow-400 transition-colors">
-                            <Star className="w-3.5 h-3.5" />
-                            {project.stars}
-                        </span>
-                        <span className="flex items-center gap-1.5 group-hover:text-blue-400 transition-colors">
-                            <GitFork className="w-3.5 h-3.5" />
-                            {project.contributors}
-                        </span>
-                    </div>
-                    <span className="flex items-center gap-1.5">
-                        <Clock className="w-3.5 h-3.5" />
-                        2h ago
-                    </span>
+                <div className="pt-4 border-t border-white/5 text-xs text-zinc-500 font-mono">
+                    No public metadata yet.
                 </div>
             </div>
         </Link>

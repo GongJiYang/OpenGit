@@ -1,7 +1,6 @@
 import sys
 import os
 from pathlib import Path
-import random
 import re
 import subprocess
 import tempfile
@@ -144,7 +143,6 @@ app.add_middleware(
 
 # --- Services Singleton ---
 STORE_ROOT = os.path.abspath("./agenthub_data/repos")
-VECTOR_DB_PATH = os.path.abspath("./agenthub_data/vectors.json")
 
 def get_secure_repo_path(repo_name: str) -> str:
     """Ensures repo_name stays within STORE_ROOT."""
@@ -348,22 +346,35 @@ async def get_role_prompt(role_name: str, raw: bool = False):
 
 @app.get("/stats", response_model=SystemStats)
 @limiter.limit("30/minute")
-def get_stats(request: Request):
-    """Returns real-time system statistics."""
-    # Count Repos
+def get_stats(request: Request, auth_session: Session = Depends(get_auth_session)):
+    """Returns real-time system statistics (no mock values)."""
     repos = [d for d in os.listdir(STORE_ROOT) if not d.startswith('.')]
-    
-    # Count Vectors (Mock reading internal state)
-    # in MVP we just guess or read file size
-    vec_count = 0
-    if os.path.exists(VECTOR_DB_PATH):
-        vec_count = 1  # Simplified
-        
+
+    active_agents = auth_session.exec(
+        select(Agent).where(Agent.status == AgentStatus.CLAIMED)
+    ).all()
+
+    total_vectors = 0
+    if indexer.client:
+        try:
+            total_vectors = indexer.client.count(
+                collection_name=indexer.collection_name,
+                exact=True
+            ).count
+        except Exception:
+            total_vectors = 0
+
+    system_load = "N/A"
+    try:
+        system_load = f"{os.getloadavg()[0]:.2f}"
+    except Exception:
+        pass
+
     return SystemStats(
-        active_agents=random.randint(1, 5), # Mock
+        active_agents=len(active_agents),
         total_repos=len(repos),
-        total_vectors=vec_count * 5 + len(repos) * 2, # Mock
-        system_load=f"{random.randint(10, 40)}%"
+        total_vectors=total_vectors,
+        system_load=system_load
     )
 
 @app.get("/repos")

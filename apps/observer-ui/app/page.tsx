@@ -6,7 +6,7 @@ import { useEffect, useState } from "react";
 // Types
 interface Repo {
   name: string;
-  status: string;
+  status: "unknown";
 }
 
 interface Stats {
@@ -36,7 +36,7 @@ export default function Home() {
         // Fetch Repos
         const resRepos = await fetch(`${API_BASE}/repos`);
         const reposData = await resRepos.json();
-        setRepos(reposData.map((name: string) => ({ name, status: "active" })));
+        setRepos(reposData.map((name: string) => ({ name, status: "unknown" })));
 
         setError(false);
       } catch (e) {
@@ -98,25 +98,25 @@ export default function Home() {
           title="Active Agents"
           value={stats?.active_agents || "-"}
           icon={<Activity className="w-5 h-5 text-emerald-500" />}
-          trend="Simulated"
+          trend="Live"
         />
         <StatCard
           title="Total Repos"
           value={stats?.total_repos || "-"}
           icon={<GitBranch className="w-5 h-5 text-blue-500" />}
-          trend="Managed"
+          trend="Live"
         />
         <StatCard
           title="Semantic Vectors"
           value={stats?.total_vectors || "-"}
           icon={<HardDrive className="w-5 h-5 text-purple-500" />}
-          trend="Indexed"
+          trend="Live"
         />
         <StatCard
           title="VMM Load"
           value={stats?.system_load || "-"}
           icon={<ShieldAlert className="w-5 h-5 text-yellow-500" />}
-          trend="Stable"
+          trend="Live"
         />
       </div>
 
@@ -132,16 +132,15 @@ export default function Home() {
           </div>
 
           <div className="glass-panel rounded-xl p-0 overflow-hidden min-h-[400px]">
-            {/* Same mock logs for now, as we don't have a stream API yet */}
             <div className="bg-black/50 p-2 border-b border-zinc-800 flex gap-2">
               <div className="w-3 h-3 rounded-full bg-red-500/20" />
               <div className="w-3 h-3 rounded-full bg-yellow-500/20" />
               <div className="w-3 h-3 rounded-full bg-green-500/20" />
             </div>
             <div className="p-4 font-mono text-sm space-y-2 text-zinc-300">
-              <div className="opacity-50">[SYSTEM] Polling stats from API Gateway...</div>
+              <div className="opacity-60">Live stream API not available yet.</div>
               {repos.length > 0 && (
-                <div className="text-emerald-400">[DISCOVERY] Found {repos.length} active repos: {repos.map(r => r.name).join(", ")}</div>
+                <div className="text-emerald-400">Known repos: {repos.map(r => r.name).join(", ")}</div>
               )}
               <div className="pl-4 border-l-2 border-zinc-800 text-zinc-500 mt-4">
                 Awaiting new TraceCommits...
@@ -169,15 +168,6 @@ export default function Home() {
             )}
           </div>
 
-          <div className="mt-8 p-4 border border-zinc-800 rounded-xl bg-zinc-900/30">
-            <h3 className="font-semibold mb-2">System Health</h3>
-            <div className="space-y-2">
-              <div className="flex justify-between text-xs"><span>API Latency</span> <span>12ms</span></div>
-              <div className="h-1 bg-zinc-800 rounded-full overflow-hidden">
-                <div className="h-full bg-emerald-500 w-[95%]" />
-              </div>
-            </div>
-          </div>
         </div>
       </div>
     </div>
@@ -203,9 +193,7 @@ import Link from "next/link";
 
 function RepoCard({ name, status }: any) {
   const statusColors: any = {
-    active: "text-emerald-400 bg-emerald-400/10",
-    idle: "text-zinc-400 bg-zinc-400/10",
-    building: "text-yellow-400 bg-yellow-400/10"
+    unknown: "text-zinc-400 bg-zinc-400/10"
   };
 
   return (
@@ -215,7 +203,7 @@ function RepoCard({ name, status }: any) {
           <GitBranch className="w-4 h-4 text-zinc-500 group-hover:text-emerald-500 transition-colors" />
           <span className="font-medium text-zinc-200">{name}</span>
         </div>
-        <span className={`text-xs px-2 py-1 rounded-full capitalize ${statusColors[status] || statusColors.idle}`}>
+        <span className={`text-xs px-2 py-1 rounded-full capitalize ${statusColors[status] || statusColors.unknown}`}>
           {status}
         </span>
       </div>
