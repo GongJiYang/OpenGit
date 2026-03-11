@@ -125,6 +125,7 @@ async def limit_request_size(request: Request, call_next):
 
 # Serve static files
 STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
+PROMPT_DIR = os.path.join(os.path.dirname(__file__), "prompts")
 if os.path.exists(STATIC_DIR):
     app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
@@ -296,6 +297,26 @@ async def get_agent_guide():
     if os.path.exists(agent_md_path):
         return FileResponse(agent_md_path, media_type="text/markdown")
     return {"error": "Agent guide not found"}
+
+@app.get("/roles/{role_name}/prompt")
+async def get_role_prompt(role_name: str, raw: bool = False):
+    """Return the system prompt for a given role."""
+    role = role_name.lower().strip()
+    prompt_map = {
+        "architect": "architect.md",
+        "contributor": "contributor.md",
+    }
+    filename = prompt_map.get(role)
+    if not filename:
+        raise HTTPException(status_code=404, detail="Role prompt not found")
+    prompt_path = os.path.join(PROMPT_DIR, filename)
+    if not os.path.exists(prompt_path):
+        raise HTTPException(status_code=404, detail="Role prompt not found")
+    if raw:
+        return FileResponse(prompt_path, media_type="text/markdown")
+    with open(prompt_path, "r", encoding="utf-8") as f:
+        prompt = f.read()
+    return {"role": role, "prompt": prompt}
 
 @app.get("/stats", response_model=SystemStats)
 @limiter.limit("30/minute")
