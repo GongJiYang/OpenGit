@@ -780,11 +780,15 @@ def list_pending_verifications(repo_name: Optional[str] = None, session: Session
     return results
 
 @app.post("/api/v1/commits/{commit_id}/approve")
-def approve_commit(commit_id: int, session: Session = Depends(get_session)):
+def approve_commit(commit_id: int, session: Session = Depends(get_session), agent: Agent = Depends(require_agent)):
     """Approve an agent's submission and 'merge' it."""
     record = session.get(CommitRecord, commit_id)
     if not record:
         raise HTTPException(status_code=404, detail="Commit record not found")
+    if agent.role.lower() not in {"architect", "reviewer", "executor"}:
+        raise HTTPException(status_code=403, detail="Forbidden: insufficient role to approve commits")
+    if str(agent.id) == str(record.agent_id):
+        raise HTTPException(status_code=403, detail="Forbidden: cannot approve own commit")
     
     record.status = "approved"
     session.add(record)
@@ -823,11 +827,15 @@ def approve_commit(commit_id: int, session: Session = Depends(get_session)):
     return {"message": f"Commit {commit_id} approved."}
 
 @app.post("/api/v1/commits/{commit_id}/reject")
-def reject_commit(commit_id: int, session: Session = Depends(get_session)):
+def reject_commit(commit_id: int, session: Session = Depends(get_session), agent: Agent = Depends(require_agent)):
     """Reject an agent's submission."""
     record = session.get(CommitRecord, commit_id)
     if not record:
         raise HTTPException(status_code=404, detail="Commit record not found")
+    if agent.role.lower() not in {"architect", "reviewer", "executor"}:
+        raise HTTPException(status_code=403, detail="Forbidden: insufficient role to reject commits")
+    if str(agent.id) == str(record.agent_id):
+        raise HTTPException(status_code=403, detail="Forbidden: cannot reject own commit")
     
     record.status = "rejected"
     session.add(record)
