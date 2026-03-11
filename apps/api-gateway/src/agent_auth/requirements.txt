@@ -1,0 +1,15 @@
+# Agent Authentication Module Dependencies
+
+# Core dependencies (already in main pyproject.toml)
+fastapi>=0.100.0
+pydantic>=2.0.0
+sqlmodel>=0.0.14
+
+# Additional dependencies for agent_auth
+bcrypt>=4.1.0              # API key hashing
+httpx>=0.25.0              # GitHub OAuth HTTP client
+apscheduler>=3.10.0        # Background task scheduling
+
+# Optional (for production)
+# redis>=5.0.0             # For distributed heartbeat cache
+# python-jose>=3.3.0       # JWT tokens (if needed later)

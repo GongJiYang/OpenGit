@@ -35,16 +35,15 @@ class SubprocessSandbox(Sandbox):
             return -1, f"❌ Repo path does not exist: {repo_path}"
             
         try:
-            # We split the command securely but for shell usage we might need shell=True
-            # For this MVP we will use shell=True to allow complex commands like "pip install ... && pytest"
-            # But we set cwd to the repo path.
+            # Securely split the command into a list
+            cmd_list = shlex.split(test_command)
             
-            print(f"⚡ [Sandbox] Executing in {repo_path}: {test_command}")
+            print(f"⚡ [Sandbox] Executing in {repo_path}: {cmd_list}")
             
             result = subprocess.run(
-                test_command,
+                cmd_list,
                 cwd=repo_path,
-                shell=True,
+                shell=False, # Secure: No shell expansion
                 capture_output=True,
                 text=True,
                 timeout=timeout

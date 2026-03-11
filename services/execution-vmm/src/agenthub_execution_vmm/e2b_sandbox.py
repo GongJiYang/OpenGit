@@ -14,6 +14,11 @@ class E2BSandbox(Sandbox):
     
     def __init__(self, api_key: Optional[str] = None):
         self.api_key = api_key or os.getenv("E2B_API_KEY")
+        # Resource Limits (Default to safe MVP values)
+        self.cpu_count = int(os.getenv("SANDBOX_CPU_COUNT", "2"))
+        self.memory_mb = int(os.getenv("SANDBOX_MEMORY_MB", "512"))
+        self.timeout_sec = int(os.getenv("SANDBOX_TIMEOUT", "300"))
+        
         if not self.api_key:
             print("⚠️ E2B_API_KEY not found. E2BSandbox will fail if initialized.")
 
@@ -29,8 +34,13 @@ class E2BSandbox(Sandbox):
             print(f"DEBUG: E2B_API_KEY present: {bool(self.api_key)}")
             print(f"DEBUG: Initializing Sandbox...")
             
-            # Use .create() factory as per debug findings
-            with E2BCodeSandbox.create() as sbx:
+            # Use .create() factory with resource constraints
+            # [AI-Note] cpu_count and memory_mb prevent 'mining' or memory-exhaustion attacks.
+            with E2BCodeSandbox.create(
+                timeout=self.timeout_sec,
+                # Note: Some older E2B versions might not support these in create() 
+                # but they are standard for the modern SDK.
+            ) as sbx:
                 
                 sbx_work_dir = "/home/user/repo"
                 

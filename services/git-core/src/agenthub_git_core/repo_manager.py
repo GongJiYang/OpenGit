@@ -3,6 +3,15 @@ import subprocess
 import shutil
 import stat
 import sys
+from pathlib import Path
+
+# --- Hack for Monorepo Paths ---
+base_dir = os.path.dirname(os.path.abspath(__file__))
+protocol_path = os.path.abspath(os.path.join(base_dir, "../../../../packages/protocol/src"))
+if protocol_path not in sys.path:
+    sys.path.append(protocol_path)
+
+from agenthub_protocol.path_utils import ensure_safe_path
 
 class RepoManager:
     def __init__(self, storage_root: str):
@@ -11,7 +20,12 @@ class RepoManager:
     
     def create_repo(self, repo_name: str) -> str:
         """Initialize a bare git repo and install the AgentHub hook."""
-        repo_path = os.path.join(self.storage_root, repo_name)
+        try:
+            repo_path_obj = ensure_safe_path(self.storage_root, repo_name, "Invalid repository name")
+            repo_path = str(repo_path_obj)
+        except ValueError as e:
+            raise ValueError(str(e))
+            
         if os.path.exists(repo_path):
             shutil.rmtree(repo_path)
             

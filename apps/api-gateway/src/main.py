@@ -1,16 +1,20 @@
 import sys
 import os
+from pathlib import Path
 import random
 import subprocess
 import tempfile
 import shutil
 import json
 from typing import List, Optional
-from fastapi import FastAPI, HTTPException, Body
+from fastapi import FastAPI, HTTPException, Body, Depends, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
 
 # --- Hack for Monorepo Paths (MVP only) ---
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -24,10 +28,28 @@ from agenthub_semantic_store.indexer import VectorIndexer
 from agenthub_semantic_store.ast_parser import PythonASTParser
 from agenthub_execution_vmm.sandbox import SubprocessSandbox
 from agenthub_execution_vmm.e2b_sandbox import E2BSandbox
-import uuid
+from agenthub_protocol.path_utils import ensure_safe_path
+from agent_auth import agent_router, claim_router, wechat_router
 # ... (rest of imports)
 
+# --- Rate Limiting ---
+limiter = Limiter(key_func=get_remote_address)
 app = FastAPI(title="AgentHub API", version="0.1.0")
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
+# --- Request Size Limit (20MB) ---
+MAX_REQUEST_SIZE = 20 * 1024 * 1024  # 20MB
+
+@app.middleware("http")
+async def limit_request_size(request: Request, call_next):
+    content_length = request.headers.get("content-length")
+    if content_length and int(content_length) > MAX_REQUEST_SIZE:
+        return JSONResponse(
+            status_code=413,
+            content={"detail": f"Payload too large. Maximum allowed size is {MAX_REQUEST_SIZE / 1024 / 1024}MB."}
+        )
+    return await call_next(request)
 
 # Serve static files
 STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
@@ -35,9 +57,13 @@ if os.path.exists(STATIC_DIR):
     app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 # --- CORS ---
+# In production, set this to your actual frontend domain
+FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:3000")
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"], 
+    allow_origins=[FRONTEND_URL],
+    allow_origin_regex=r"http://localhost:.*",  # Support any localhost port for development
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -47,25 +73,59 @@ app.add_middleware(
 STORE_ROOT = os.path.abspath("./agenthub_data/repos")
 VECTOR_DB_PATH = os.path.abspath("./agenthub_data/vectors.json")
 
+def get_secure_repo_path(repo_name: str) -> str:
+    """Ensures repo_name stays within STORE_ROOT."""
+    try:
+        return str(ensure_safe_path(STORE_ROOT, repo_name, "Invalid repository name"))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+def validate_blob_path(path: str):
+    """Simple check to prevent escaping git tree structure via path parameter."""
+    # Since we don't have a 'base' directory for the git tree yet here 
+    # (it's internal to git), we still use the basic check, 
+    # but we can also use ensure_safe_path with a dummy base if needed.
+    # However, for git blobs, the path is relative to the repo root.
+    if ".." in path or path.startswith("/"):
+        raise HTTPException(status_code=400, detail="Invalid file path")
+
 # Ensure dirs exist
 if not os.path.exists(STORE_ROOT):
     os.makedirs(STORE_ROOT)
+
+# Initialize Databases
+from agent_auth.database import create_db_and_tables as init_auth_db
+create_db_and_tables() # Persistence DB
+init_auth_db()         # Agent Auth DB
 
 repo_manager = RepoManager(STORE_ROOT)
 # Updated to match the new Qdrant-based VectorIndexer signature
 indexer = VectorIndexer(collection_name="agenthub_prod", embedding_dim=1024)
 parser = PythonASTParser()
 
-# Memory Store for Bounties (MVP)
-BOUNTIES = []
+# Memory Store removed, using SQLite via SQLModel
 
-# Sandbox Selection (V2 Upgrade)
-if os.getenv("E2B_API_KEY"):
-    print("🔐 [Core] Initializing Secure Cloud Sandbox (E2B)...")
+# --- Security Configuration & Sandbox Selection ---
+# [AI-Note] APP_ENV='production' forces E2B Cloud Sandbox. SubprocessSandbox is for development ONLY.
+APP_ENV = os.getenv("APP_ENV", "development").lower()
+E2B_API_KEY = os.getenv("E2B_API_KEY")
+
+if APP_ENV == "production":
+    if not E2B_API_KEY:
+        print("❌ [CRITICAL] E2B_API_KEY is missing in PRODUCTION environment.")
+        print("❌ Security policy prohibits local SubprocessSandbox in production. System exit.")
+        sys.exit(1)
+    print("🔐 [Core] PROD MODE: Initializing Secure Cloud Sandbox (E2B)...")
     sandbox = E2BSandbox()
 else:
-    print("⚠️ [Core] E2B_API_KEY not found. Fallback to Insecure SubprocessSandbox.")
-    sandbox = SubprocessSandbox()
+    # Development Mode Fallback
+    if E2B_API_KEY:
+        print("🔐 [Core] DEV MODE: E2B_API_KEY detected. Using Secure Cloud Sandbox.")
+        sandbox = E2BSandbox()
+    else:
+        print("⚠️ [Core] DEV MODE: E2B_API_KEY not found. Fallback to INSECURE SubprocessSandbox.")
+        print("⚠️ [Security] This mode is strictly for local development and should not be used with untrusted code.")
+        sandbox = SubprocessSandbox()
 
 # --- Models ---
 
@@ -73,20 +133,7 @@ class AgentIdentity(BaseModel):
     agent_id: str
     model_name: str
 
-class Bounty(BaseModel):
-    id: Optional[str] = None
-    title: str
-    description: str
-    reward: int
-    status: str = "open" # open, claimed, completed
-    repo_name: str
-    required_role: str # architect, contributor, executor
-    assignee: Optional[str] = None
-    
-    # WorkItem specific fields (v2)
-    context_files: List[str] = []
-    target_files: List[str] = []
-    acceptance_criteria: Optional[str] = None
+# Bounty model is now imported from persistence.py
 
 class CreateRepoRequest(BaseModel):
     name: str
@@ -111,11 +158,15 @@ class CommitRequest(BaseModel):
     intent_description: str
     agent_id: str
     model_name: str
+    bounty_id: Optional[str] = None
+
+ALLOWED_TEST_COMMANDS = ["pytest", "python", "python3", "tox", "nose"]
 
 # --- Routes ---
 
 @app.get("/")
-def read_root():
+@limiter.limit("60/minute")
+def read_root(request: Request):
     return {
         "status": "online",
         "system": "AgentHub V2",
@@ -132,7 +183,8 @@ async def get_agent_guide():
     return {"error": "Agent guide not found"}
 
 @app.get("/stats", response_model=SystemStats)
-def get_stats():
+@limiter.limit("30/minute")
+def get_stats(request: Request):
     """Returns real-time system statistics."""
     # Count Repos
     repos = [d for d in os.listdir(STORE_ROOT) if not d.startswith('.')]
@@ -151,14 +203,18 @@ def get_stats():
     )
 
 @app.get("/repos")
-def list_repos():
+@limiter.limit("30/minute")
+def list_repos(request: Request):
     if not os.path.exists(STORE_ROOT):
         return []
     return [d for d in os.listdir(STORE_ROOT) if not d.startswith('.')]
 
 @app.post("/repos")
-def create_repo(req: CreateRepoRequest):
+@limiter.limit("10/minute")
+def create_repo(request: Request, req: CreateRepoRequest):
     """Creates a new AgentHub repository with Protocol Hooks."""
+    # Security validation
+    get_secure_repo_path(req.name)
     try:
         path = repo_manager.create_repo(req.name)
         return {"id": req.name, "path": path, "status": "created"}
@@ -170,6 +226,7 @@ def index_code(repo_name: str, file_path: str, content: str = Body(..., media_ty
     """
     Manually index code content. 
     """
+    get_secure_repo_path(repo_name)
     chunks = parser.parse(content)
     for c in chunks:
         indexer.index_chunk(repo_name, file_path, c)
@@ -189,9 +246,19 @@ def search_code(query: str):
     return response
 
 @app.post("/verify")
-def verify_repo(repo_name: str, cmd: str = "pytest"):
-    """Trigger the Sandbox to run tests on a repo."""
-    repo_path = os.path.join(STORE_ROOT, repo_name)
+@limiter.limit("10/minute")
+def verify_repo(request: Request, repo_name: str, cmd: str = "pytest"):
+    """Trigger the Sandbox to run tests on a repo (with command validation)."""
+    # Simple whitelist check for the base command
+    # Ensures only authorized test runners are executed
+    base_cmd = cmd.split()[0] if cmd else ""
+    if base_cmd not in ALLOWED_TEST_COMMANDS:
+         raise HTTPException(
+             status_code=400, 
+             detail=f"Command '{base_cmd}' is not allowed. Supported: {ALLOWED_TEST_COMMANDS}"
+         )
+
+    repo_path = get_secure_repo_path(repo_name)
     exit_code, output = sandbox.run_tests(repo_path, cmd)
     return {
         "repo": repo_name,
@@ -203,7 +270,7 @@ def verify_repo(repo_name: str, cmd: str = "pytest"):
 @app.get("/repos/{repo_name}/tree")
 def get_repo_tree(repo_name: str):
     """List all files in the repo (HEAD)."""
-    repo_path = os.path.join(STORE_ROOT, repo_name)
+    repo_path = get_secure_repo_path(repo_name)
     if not os.path.exists(repo_path):
         raise HTTPException(status_code=404, detail="Repo not found")
         
@@ -218,7 +285,8 @@ def get_repo_tree(repo_name: str):
 @app.get("/repos/{repo_name}/blob")
 def get_repo_file(repo_name: str, path: str):
     """Get code content of a file."""
-    repo_path = os.path.join(STORE_ROOT, repo_name)
+    validate_blob_path(path)
+    repo_path = get_secure_repo_path(repo_name)
     if not os.path.exists(repo_path):
         raise HTTPException(status_code=404, detail="Repo not found")
         
@@ -234,39 +302,48 @@ def get_repo_file(repo_name: str, path: str):
 # --- Bounty Board (Job Market) ---
 
 @app.get("/bounties")
-def list_bounties():
+@limiter.limit("60/minute")
+def list_bounties(request: Request, session: Session = Depends(get_session)):
     """List all open bounties."""
-    return BOUNTIES
+    statement = select(Bounty)
+    return session.exec(statement).all()
 
 @app.post("/bounties")
-def create_bounty(bounty: Bounty):
+@limiter.limit("20/minute")
+def create_bounty(request: Request, bounty: Bounty, session: Session = Depends(get_session)):
     """Post a new job."""
-    if not bounty.id:
-        bounty.id = str(uuid.uuid4())[:8]
-    BOUNTIES.append(bounty)
+    session.add(bounty)
+    session.commit()
+    session.refresh(bounty)
     return bounty
 
 @app.post("/bounties/{bounty_id}/claim")
-def claim_bounty(bounty_id: str, agent_id: str):
+def claim_bounty(bounty_id: str, agent_id: str, session: Session = Depends(get_session)):
     """Agent claims a job."""
-    for b in BOUNTIES:
-        if b.id == bounty_id:
-            if b.status != "open":
-                raise HTTPException(status_code=400, detail="Bounty already claimed")
-            b.status = "claimed"
-            b.assignee = agent_id
-            return b
-    raise HTTPException(status_code=404, detail="Bounty not found")
+    bounty = session.get(Bounty, bounty_id)
+    if not bounty:
+        raise HTTPException(status_code=404, detail="Bounty not found")
+        
+    if bounty.status != "open":
+        raise HTTPException(status_code=400, detail="Bounty already claimed")
+        
+    bounty.status = "claimed"
+    bounty.assignee = agent_id
+    session.add(bounty)
+    session.commit()
+    session.refresh(bounty)
+    return bounty
 
 # --- API-Based Git Operations ---
 
 @app.post("/repos/{repo_name}/commit")
-def api_commit(repo_name: str, req: CommitRequest):
+@limiter.limit("10/minute")
+def api_commit(request: Request, repo_name: str, req: CommitRequest, session: Session = Depends(get_session)):
     """
     Submit code via API (no git client needed).
     Creates files and commits to the bare repo.
     """
-    bare_repo_path = os.path.join(STORE_ROOT, repo_name)
+    bare_repo_path = get_secure_repo_path(repo_name)
     if not os.path.exists(bare_repo_path):
         raise HTTPException(status_code=404, detail="Repo not found")
     
@@ -329,11 +406,50 @@ def api_commit(repo_name: str, req: CommitRequest):
         if result.returncode != 0:
             return {"success": False, "error": result.stderr}
         
+        # --- Automated Verification (P1 MVP) ---
+        v_exit_code = None
+        v_stdout = None
+        
+        if req.bounty_id:
+            bounty = session.get(Bounty, req.bounty_id)
+            if bounty:
+                test_cmd = bounty.test_command or "pytest"
+                print(f"🛠️ [Automation] Running validation for Bounty {bounty.id}: {test_cmd}")
+                v_exit_code, v_stdout = sandbox.run_tests(bare_repo_path, test_cmd)
+        
+        # Save record to history
+        try:
+            # Capture SHA
+            sha_result = subprocess.run(["git", "rev-parse", "HEAD"], cwd=work_dir, capture_output=True, text=True)
+            sha = sha_result.stdout.strip() if sha_result.returncode == 0 else None
+            
+            record = CommitRecord(
+                repo_name=repo_name,
+                commit_sha=sha,
+                agent_id=req.agent_id,
+                model_name=req.model_name,
+                intent_category=req.intent_category,
+                intent_description=req.intent_description,
+                diff_summary=req.diff_summary,
+                trace_json=trace_commit, # JSON column handles dict
+                verification_exit_code=v_exit_code,
+                verification_stdout=v_stdout[:5000] # Limit size
+            )
+            session.add(record)
+            session.commit()
+        except Exception as db_err:
+            print(f"Failed to record commit history: {db_err}")
+
         return {
             "success": True,
             "repo": repo_name,
             "files_committed": list(req.files.keys()),
-            "agent": req.agent_id
+            "agent": req.agent_id,
+            "sha": sha if 'sha' in locals() else None,
+            "verification": {
+                "exit_code": v_exit_code,
+                "passed": v_exit_code == 0 if v_exit_code is not None else None
+            }
         }
         
     except subprocess.CalledProcessError as e:
@@ -343,3 +459,11 @@ def api_commit(repo_name: str, req: CommitRequest):
         shutil.rmtree(work_dir, ignore_errors=True)
 
 
+# --- Router Registration ---
+app.include_router(agent_router)
+app.include_router(claim_router)
+app.include_router(wechat_router)
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)

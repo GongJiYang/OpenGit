@@ -31,8 +31,8 @@ class BaseAgent:
             os.makedirs(WORKSPACE_DIR)
 
     def load_default_skills(self):
-        self.skills.register(ReadFileSkill())
-        self.skills.register(WriteFileSkill())
+        self.skills.register(ReadFileSkill(root_dir=WORKSPACE_DIR))
+        self.skills.register(WriteFileSkill(root_dir=WORKSPACE_DIR))
 
     def use_skill(self, skill_name: str, **kwargs):
         skill = self.skills.get(skill_name)

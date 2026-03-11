@@ -1,5 +1,5 @@
 from abc import ABC, abstractmethod
-from typing import Type, Any
+from typing import Type, Any, Optional
 from pydantic import BaseModel
 
 class Skill(ABC):
@@ -10,6 +10,10 @@ class Skill(ABC):
     name: str = "base_skill"
     description: str = "Base skill description"
     input_schema: Type[BaseModel] # The Pydantic model class for arguments
+    root_dir: Optional[str] = None
+
+    def __init__(self, root_dir: Optional[str] = None):
+        self.root_dir = root_dir
 
     @abstractmethod
     def execute(self, **kwargs) -> Any:
