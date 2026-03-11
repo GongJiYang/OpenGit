@@ -49,7 +49,7 @@ class Agent(SQLModel, table=True):
     # Authentication
     api_key_hash: str = Field(sa_column=Column(String(128), nullable=False),
                                description="bcrypt hash of the API key")
-    api_key_prefix: str = Field(max_length=12, description="First 12 chars of API key for identification")
+    api_key_prefix: str = Field(max_length=12, description="Derived API key prefix for identification")
 
     # Claim mechanism
     claim_code: str = Field(max_length=8, unique=True, index=True,

@@ -26,6 +26,7 @@ from ..utils import (
     generate_api_key,
     hash_api_key,
     get_api_key_prefix,
+    get_legacy_api_key_prefix,
     generate_claim_code,
     generate_claim_url,
     calculate_claim_expiration,
@@ -66,18 +67,20 @@ async def get_current_agent(
     # Get prefix for lookup
     key_prefix = get_api_key_prefix(x_api_key)
 
-    # Find agent by prefix
+    # Find agent by prefix, then verify hash (supports multiple agents)
     statement = select(Agent).where(Agent.api_key_prefix == key_prefix)
-    agent = session.exec(statement).first()
+    agents = session.exec(statement).all()
+    agent = next((a for a in agents if verify_api_key(x_api_key, a.api_key_hash)), None)
+
+    # Backward compatibility for legacy prefix format
+    if not agent:
+        legacy_prefix = get_legacy_api_key_prefix(x_api_key)
+        if legacy_prefix != key_prefix:
+            statement = select(Agent).where(Agent.api_key_prefix == legacy_prefix)
+            legacy_agents = session.exec(statement).all()
+            agent = next((a for a in legacy_agents if verify_api_key(x_api_key, a.api_key_hash)), None)
 
     if not agent:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid API Key."
-        )
-
-    # Verify full key against hash
-    if not verify_api_key(x_api_key, agent.api_key_hash):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid API Key."

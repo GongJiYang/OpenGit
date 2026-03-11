@@ -38,7 +38,7 @@ from agent_auth import agent_router, claim_router, wechat_router
 from agent_auth.database import get_db as get_auth_session, get_engine as get_auth_engine
 from agent_auth.models import Agent, AgentStatus
 from agent_auth.services import start_scheduler, stop_scheduler
-from agent_auth.utils import verify_api_key, get_api_key_prefix, is_valid_api_key_format
+from agent_auth.utils import verify_api_key, get_api_key_prefix, get_legacy_api_key_prefix, is_valid_api_key_format
 from persistence import Bounty, CommitRecord, get_session, create_db_and_tables
 
 # --- Execution & Cost Guards ---
@@ -258,10 +258,14 @@ def require_agent(
     if not is_valid_api_key_format(x_api_key):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid API key format")
     key_prefix = get_api_key_prefix(x_api_key)
-    agent = auth_session.exec(select(Agent).where(Agent.api_key_prefix == key_prefix)).first()
+    agents = auth_session.exec(select(Agent).where(Agent.api_key_prefix == key_prefix)).all()
+    agent = next((a for a in agents if verify_api_key(x_api_key, a.api_key_hash)), None)
     if not agent:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid API key")
-    if not verify_api_key(x_api_key, agent.api_key_hash):
+        legacy_prefix = get_legacy_api_key_prefix(x_api_key)
+        if legacy_prefix != key_prefix:
+            legacy_agents = auth_session.exec(select(Agent).where(Agent.api_key_prefix == legacy_prefix)).all()
+            agent = next((a for a in legacy_agents if verify_api_key(x_api_key, a.api_key_hash)), None)
+    if not agent:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid API key")
     if agent.status == AgentStatus.SUSPENDED:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Agent is suspended")

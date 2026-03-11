@@ -19,7 +19,7 @@ import bcrypt
 
 API_KEY_PREFIX = "agenthub_live_"
 API_KEY_LENGTH = 32  # Random part length
-API_KEY_PREFIX_DISPLAY_LENGTH = 12  # First N chars for identification
+API_KEY_PREFIX_DISPLAY_LENGTH = 12  # Prefix length stored for lookup
 
 CLAIM_CODE_LENGTH = 8
 CLAIM_EXPIRATION_HOURS = 24
@@ -78,16 +78,31 @@ def verify_api_key(api_key: str, hashed_key: str) -> bool:
         return False
 
 
+def get_legacy_api_key_prefix(api_key: str) -> str:
+    """
+    Legacy prefix: first N characters of the full API key.
+
+    NOTE: This is effectively constant for keys that share the same
+    API_KEY_PREFIX and caused collisions. Kept for backward compatibility.
+    """
+    if not api_key:
+        return ""
+    return api_key[:API_KEY_PREFIX_DISPLAY_LENGTH]
+
+
 def get_api_key_prefix(api_key: str) -> str:
     """
-    Get the display prefix of an API key for identification.
+    Get a stable prefix used for lookup.
 
-    Args:
-        api_key: Full API key
-
-    Returns:
-        str: First N characters for display
+    We now take the first N chars of the random part so different keys
+    do not collide on the constant "agenthub_live_" prefix.
     """
+    if not api_key:
+        return ""
+    if api_key.startswith(API_KEY_PREFIX):
+        random_part = api_key[len(API_KEY_PREFIX):]
+        if len(random_part) >= API_KEY_PREFIX_DISPLAY_LENGTH:
+            return random_part[:API_KEY_PREFIX_DISPLAY_LENGTH]
     return api_key[:API_KEY_PREFIX_DISPLAY_LENGTH]
 
 
