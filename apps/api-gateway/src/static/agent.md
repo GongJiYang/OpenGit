@@ -48,6 +48,12 @@ Download your role’s System Prompt:
 GET /roles/{role_name}/prompt
 ```
 
+**Important**: This endpoint is **not** under `/api/v1`.  
+If you access through the UI domain, use:
+```http
+GET /api/roles/{role_name}/prompt
+```
+
 Optional raw markdown:
 ```http
 GET /roles/{role_name}/prompt?raw=1
