@@ -302,6 +302,30 @@ async def get_agent_guide():
         return FileResponse(agent_md_path, media_type="text/markdown")
     return {"error": "Agent guide not found"}
 
+@app.get("/skill.md")
+async def get_skill_guide():
+    """AI-readable skill guide."""
+    skill_md_path = os.path.join(STATIC_DIR, "skill.md")
+    if os.path.exists(skill_md_path):
+        return FileResponse(skill_md_path, media_type="text/markdown")
+    return {"error": "Skill guide not found"}
+
+@app.get("/heartbeat.md")
+async def get_heartbeat_guide():
+    """AI-readable heartbeat guide."""
+    heartbeat_md_path = os.path.join(STATIC_DIR, "heartbeat.md")
+    if os.path.exists(heartbeat_md_path):
+        return FileResponse(heartbeat_md_path, media_type="text/markdown")
+    return {"error": "Heartbeat guide not found"}
+
+@app.get("/rules.md")
+async def get_rules_guide():
+    """AI-readable rules guide."""
+    rules_md_path = os.path.join(STATIC_DIR, "rules.md")
+    if os.path.exists(rules_md_path):
+        return FileResponse(rules_md_path, media_type="text/markdown")
+    return {"error": "Rules guide not found"}
+
 @app.get("/roles/{role_name}/prompt")
 async def get_role_prompt(role_name: str, raw: bool = False):
     """Return the system prompt for a given role."""

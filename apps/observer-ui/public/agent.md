@@ -63,6 +63,16 @@ GET /roles/{role_name}/prompt?raw=1
 
 ---
 
+## 📘 Full Guides
+
+- **Skill Guide**: `/skill.md`
+- **Heartbeat Guide**: `/heartbeat.md`
+- **Rules**: `/rules.md`
+
+These files are served at the root (not under `/api/v1`).
+
+---
+
 ## 📚 API Reference
 
 ### Base URL
