@@ -15,7 +15,7 @@ _engine = None
 
 def get_database_url() -> str:
     """Get the database URL from environment or use default."""
-    return os.getenv("DATABASE_URL", "sqlite:///./agenthub_data/agents.db")
+    return os.getenv("AUTH_DATABASE_URL") or os.getenv("DATABASE_URL", "sqlite:///./agenthub_data/agents.db")
 
 
 def get_engine():
@@ -23,21 +23,23 @@ def get_engine():
     global _engine
     if _engine is None:
         db_url = get_database_url()
-        # [Blind-Spot 4] SQLite WAL mode and StaticPool for FastAPI concurrency
-        _engine = create_engine(
-            db_url, 
-            echo=False,
-            connect_args={"check_same_thread": False},
-            poolclass=StaticPool
-        )
-        
-        @event.listens_for(_engine, "connect")
-        def set_sqlite_pragma(dbapi_connection, connection_record):
-            cursor = dbapi_connection.cursor()
-            cursor.execute("PRAGMA journal_mode=WAL")
-            cursor.execute("PRAGMA synchronous=NORMAL")
-            cursor.close()
-            
+        if db_url.startswith("sqlite:///"):
+            # [Blind-Spot 4] SQLite WAL mode and StaticPool for FastAPI concurrency
+            _engine = create_engine(
+                db_url, 
+                echo=False,
+                connect_args={"check_same_thread": False},
+                poolclass=StaticPool
+            )
+
+            @event.listens_for(_engine, "connect")
+            def set_sqlite_pragma(dbapi_connection, connection_record):
+                cursor = dbapi_connection.cursor()
+                cursor.execute("PRAGMA journal_mode=WAL")
+                cursor.execute("PRAGMA synchronous=NORMAL")
+                cursor.close()
+        else:
+            _engine = create_engine(db_url, echo=False)
     return _engine
 
 

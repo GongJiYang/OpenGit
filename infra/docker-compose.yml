@@ -1,6 +1,21 @@
 version: '3.8'
 
 services:
+  postgres:
+    image: postgres:16-alpine
+    restart: always
+    environment:
+      - POSTGRES_USER=agenthub
+      - POSTGRES_PASSWORD=agenthub
+      - POSTGRES_DB=agenthub
+    volumes:
+      - ./postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U agenthub"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
   # --- Frontend ---
   observer-ui:
     build:
@@ -20,6 +35,7 @@ services:
     depends_on:
       - observer-ui
       - api-gateway
+      - postgres
 
   # --- Gateway / Monolith ---
   api-gateway:
@@ -31,12 +47,17 @@ services:
       - "8000:8000"
     environment:
       - APP_ENV=production
+      - DATABASE_URL=postgresql+psycopg2://agenthub:agenthub@postgres:5432/agenthub
+      - AUTH_DATABASE_URL=postgresql+psycopg2://agenthub:agenthub@postgres:5432/agenthub
       - ZHIPUAI_API_KEY=${ZHIPUAI_API_KEY}
       - E2B_API_KEY=${E2B_API_KEY}
       - QDRANT_URL=${QDRANT_URL:-:memory:}
     volumes:
       # Persist Repos and Vectors
       - ./agenthub_data:/app/apps/api-gateway/agenthub_data
+    depends_on:
+      postgres:
+        condition: service_healthy
 
 networks:
   default:

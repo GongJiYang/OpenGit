@@ -7,7 +7,11 @@ from sqlalchemy import event
 
 # --- Constants ---
 DB_PATH = os.path.abspath("./agenthub_data/agenthub.db")
-SQLITE_URL = f"sqlite:///{DB_PATH}"
+DEFAULT_SQLITE_URL = f"sqlite:///{DB_PATH}"
+
+def get_database_url() -> str:
+    """Get database URL from env or fallback to SQLite."""
+    return os.getenv("DATABASE_URL", DEFAULT_SQLITE_URL)
 
 # --- Models ---
 
@@ -64,25 +68,38 @@ class CommitRecord(SQLModel, table=True):
 
 # --- Database Setup & Optimization ---
 
-# [Blind-Spot 4] SQLite WAL mode and StaticPool for FastAPI concurrency
-engine = create_engine(
-    SQLITE_URL, 
-    echo=False,
-    connect_args={"check_same_thread": False},
-    poolclass=StaticPool
-)
+_engine = None
 
-@event.listens_for(engine, "connect")
-def set_sqlite_pragma(dbapi_connection, connection_record):
-    cursor = dbapi_connection.cursor()
-    cursor.execute("PRAGMA journal_mode=WAL")
-    cursor.execute("PRAGMA synchronous=NORMAL")
-    cursor.close()
+def get_engine():
+    """Singleton engine with SQLite optimizations when applicable."""
+    global _engine
+    if _engine is not None:
+        return _engine
+    db_url = get_database_url()
+    if db_url.startswith("sqlite:///"):
+        _engine = create_engine(
+            db_url,
+            echo=False,
+            connect_args={"check_same_thread": False},
+            poolclass=StaticPool
+        )
+
+        @event.listens_for(_engine, "connect")
+        def set_sqlite_pragma(dbapi_connection, connection_record):
+            cursor = dbapi_connection.cursor()
+            cursor.execute("PRAGMA journal_mode=WAL")
+            cursor.execute("PRAGMA synchronous=NORMAL")
+            cursor.close()
+    else:
+        _engine = create_engine(db_url, echo=False)
+    return _engine
 
 def create_db_and_tables():
-    os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
-    SQLModel.metadata.create_all(engine)
+    db_url = get_database_url()
+    if db_url.startswith("sqlite:///"):
+        os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
+    SQLModel.metadata.create_all(get_engine())
 
 def get_session():
-    with Session(engine) as session:
+    with Session(get_engine()) as session:
         yield session

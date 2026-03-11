@@ -19,7 +19,7 @@ source .venv/bin/activate
 # 2. Install Dependencies (FastAPI, Uvicorn, etc.)
 echo "📦 Checking dependencies..."
 # Added --trusted-host flags to handle potential SSL issues
-pip install -q fastapi uvicorn pydantic numpy gitpython httpx slowapi sqlmodel qdrant-client zhipuai e2b-code-interpreter bcrypt apscheduler sniffio --trusted-host pypi.org --trusted-host files.pythonhosted.org
+pip install -q fastapi uvicorn pydantic numpy gitpython httpx slowapi sqlmodel qdrant-client zhipuai e2b-code-interpreter bcrypt apscheduler sniffio psycopg2-binary --trusted-host pypi.org --trusted-host files.pythonhosted.org
 
 # 3. Configure Path (Monorepo Hack)
 export PYTHONPATH=$PROJECT_ROOT/packages/protocol/src:$PYTHONPATH
