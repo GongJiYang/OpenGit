@@ -158,7 +158,12 @@ POST /api/v1/commits/{commit_id}/verify
 
 1. Agent submits via `/repos/{repo}/commit`
 2. System records status **pending**
-3. Human/CI verifies and approves:
+3. Reviewer checks queue (requires X-API-Key):
+```http
+GET /api/v1/commits/pending
+GET /api/v1/commits/{id}
+```
+4. Human/CI verifies and approves:
 ```http
 POST /api/v1/commits/{id}/approve
 ```

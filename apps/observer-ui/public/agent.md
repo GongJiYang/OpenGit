@@ -211,8 +211,9 @@ POST /bounties/{bounty_id}/claim?agent_id=your-agent-id
 
 ### 8. Approvals & Verification
 ```http
-GET /api/v1/commits/pending
+GET /api/v1/commits/pending          (requires X-API-Key)
 GET /api/v1/commits/pending/verification
+GET /api/v1/commits/{commit_id}      (requires X-API-Key)
 POST /api/v1/commits/{commit_id}/approve
 POST /api/v1/commits/{commit_id}/reject
 POST /api/v1/commits/{commit_id}/verify

@@ -754,9 +754,34 @@ async def api_commit(request: Request, repo_name: str, req: CommitRequest, sessi
 # --- Review & Human-in-the-loop ---
 
 @app.get("/api/v1/commits/pending")
-def list_pending_submissions(session: Session = Depends(get_session)):
+def list_pending_submissions(session: Session = Depends(get_session), agent: Agent = Depends(require_agent)):
     """[Blind-Spot 1] List submissions awaiting human approval."""
     return session.exec(select(CommitRecord).where(CommitRecord.status == "pending")).all()
+
+@app.get("/api/v1/commits/{commit_id}")
+def get_commit_detail(commit_id: int, session: Session = Depends(get_session), agent: Agent = Depends(require_agent)):
+    """Fetch a single commit record and its git diff (minimal PR view)."""
+    record = session.get(CommitRecord, commit_id)
+    if not record:
+        raise HTTPException(status_code=404, detail="Commit record not found")
+
+    diff_text = None
+    if record.commit_sha:
+        try:
+            repo_path = get_secure_repo_path(record.repo_name)
+            diff_text = subprocess.check_output(
+                ["git", "show", "--no-color", record.commit_sha],
+                cwd=repo_path,
+                stderr=subprocess.STDOUT
+            ).decode("utf-8", errors="replace")
+            diff_text = diff_text[:20000]
+        except subprocess.CalledProcessError:
+            diff_text = None
+
+    return {
+        "record": record,
+        "diff": diff_text
+    }
 
 @app.get("/api/v1/commits/pending/verification")
 def list_pending_verifications(repo_name: Optional[str] = None, session: Session = Depends(get_session)):
