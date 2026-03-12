@@ -1,0 +1,22 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: observer-ui
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: observer-ui
+  template:
+    metadata:
+      labels:
+        app: observer-ui
+    spec:
+      containers:
+        - name: observer-ui
+          image: ghcr.io/your-org/opengit-observer-ui:latest
+          ports:
+            - containerPort: 3000
+          env:
+            - name: NEXT_PUBLIC_API_BASE
+              value: "/api"

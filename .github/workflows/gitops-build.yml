@@ -1,0 +1,73 @@
+name: Build Images & Update GitOps Repo
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAMESPACE: ${{ github.repository_owner }}
+  INFRA_REPO: ${{ secrets.INFRA_REPO }}
+
+jobs:
+  build-and-update:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout app repo
+        uses: actions/checkout@v4
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build & push api-gateway
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: apps/api-gateway/Dockerfile
+          push: true
+          tags: ghcr.io/${{ github.repository_owner }}/opengit-api-gateway:${{ github.sha }}
+
+      - name: Build & push observer-ui
+        uses: docker/build-push-action@v5
+        with:
+          context: apps/observer-ui
+          file: apps/observer-ui/Dockerfile
+          push: true
+          tags: ghcr.io/${{ github.repository_owner }}/opengit-observer-ui:${{ github.sha }}
+          build-args: |
+            NEXT_PUBLIC_API_BASE=/api
+
+      - name: Setup kustomize
+        uses: imranismail/setup-kustomize@v2
+
+      - name: Update GitOps repo (dev)
+        env:
+          GITOPS_TOKEN: ${{ secrets.INFRA_REPO_TOKEN }}
+        run: |
+          if [ -z "$INFRA_REPO" ]; then
+            echo "INFRA_REPO secret is not set (e.g., your-org/opengit-infra)"
+            exit 1
+          fi
+          git clone https://$GITOPS_TOKEN@github.com/$INFRA_REPO.git gitops
+          cd gitops/overlays/dev
+          kustomize edit set image ghcr.io/${IMAGE_NAMESPACE}/opengit-api-gateway=ghcr.io/${IMAGE_NAMESPACE}/opengit-api-gateway:${GITHUB_SHA}
+          kustomize edit set image ghcr.io/${IMAGE_NAMESPACE}/opengit-observer-ui=ghcr.io/${IMAGE_NAMESPACE}/opengit-observer-ui:${GITHUB_SHA}
+          git config user.name "gitops-bot"
+          git config user.email "gitops-bot@users.noreply.github.com"
+          git add kustomization.yaml
+          git commit -m "deploy: ${GITHUB_SHA}" || exit 0
+          git push

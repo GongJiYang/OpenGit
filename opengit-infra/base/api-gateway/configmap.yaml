@@ -1,0 +1,7 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: api-gateway-config
+data:
+  APP_ENV: "production"
+  QDRANT_URL: ":memory:"
