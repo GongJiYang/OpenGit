@@ -3,7 +3,6 @@
 import { useEffect, useState } from "react";
 import { CheckCircle, XCircle, RefreshCw, FileText } from "lucide-react";
 
-const API_BASE = process.env.NEXT_PUBLIC_API_BASE || "/api";
 const AGENT_API_KEY = process.env.NEXT_PUBLIC_AGENT_API_KEY || "";
 
 interface CommitRecord {
@@ -35,7 +34,7 @@ export default function ReviewsPage() {
         try {
             setLoading(true);
             setError(null);
-            const res = await fetch(`${API_BASE}/api/v1/commits/pending`, {
+            const res = await fetch(`/api/v1/commits/pending`, {
                 headers: AGENT_API_KEY ? { "X-API-Key": AGENT_API_KEY } : undefined
             });
             if (!res.ok) {
@@ -56,7 +55,7 @@ export default function ReviewsPage() {
             return;
         }
         try {
-            const res = await fetch(`${API_BASE}/api/v1/commits/${commitId}`, {
+            const res = await fetch(`/api/v1/commits/${commitId}`, {
                 headers: { "X-API-Key": AGENT_API_KEY }
             });
             if (!res.ok) {
@@ -76,7 +75,7 @@ export default function ReviewsPage() {
         }
         try {
             setLoading(true);
-            const res = await fetch(`${API_BASE}/api/v1/commits/${commitId}/${action}`, {
+            const res = await fetch(`/api/v1/commits/${commitId}/${action}`, {
                 method: "POST",
                 headers: { "X-API-Key": AGENT_API_KEY }
             });

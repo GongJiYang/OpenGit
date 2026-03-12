@@ -743,9 +743,16 @@ async def api_commit(request: Request, repo_name: str, req: CommitRequest, sessi
                 "passed": v_exit_code == 0 if v_exit_code is not None else None
             }
         }
-        
+
     except subprocess.CalledProcessError as e:
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": f"Git operation failed: {e.stderr.decode() if e.stderr else str(e)}"}
+    except HTTPException:
+        raise  # Re-raise HTTP exceptions (403, 404, etc.)
+    except Exception as e:
+        print(f"[ERROR] Unexpected error in commit endpoint: {type(e).__name__}: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Internal error: {str(e)}")
     finally:
         # Cleanup
         shutil.rmtree(work_dir, ignore_errors=True)
