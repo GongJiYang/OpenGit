@@ -10,8 +10,9 @@ permissions:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_NAMESPACE: gongjiyang
-  INFRA_REPO: ${{ secrets.INFRA_REPO }}
+  IMAGE_NAMESPACE: ${{ github.repository_owner }}
+  INFRA_REPO: GongJiYang/opengit-infra
+  IMAGE_NAMESPACE_LOWERCASE: gongjiyang
 
 jobs:
   build-and-update:
@@ -41,8 +42,8 @@ jobs:
           push: true
           platforms: linux/amd64
           tags: |
-            ghcr.io/${{ env.IMAGE_NAMESPACE }}/opengit-api-gateway:${{ github.sha }}
-            ghcr.io/${{ env.IMAGE_NAMESPACE }}/opengit-api-gateway:prod
+            ghcr.io/${{ env.IMAGE_NAMESPACE_LOWERCASE }}/opengit-api-gateway:${{ github.sha }}
+            ghcr.io/${{ env.IMAGE_NAMESPACE_LOWERCASE }}/opengit-api-gateway:prod
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
@@ -54,8 +55,8 @@ jobs:
           push: true
           platforms: linux/amd64
           tags: |
-            ghcr.io/${{ env.IMAGE_NAMESPACE }}/opengit-observer-ui:${{ github.sha }}
-            ghcr.io/${{ env.IMAGE_NAMESPACE }}/opengit-observer-ui:prod
+            ghcr.io/${{ env.IMAGE_NAMESPACE_LOWERCASE }}/opengit-observer-ui:${{ github.sha }}
+            ghcr.io/${{ env.IMAGE_NAMESPACE_LOWERCASE }}/opengit-observer-ui:prod
           build-args: |
             NEXT_PUBLIC_API_BASE=/api
           cache-from: type=gha
@@ -67,6 +68,7 @@ jobs:
       - name: Update GitOps repo (dev)
         env:
           GITOPS_TOKEN: ${{ secrets.INFRA_REPO_TOKEN }}
+          IMAGE_NAMESPACE: gongjiyang
         run: |
           if [ -z "$INFRA_REPO" ]; then
             echo "INFRA_REPO secret is not set (e.g., your-org/opengit-infra)"
