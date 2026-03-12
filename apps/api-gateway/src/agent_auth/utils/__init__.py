@@ -24,6 +24,9 @@ API_KEY_PREFIX_DISPLAY_LENGTH = 12  # Prefix length stored for lookup
 CLAIM_CODE_LENGTH = 8
 CLAIM_EXPIRATION_HOURS = 24
 
+EMAIL_VERIFY_TOKEN_LENGTH = 32
+EMAIL_VERIFY_EXPIRATION_MINUTES = 30
+
 BCRYPT_ROUNDS = 12
 
 
@@ -156,6 +159,41 @@ def is_claim_expired(expires_at: datetime) -> bool:
 
     Args:
         expires_at: Expiration timestamp
+
+    Returns:
+        bool: True if expired, False otherwise
+    """
+    return datetime.utcnow() > expires_at
+
+
+# ============== Email Verification Utilities ==============
+
+def generate_email_verify_token() -> str:
+    """
+    Generate a secure token for email verification.
+
+    Returns:
+        str: URL-safe random token (43 characters)
+    """
+    return secrets.token_urlsafe(EMAIL_VERIFY_TOKEN_LENGTH)
+
+
+def calculate_email_verify_expiration() -> datetime:
+    """
+    Calculate email verification token expiration timestamp.
+
+    Returns:
+        datetime: Expiration timestamp (30 minutes from now)
+    """
+    return datetime.utcnow() + timedelta(minutes=EMAIL_VERIFY_EXPIRATION_MINUTES)
+
+
+def is_email_verify_expired(expires_at: datetime) -> bool:
+    """
+    Check if an email verification token has expired.
+
+    Args:
+        expires_at: Token expiration timestamp
 
     Returns:
         bool: True if expired, False otherwise

@@ -9,7 +9,7 @@ from enum import Enum
 from typing import Optional
 from uuid import UUID, uuid4
 
-from sqlmodel import Field, SQLModel, Column, String, DateTime, Text
+from sqlmodel import Field, SQLModel, Column, String, DateTime, Text, ForeignKey
 from sqlalchemy import Index
 
 
@@ -96,6 +96,47 @@ class Agent(SQLModel, table=True):
         ]
 
 
+class EmailVerification(SQLModel, table=True):
+    """
+    Email verification token table.
+
+    Stores tokens for email-based ownership verification during agent claiming.
+    """
+
+    __tablename__ = "email_verifications"
+
+    # Primary key
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+
+    # Foreign key to Agent
+    agent_id: UUID = Field(
+        sa_column=Column(String(36), ForeignKey("agents.id", ondelete="CASCADE"), nullable=False),
+        description="Associated agent ID"
+    )
+
+    # Email to verify
+    email: str = Field(max_length=255, index=True, description="Email address to verify")
+
+    # Verification token
+    token: str = Field(max_length=64, unique=True, index=True, description="Verification token")
+    token_expires_at: datetime = Field(description="Token expiration timestamp")
+
+    # Status
+    verified: bool = Field(default=False, description="Whether verification completed")
+    verified_at: Optional[datetime] = Field(default=None, description="When verification completed")
+
+    # Audit
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    ip_address: Optional[str] = Field(default=None, max_length=45, description="Client IP address")
+
+    class Config:
+        indexes = [
+            Index("ix_email_verifications_token", "token"),
+            Index("ix_email_verifications_email", "email"),
+            Index("ix_email_verifications_agent_id", "agent_id"),
+        ]
+
+
 # ============== Pydantic Schemas ==============
 
 class AgentRegisterRequest(SQLModel):
@@ -148,10 +189,19 @@ class ClaimVerifyRequest(SQLModel):
 
 
 class ClaimVerifyResponse(SQLModel):
-    """Response after claim verification."""
+    """Response after sending verification email."""
     success: bool
     message: str
     agent_id: Optional[UUID] = None
+    email_sent_to: Optional[str] = Field(default=None, description="Email address verification was sent to")
+
+
+class EmailConfirmResponse(SQLModel):
+    """Response after email confirmation."""
+    success: bool
+    message: str
+    agent_id: Optional[UUID] = None
+    agent_name: Optional[str] = None
     owner_email: Optional[str] = None
 
 

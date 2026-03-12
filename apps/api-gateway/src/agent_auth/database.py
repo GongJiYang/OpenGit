@@ -8,7 +8,7 @@ import os
 from sqlmodel import SQLModel, create_engine, Session, StaticPool
 from sqlalchemy import event
 
-from .models import Agent
+from .models import Agent, EmailVerification
 
 # Singleton Engine
 _engine = None
