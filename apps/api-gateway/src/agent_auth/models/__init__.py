@@ -110,7 +110,9 @@ class EmailVerification(SQLModel, table=True):
 
     # Foreign key to Agent
     agent_id: UUID = Field(
-        sa_column=Column(UUID, ForeignKey("agents.id", ondelete="CASCADE"), nullable=False),
+        foreign_key="Agent.id",
+        ondelete="CASCADE",
+        nullable=False,
         description="Associated agent ID"
     )
 
