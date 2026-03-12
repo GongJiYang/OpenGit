@@ -31,7 +31,7 @@ from agent_auth.models import Agent, AgentStatus
 from agent_auth.utils import verify_api_key
 from agent_auth.database import get_db as get_auth_session
 
-router = APIRouter(prefix="/api/v1/meta", tags=["Meta-Repository"])
+meta_router = APIRouter(prefix="/api/v1/meta", tags=["Meta-Repository"])
 
 # === Request Models ===
 
