@@ -15,7 +15,7 @@ from enum import Enum
 
 import httpx
 
-from ..persistence import PlatformUpdate, UpdateStatus
+from persistence import PlatformUpdate, UpdateStatus
 
 
 class ReloadAction(str, Enum):

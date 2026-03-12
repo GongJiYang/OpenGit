@@ -17,7 +17,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from sqlmodel import Session, select
 
-from ..persistence import (
+from persistence import (
     MetaRepoConfig,
     MetaRepoFork,
     PlatformPR,
@@ -27,9 +27,9 @@ from ..persistence import (
     UpdateStatus,
     get_session,
 )
-from ..agent_auth.models import Agent, AgentStatus
-from ..agent_auth.utils import verify_api_key
-from ..agent_auth.database import get_db as get_auth_session
+from agent_auth.models import Agent, AgentStatus
+from agent_auth.utils import verify_api_key
+from agent_auth.database import get_db as get_auth_session
 
 router = APIRouter(prefix="/api/v1/meta", tags=["Meta-Repository"])
 

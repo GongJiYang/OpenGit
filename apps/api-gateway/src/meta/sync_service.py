@@ -15,7 +15,7 @@ from typing import List, Tuple, Optional
 
 from sqlmodel import Session, select
 
-from ..persistence import (
+from persistence import (
     MetaRepoConfig,
     PlatformUpdate,
     UpdateStatus,
