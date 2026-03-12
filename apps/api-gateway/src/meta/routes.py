@@ -90,7 +90,7 @@ def require_admin_agent(
 
 # === Status Endpoints ===
 
-@router.get("/status")
+@meta_router.get("/status")
 async def get_meta_status(
     session: Session = Depends(get_session)
 ):
@@ -133,7 +133,7 @@ async def get_meta_status(
 
 # === Initialization ===
 
-@router.post("/init")
+@meta_router.post("/init")
 async def init_meta_repo(
     request: MetaRepoInitRequest,
     session: Session = Depends(get_session),
@@ -248,7 +248,7 @@ async def init_meta_repo(
 
 # === Fork Management ===
 
-@router.post("/forks")
+@meta_router.post("/forks")
 async def create_fork(
     request: CreateForkRequest,
     meta_config: MetaRepoConfig = Depends(get_meta_config),
@@ -337,7 +337,7 @@ async def create_fork(
         )
 
 
-@router.get("/forks")
+@meta_router.get("/forks")
 async def list_forks(
     session: Session = Depends(get_session)
 ):
@@ -362,7 +362,7 @@ async def list_forks(
 
 # === PR Management ===
 
-@router.post("/prs")
+@meta_router.post("/prs")
 async def create_pr(
     request: CreatePRRequest,
     meta_config: MetaRepoConfig = Depends(get_meta_config),
@@ -468,7 +468,7 @@ async def create_pr(
     }
 
 
-@router.get("/prs")
+@meta_router.get("/prs")
 async def list_prs(
     status_filter: Optional[str] = None,
     limit: int = 20,
@@ -501,7 +501,7 @@ async def list_prs(
     }
 
 
-@router.get("/prs/{pr_number}")
+@meta_router.get("/prs/{pr_number}")
 async def get_pr(
     pr_number: int,
     session: Session = Depends(get_session)
@@ -538,7 +538,7 @@ async def get_pr(
     }
 
 
-@router.post("/prs/{pr_number}/approve")
+@meta_router.post("/prs/{pr_number}/approve")
 async def approve_pr(
     pr_number: int,
     request: ApprovePRRequest,
@@ -639,7 +639,7 @@ async def approve_pr(
     }
 
 
-@router.post("/prs/{pr_number}/merge")
+@meta_router.post("/prs/{pr_number}/merge")
 async def merge_pr(
     pr_number: int,
     meta_config: MetaRepoConfig = Depends(get_meta_config),
@@ -760,7 +760,7 @@ async def merge_pr(
 
 # === Deployment Management ===
 
-@router.get("/updates")
+@meta_router.get("/updates")
 async def list_updates(
     status_filter: Optional[str] = None,
     limit: int = 20,
@@ -792,7 +792,7 @@ async def list_updates(
     }
 
 
-@router.get("/updates/{update_id}")
+@meta_router.get("/updates/{update_id}")
 async def get_update_status(
     update_id: int,
     session: Session = Depends(get_session)
@@ -825,7 +825,7 @@ async def get_update_status(
     }
 
 
-@router.post("/updates/{update_id}/rollback")
+@meta_router.post("/updates/{update_id}/rollback")
 async def rollback_update(
     update_id: int,
     meta_config: MetaRepoConfig = Depends(get_meta_config),
@@ -893,7 +893,7 @@ async def rollback_update(
 
 # === Audit Log ===
 
-@router.get("/audit-log")
+@meta_router.get("/audit-log")
 async def get_audit_log(
     event_type: Optional[str] = None,
     actor_type: Optional[str] = None,
