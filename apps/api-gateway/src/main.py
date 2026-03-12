@@ -19,6 +19,8 @@ from slowapi.errors import RateLimitExceeded
 
 # --- Hack for Monorepo Paths (MVP only) ---
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+if BASE_DIR not in sys.path:
+    sys.path.append(BASE_DIR)
 sys.path.append(os.path.abspath(os.path.join(BASE_DIR, "../../../packages/protocol/src")))
 sys.path.append(os.path.abspath(os.path.join(BASE_DIR, "../../../services/git-core/src")))
 sys.path.append(os.path.abspath(os.path.join(BASE_DIR, "../../../services/semantic-store/src")))
