@@ -1,0 +1,48 @@
+{
+  "version": "1.0",
+  "library_name": "builtin",
+  "library_type": "builtin",
+  "templates": {
+    "async-handler-v2": {
+      "name": "Async Handler",
+      "description": "异步请求处理器，带超时控制、重试机制和错误处理",
+      "language": "python",
+      "tags": ["async", "handler", "http", "error-handling"],
+      "file": "python/async_handler.yaml",
+      "version": "2.0.0"
+    },
+    "retry-decorator-v1": {
+      "name": "Retry Decorator",
+      "description": "函数重试装饰器，支持指数退避和自定义异常过滤",
+      "language": "python",
+      "tags": ["decorator", "retry", "resilience"],
+      "file": "python/retry_decorator.yaml",
+      "version": "1.0.0"
+    },
+    "auth-middleware-v1": {
+      "name": "Auth Middleware",
+      "description": "认证中间件，支持 JWT 和 API Key 两种方式",
+      "language": "python",
+      "tags": ["auth", "middleware", "security", "jwt"],
+      "file": "python/auth_middleware.yaml",
+      "version": "1.0.0"
+    },
+    "crud-repository-v1": {
+      "name": "CRUD Repository",
+      "description": "通用 CRUD 数据访问层，支持类型提示和异步操作",
+      "language": "python",
+      "tags": ["crud", "repository", "database", "async"],
+      "file": "python/crud_repository.yaml",
+      "version": "1.0.0"
+    },
+    "fastapi-endpoint-v1": {
+      "name": "FastAPI Endpoint",
+      "description": "FastAPI 路由端点模板，包含请求验证、响应模型和文档",
+      "language": "python",
+      "tags": ["fastapi", "api", "endpoint", "rest"],
+      "file": "python/api_endpoint.yaml",
+      "version": "1.0.0"
+    }
+  },
+  "updated_at": 1700000000
+}

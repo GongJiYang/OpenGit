@@ -1,0 +1,162 @@
+# 认证中间件模板
+id: auth-middleware-v1
+name: Auth Middleware
+description: 认证中间件，支持 JWT 和 API Key 两种方式
+language: python
+tags:
+  - auth
+  - middleware
+  - security
+  - jwt
+
+parameters:
+  - name: middleware_name
+    type: string
+    required: true
+    description: 中间件名称
+  - name: auth_type
+    type: string
+    default: "jwt"
+    options:
+      - jwt
+      - api_key
+      - both
+    description: 认证类型
+  - name: token_header
+    type: string
+    default: "Authorization"
+    description: Token 头名称
+  - name: api_key_header
+    type: string
+    default: "X-API-Key"
+    description: API Key 头名称
+  - name: secret_env_var
+    type: string
+    default: "JWT_SECRET"
+    description: JWT 密钥环境变量名
+
+metadata:
+  author: AgentHub
+  version: "1.0.0"
+
+template: |
+  import os
+  import functools
+  from typing import Callable, Optional
+  from datetime import datetime, timedelta
+
+  {% if auth_type in ['jwt', 'both'] %}
+  import jwt
+  {% endif %}
+
+  class AuthError(Exception):
+      """认证错误"""
+      pass
+
+
+  class {{ middleware_name | pascal_case }}:
+      """
+      {{ middleware_name }} - 认证中间件
+
+      支持认证方式: {{ auth_type }}
+      """
+
+      def __init__(self):
+          {% if auth_type in ['jwt', 'both'] %}
+          self.jwt_secret = os.environ.get("{{ secret_env_var }}")
+          if not self.jwt_secret:
+              raise ValueError("环境变量 {{ secret_env_var }} 未设置")
+          {% endif %}
+
+      {% if auth_type in ['jwt', 'both'] %}
+      def verify_jwt(self, token: str) -> dict:
+          """验证 JWT Token"""
+          try:
+              payload = jwt.decode(
+                  token,
+                  self.jwt_secret,
+                  algorithms=["HS256"]
+              )
+              return payload
+          except jwt.ExpiredSignatureError:
+              raise AuthError("Token 已过期")
+          except jwt.InvalidTokenError:
+              raise AuthError("无效的 Token")
+
+      def create_jwt(self, user_id: str, expires_hours: int = 24) -> str:
+          """创建 JWT Token"""
+          payload = {
+              "user_id": user_id,
+              "exp": datetime.utcnow() + timedelta(hours=expires_hours),
+              "iat": datetime.utcnow()
+          }
+          return jwt.encode(payload, self.jwt_secret, algorithm="HS256")
+      {% endif %}
+
+      {% if auth_type in ['api_key', 'both'] %}
+      def verify_api_key(self, api_key: str) -> Optional[dict]:
+          """验证 API Key"""
+          # TODO: 实现 API Key 验证逻辑
+          # 示例: 从数据库或缓存中验证
+          valid_keys = {
+              # "key": {"user_id": "xxx", "permissions": [...]}
+          }
+          return valid_keys.get(api_key)
+      {% endif %}
+
+      def __call__(self, request_headers: dict) -> dict:
+          """
+          执行认证
+
+          Returns:
+              用户信息字典
+
+          Raises:
+              AuthError: 认证失败
+          """
+          {% if auth_type == 'jwt' %}
+          token = request_headers.get("{{ token_header }}", "").replace("Bearer ", "")
+          if not token:
+              raise AuthError("缺少认证 Token")
+          return self.verify_jwt(token)
+
+          {% elif auth_type == 'api_key' %}
+          api_key = request_headers.get("{{ api_key_header }}")
+          if not api_key:
+              raise AuthError("缺少 API Key")
+          user_info = self.verify_api_key(api_key)
+          if not user_info:
+              raise AuthError("无效的 API Key")
+          return user_info
+
+          {% elif auth_type == 'both' %}
+          # 优先尝试 JWT
+          token = request_headers.get("{{ token_header }}", "").replace("Bearer ", "")
+          if token:
+              return self.verify_jwt(token)
+
+          # 回退到 API Key
+          api_key = request_headers.get("{{ api_key_header }}")
+          if api_key:
+              user_info = self.verify_api_key(api_key)
+              if not user_info:
+                  raise AuthError("无效的 API Key")
+              return user_info
+
+          raise AuthError("缺少认证凭据")
+          {% endif %}
+
+
+  def require_auth(middleware: {{ middleware_name | pascal_case }}):
+      """认证装饰器"""
+      def decorator(func: Callable):
+          @functools.wraps(func)
+          def wrapper(*args, request_headers: dict = None, **kwargs):
+              if request_headers is None:
+                  raise AuthError("缺少请求头")
+
+              user_info = middleware(request_headers)
+              return func(*args, user=user_info, **kwargs)
+
+          return wrapper
+      return decorator

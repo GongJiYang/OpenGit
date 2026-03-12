@@ -1,0 +1,13 @@
+# 用户模板库配置
+library_name: user-templates
+description: 用户自定义模板库
+version: "1.0.0"
+
+# 模板库优先级（数字越大优先级越高，可以覆盖平台模板）
+priority: 10
+
+# 是否允许继承平台模板
+extend_builtin: true
+
+# 同名模板冲突策略: override(覆盖) | warn(警告) | error(报错)
+conflict_strategy: override

@@ -1,0 +1,39 @@
+# 模板库全局配置
+# 位置: OpenGit/template_config.yaml
+
+# 模式: merge(合并) | override(用户覆盖全部)
+mode: merge
+
+# 冲突解决策略: priority(高优先级胜出) | error(报错) | warn(警告)
+conflict_strategy: priority
+
+# 是否允许用户扩展平台模板
+extend_builtin: true
+
+# 是否启用热重载
+hot_reload: true
+
+# 是否启用缓存
+cache_enabled: true
+
+# 模板库列表
+libraries:
+  # 平台内置库（只读，最高优先级最低）
+  - name: builtin
+    source: builtin
+    priority: 1
+    enabled: true
+
+  # 用户本地模板库（可读写，最高优先级）
+  - name: user
+    source: ./user_templates
+    priority: 10
+    enabled: true
+
+  # 示例：远程 Git 模板库
+  # - name: company-templates
+  #   source: https://github.com/your-org/code-templates.git
+  #   priority: 5
+  #   enabled: false
+  #   auth:
+  #     type: ssh_key

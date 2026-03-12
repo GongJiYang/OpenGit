@@ -18,6 +18,12 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from skills.registry import SkillRegistry
 from skills.library.file_ops import ReadFileSkill, WriteFileSkill
+from skills.library.solution_ops import SearchSolutionSkill, StoreSolutionSkill
+from skills.library.template_ops import (
+    ListTemplatesSkill, GetTemplateSkill, RenderTemplateSkill,
+    ReplaceBlockSkill, InsertBlockSkill, WrapBlockSkill,
+    RegisterTemplateSkill, SearchTemplatesSkill
+)
 
 class BaseAgent:
     def __init__(self, agent_id: str, role: str):
@@ -35,6 +41,18 @@ class BaseAgent:
     def load_default_skills(self):
         self.skills.register(ReadFileSkill(root_dir=WORKSPACE_DIR))
         self.skills.register(WriteFileSkill(root_dir=WORKSPACE_DIR))
+        # 解决方案知识库技能
+        self.skills.register(SearchSolutionSkill())
+        self.skills.register(StoreSolutionSkill())
+        # 结构化变更模板技能
+        self.skills.register(ListTemplatesSkill())
+        self.skills.register(GetTemplateSkill())
+        self.skills.register(RenderTemplateSkill())
+        self.skills.register(ReplaceBlockSkill())
+        self.skills.register(InsertBlockSkill())
+        self.skills.register(WrapBlockSkill())
+        self.skills.register(RegisterTemplateSkill())
+        self.skills.register(SearchTemplatesSkill())
 
     def use_skill(self, skill_name: str, **kwargs):
         skill = self.skills.get(skill_name)
@@ -150,4 +168,144 @@ class BaseAgent:
                 "model_name": self.model_name
             },
             "timestamp": datetime.datetime.utcnow().isoformat()
+        }
+
+    # --- 解决方案知识库复用 (Skill Memoization) ---
+
+    def resolve_error(self, error_type: str, error_message: str, stack_trace: str = "") -> Dict:
+        """
+        智能错误解决 - 技能池复用核心
+
+        使用策略:
+            1. 新异常 → 先在 KB 检索
+            2. 如果命中相似度高 → 直接返回方案，LLM 只需确认+执行
+            3. 如果无命中 → LLM 正常推理 → 推理成功后写回 KB
+
+        Args:
+            error_type: 错误类型 (TypeError, ImportError, etc.)
+            error_message: 完整错误消息
+            stack_trace: 栈追踪信息
+
+        Returns:
+            {
+                "source": "kb_memoization" | "llm_inference",
+                "solution": {...} | None,  # KB 命中时的方案
+                "action": "confirm_and_execute" | "reason_and_solve",
+                "similarity": float  # 相似度分数（仅 KB 命中时）
+            }
+        """
+        # 1. 先检索 KB
+        kb_result = self.use_skill("search_solution",
+            error_type=error_type,
+            error_message=error_message,
+            stack_trace=stack_trace
+        )
+
+        if kb_result.get("found"):
+            similarity = kb_result.get("similarity", 0)
+            if similarity >= 0.85:  # 相似度阈值
+                # 2a. 命中 → 直接返回方案，LLM 只确认
+                self.log(f"KB 命中! 相似度 {similarity:.2%}", "🎯")
+                return {
+                    "source": "kb_memoization",
+                    "action": "confirm_and_execute",
+                    "similarity": similarity,
+                    "solution": kb_result["solution"]
+                }
+
+        # 2b. 未命中 → LLM 正常推理
+        self.log("KB 未命中，启动 LLM 推理...", "🧠")
+        return {
+            "source": "llm_inference",
+            "action": "reason_and_solve",
+            "similarity": 0,
+            "solution": None
+        }
+
+    def store_solution(
+        self,
+        error_type: str,
+        error_message: str,
+        stack_trace: str,
+        solution_steps: List[str],
+        solution_code: str = "",
+        environment: str = "",
+        result: str = "passed",
+        confidence: float = 1.0
+    ) -> bool:
+        """
+        将解决方案写入知识库
+
+        应在 LLM 推理成功后调用此方法
+
+        Args:
+            error_type: 错误类型
+            error_message: 完整错误消息
+            stack_trace: 栈追踪
+            solution_steps: 修复步骤列表
+            solution_code: 修复代码片段
+            environment: 运行环境信息
+            result: 结果状态 "passed" / "failed"
+            confidence: 方案置信度
+
+        Returns:
+            存储是否成功
+        """
+        result = self.use_skill("store_solution",
+            error_type=error_type,
+            error_message=error_message,
+            stack_trace=stack_trace,
+            solution_steps=solution_steps,
+            solution_code=solution_code,
+            environment=environment,
+            result=result,
+            confidence=confidence,
+            agent_id=self.agent_id
+        )
+
+        if result.get("stored"):
+            self.log(f"解决方案已写入 KB (sig: {result.get('signature')})", "💾")
+            return True
+        else:
+            self.log("解决方案写入失败", "⚠️")
+            return False
+
+    def parse_error_output(self, error_output: str) -> Dict:
+        """
+        解析错误输出，提取错误类型、消息和栈追踪
+
+        Args:
+            error_output: 完整的错误输出文本
+
+        Returns:
+            {
+                "error_type": str,
+                "error_message": str,
+                "stack_trace": str
+            }
+        """
+        import re
+
+        lines = error_output.strip().split('\n')
+
+        # 常见 Python 错误模式
+        error_pattern = r'^(\w+Error|\w+Exception|AssertionError|SyntaxError|IndentationError|KeyError|ValueError|TypeError|AttributeError|ImportError|ModuleNotFoundError|FileNotFoundError|PermissionError|RuntimeError|StopIteration|ZeroDivisionError|IndexError): (.*)'
+
+        error_type = "UnknownError"
+        error_message = error_output[:200]
+        stack_trace = ""
+
+        for i, line in enumerate(lines):
+            match = re.match(error_pattern, line)
+            if match:
+                error_type = match.group(1)
+                error_message = match.group(2)
+                # 剩余部分作为栈追踪
+                stack_trace = '\n'.join(lines[i+1:i+10])  # 取后续最多10行
+                break
+
+        return {
+            "error_type": error_type,
+            "error_message": error_message,
+            "stack_trace": stack_trace
         }

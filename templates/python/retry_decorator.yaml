@@ -1,0 +1,94 @@
+# 重试装饰器模板
+id: retry-decorator-v1
+name: Retry Decorator
+description: 函数重试装饰器，支持指数退避和自定义异常过滤
+language: python
+tags:
+  - decorator
+  - retry
+  - resilience
+
+parameters:
+  - name: max_retries
+    type: int
+    default: 3
+    description: 最大重试次数
+  - name: base_delay
+    type: float
+    default: 1.0
+    description: 基础延迟秒数
+  - name: max_delay
+    type: float
+    default: 60.0
+    description: 最大延迟秒数
+  - name: exponential_base
+    type: float
+    default: 2.0
+    description: 指数退避基数
+  - name: exceptions
+    type: string
+    default: "Exception"
+    description: 要捕获的异常类型（逗号分隔）
+
+metadata:
+  author: AgentHub
+  version: "1.0.0"
+
+template: |
+  import functools
+  import time
+  import random
+  from typing import Callable, TypeVar, Any
+
+  T = TypeVar('T')
+
+  def retry_with_backoff(
+      max_retries: int = {{ max_retries }},
+      base_delay: float = {{ base_delay }},
+      max_delay: float = {{ max_delay }},
+      exponential_base: float = {{ exponential_base }},
+      exceptions: tuple = ({{ exceptions }},)
+  ) -> Callable[[Callable[..., T]], Callable[..., T]]:
+      """
+      重试装饰器 - 指数退避策略
+
+      Args:
+          max_retries: 最大重试次数
+          base_delay: 基础延迟（秒）
+          max_delay: 最大延迟（秒）
+          exponential_base: 指数基数
+          exceptions: 要捕获的异常类型元组
+      """
+      def decorator(func: Callable[..., T]) -> Callable[..., T]:
+          @functools.wraps(func)
+          def wrapper(*args, **kwargs) -> T:
+              last_exception = None
+
+              for attempt in range(max_retries + 1):
+                  try:
+                      return func(*args, **kwargs)
+                  except exceptions as e:
+                      last_exception = e
+                      if attempt == max_retries:
+                          raise
+
+                      # 计算退避时间
+                      delay = min(
+                          base_delay * (exponential_base ** attempt),
+                          max_delay
+                      )
+                      # 添加随机抖动
+                      delay = delay * (0.5 + random.random())
+
+                      time.sleep(delay)
+
+              raise last_exception
+
+          return wrapper
+      return decorator
+
+
+  # 使用示例:
+  # @retry_with_backoff(max_retries=3, exceptions=(ConnectionError, TimeoutError))
+  # def fetch_data():
+  #     ...

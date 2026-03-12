@@ -1,0 +1,16 @@
+{
+  "version": "1.0",
+  "library_name": "user-templates",
+  "library_type": "user",
+  "templates": {
+    "custom-async-handler": {
+      "name": "Custom Async Handler",
+      "description": "用户自定义的异步处理器模板",
+      "language": "python",
+      "tags": ["async", "handler", "custom", "user-template"],
+      "file": "python/custom_handler.yaml",
+      "version": "1.0.0"
+    }
+  },
+  "updated_at": 1700000000
+}

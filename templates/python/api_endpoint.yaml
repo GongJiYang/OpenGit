@@ -1,0 +1,185 @@
+# FastAPI Endpoint 模板
+id: fastapi-endpoint-v1
+name: FastAPI Endpoint
+description: FastAPI 路由端点模板，包含请求验证、响应模型和文档
+language: python
+tags:
+  - fastapi
+  - api
+  - endpoint
+  - rest
+
+parameters:
+  - name: endpoint_name
+    type: string
+    required: true
+    description: 端点名称（用于路由前缀）
+  - name: resource_name
+    type: string
+    required: true
+    description: 资源名称
+  - name: operations
+    type: list
+    default: ["list", "get", "create", "update", "delete"]
+    description: 支持的操作列表
+  - name: auth_required
+    type: bool
+    default: true
+    description: 是否需要认证
+
+metadata:
+  author: AgentHub
+  version: "1.0.0"
+
+template: |
+  from fastapi import APIRouter, Depends, HTTPException, Query, Path
+  from typing import List, Optional
+  from pydantic import BaseModel, Field
+  from datetime import datetime
+
+  router = APIRouter(prefix="/{{ endpoint_name }}", tags=["{{ resource_name }}"])
+
+
+  # ============== 请求/响应模型 ==============
+
+  class {{ resource_name }}Base(BaseModel):
+      """{{ resource_name }} 基础模型"""
+      pass  # TODO: 定义字段
+
+
+  class {{ resource_name }}Create({{ resource_name }}Base):
+      """创建请求"""
+      pass
+
+
+  class {{ resource_name }}Update(BaseModel):
+      """更新请求"""
+      pass  # TODO: 定义可更新字段
+
+
+  class {{ resource_name }}Response({{ resource_name }}Base):
+      """响应模型"""
+      id: int
+      created_at: datetime
+      updated_at: datetime
+
+      class Config:
+          from_attributes = True
+
+
+  class {{ resource_name }}ListResponse(BaseModel):
+      """列表响应"""
+      items: List[{{ resource_name }}Response]
+      total: int
+      page: int
+      page_size: int
+
+
+  # ============== 依赖注入 ==============
+
+  {% if auth_required %}
+  async def get_current_user():
+      """获取当前用户（认证依赖）"""
+      # TODO: 实现认证逻辑
+      return {"user_id": 1}
+  {% endif %}
+
+
+  # ============== 端点定义 ==============
+
+  {% if "list" in operations %}
+  @router.get("/", response_model={{ resource_name }}ListResponse)
+  async def list_{{ endpoint_name }}(
+      page: int = Query(1, ge=1, description="页码"),
+      page_size: int = Query(20, ge=1, le=100, description="每页数量"),
+      {% if auth_required %}
+      user: dict = Depends(get_current_user),
+      {% endif %}
+  ):
+      """
+      获取 {{ resource_name }} 列表
+
+      - **page**: 页码，从1开始
+      - **page_size**: 每页数量，1-100
+      """
+      # TODO: 实现查询逻辑
+      return {{ resource_name }}ListResponse(
+          items=[],
+          total=0,
+          page=page,
+          page_size=page_size
+      )
+  {% endif %}
+
+
+  {% if "get" in operations %}
+  @router.get("/{id}", response_model={{ resource_name }}Response)
+  async def get_{{ endpoint_name }}(
+      id: int = Path(..., description="{{ resource_name }} ID"),
+      {% if auth_required %}
+      user: dict = Depends(get_current_user),
+      {% endif %}
+  ):
+      """
+      根据 ID 获取 {{ resource_name }}
+      """
+      # TODO: 实现查询逻辑
+      raise HTTPException(status_code=404, detail="{{ resource_name }} not found")
+  {% endif %}
+
+
+  {% if "create" in operations %}
+  @router.post("/", response_model={{ resource_name }}Response, status_code=201)
+  async def create_{{ endpoint_name }}(
+      data: {{ resource_name }}Create,
+      {% if auth_required %}
+      user: dict = Depends(get_current_user),
+      {% endif %}
+  ):
+      """
+      创建 {{ resource_name }}
+      """
+      # TODO: 实现创建逻辑
+      return {{ resource_name }}Response(
+          id=1,
+          created_at=datetime.utcnow(),
+          updated_at=datetime.utcnow()
+      )
+  {% endif %}
+
+
+  {% if "update" in operations %}
+  @router.put("/{id}", response_model={{ resource_name }}Response)
+  async def update_{{ endpoint_name }}(
+      id: int = Path(..., description="{{ resource_name }} ID"),
+      data: {{ resource_name }}Update = ...,
+      {% if auth_required %}
+      user: dict = Depends(get_current_user),
+      {% endif %}
+  ):
+      """
+      更新 {{ resource_name }}
+      """
+      # TODO: 实现更新逻辑
+      raise HTTPException(status_code=404, detail="{{ resource_name }} not found")
+  {% endif %}
+
+
+  {% if "delete" in operations %}
+  @router.delete("/{id}", status_code=204)
+  async def delete_{{ endpoint_name }}(
+      id: int = Path(..., description="{{ resource_name }} ID"),
+      {% if auth_required %}
+      user: dict = Depends(get_current_user),
+      {% endif %}
+  ):
+      """
+      删除 {{ resource_name }}
+      """
+      # TODO: 实现删除逻辑
+      return None
+  {% endif %}
+
+
+  # 注册路由:
+  # app.include_router(router)

@@ -1,0 +1,249 @@
+# CRUD Repository 模板
+id: crud-repository-v1
+name: CRUD Repository
+description: 通用 CRUD 数据访问层，支持类型提示和异步操作
+language: python
+tags:
+  - crud
+  - repository
+  - database
+  - async
+
+parameters:
+  - name: repository_name
+    type: string
+    required: true
+    description: Repository 类名
+  - name: entity_name
+    type: string
+    required: true
+    description: 实体类名
+  - name: table_name
+    type: string
+    required: false
+    description: 数据库表名（默认为实体名小写）
+  - name: primary_key
+    type: string
+    default: "id"
+    description: 主键字段名
+  - name: async_mode
+    type: bool
+    default: true
+    description: 是否使用异步模式
+  - name: soft_delete
+    type: bool
+    default: true
+    description: 是否启用软删除
+
+metadata:
+  author: AgentHub
+  version: "1.0.0"
+
+template: |
+  from typing import List, Optional, Dict, Any, TypeVar, Generic
+  from datetime import datetime
+  {% if async_mode %}
+  from abc import ABC, abstractmethod
+  {% endif %}
+
+  T = TypeVar('T', bound='{{ entity_name }}')
+
+
+  class {{ entity_name }}:
+      """{{ entity_name }} 实体"""
+      {{ primary_key }}: int
+      created_at: datetime
+      updated_at: datetime
+      {% if soft_delete %}
+      deleted_at: Optional[datetime] = None
+      {% endif %}
+
+      class Config:
+          from_attributes = True
+
+
+  class {{ repository_name }}(Generic[T]):
+      """
+      {{ repository_name }} - {{ entity_name }} 数据访问层
+
+      Features:
+      - 类型安全的 CRUD 操作
+      {% if async_mode %}
+      - 异步 I/O 支持
+      {% endif %}
+      {% if soft_delete %}
+      - 软删除支持
+      {% endif %}
+      """
+
+      def __init__(self, db_session{% if async_mode %}: "AsyncSession"{% else %}: "Session"{% endif %}):
+          self._db = db_session
+          self._table = "{{ table_name | default(entity_name | lower) }}"
+
+      {% if async_mode %}
+      async def create(self, entity: {{ entity_name }}) -> {{ entity_name }}:
+          """创建实体"""
+          entity.created_at = datetime.utcnow()
+          entity.updated_at = datetime.utcnow()
+          self._db.add(entity)
+          await self._db.commit()
+          await self._db.refresh(entity)
+          return entity
+
+      async def find_by_id(self, {{ primary_key }}: int) -> Optional[{{ entity_name }}]:
+          """根据ID查询"""
+          query = f"SELECT * FROM {self._table} WHERE {{ primary_key }} = :id"
+          {% if soft_delete %}
+          query += " AND deleted_at IS NULL"
+          {% endif %}
+          result = await self._db.execute(query, {"id": {{ primary_key }}})
+          return result.scalar_one_or_none()
+
+      async def find_all(
+          self,
+          skip: int = 0,
+          limit: int = 100,
+          filters: Dict[str, Any] = None
+      ) -> List[{{ entity_name }}]:
+          """分页查询"""
+          query = f"SELECT * FROM {self._table} WHERE 1=1"
+          params = {}
+
+          {% if soft_delete %}
+          query += " AND deleted_at IS NULL"
+          {% endif %}
+
+          if filters:
+              for key, value in filters.items():
+                  query += f" AND {key} = :{key}"
+                  params[key] = value
+
+          query += f" LIMIT :limit OFFSET :skip"
+          params["limit"] = limit
+          params["skip"] = skip
+
+          result = await self._db.execute(query, params)
+          return result.scalars().all()
+
+      async def update(self, {{ primary_key }}: int, data: Dict[str, Any]) -> Optional[{{ entity_name }}]:
+          """更新实体"""
+          entity = await self.find_by_id({{ primary_key }})
+          if not entity:
+              return None
+
+          data["updated_at"] = datetime.utcnow()
+          for key, value in data.items():
+              setattr(entity, key, value)
+
+          await self._db.commit()
+          await self._db.refresh(entity)
+          return entity
+
+      {% if soft_delete %}
+      async def soft_delete(self, {{ primary_key }}: int) -> bool:
+          """软删除"""
+          entity = await self.find_by_id({{ primary_key }})
+          if not entity:
+              return False
+          entity.deleted_at = datetime.utcnow()
+          await self._db.commit()
+          return True
+      {% endif %}
+
+      async def delete(self, {{ primary_key }}: int) -> bool:
+          """物理删除"""
+          entity = await self.find_by_id({{ primary_key }})
+          if not entity:
+              return False
+          await self._db.delete(entity)
+          await self._db.commit()
+          return True
+
+      {% else %}
+      # 同步版本
+      def create(self, entity: {{ entity_name }}) -> {{ entity_name }}:
+          """创建实体"""
+          entity.created_at = datetime.utcnow()
+          entity.updated_at = datetime.utcnow()
+          self._db.add(entity)
+          self._db.commit()
+          self._db.refresh(entity)
+          return entity
+
+      def find_by_id(self, {{ primary_key }}: int) -> Optional[{{ entity_name }}]:
+          """根据ID查询"""
+          return self._db.query({{ entity_name }}).filter(
+              {{ entity_name }}.{{ primary_key }} == {{ primary_key }}
+              {% if soft_delete %}
+              , {{ entity_name }}.deleted_at.is_(None)
+              {% endif %}
+          ).first()
+
+      def find_all(
+          self,
+          skip: int = 0,
+          limit: int = 100,
+          filters: Dict[str, Any] = None
+      ) -> List[{{ entity_name }}]:
+          """分页查询"""
+          query = self._db.query({{ entity_name }})
+          {% if soft_delete %}
+          query = query.filter({{ entity_name }}.deleted_at.is_(None))
+          {% endif %}
+
+          if filters:
+              for key, value in filters.items():
+                  query = query.filter(getattr({{ entity_name }}, key) == value)
+
+          return query.offset(skip).limit(limit).all()
+
+      def update(self, {{ primary_key }}: int, data: Dict[str, Any]) -> Optional[{{ entity_name }}]:
+          """更新实体"""
+          entity = self.find_by_id({{ primary_key }})
+          if not entity:
+              return None
+
+          data["updated_at"] = datetime.utcnow()
+          for key, value in data.items():
+              setattr(entity, key, value)
+
+          self._db.commit()
+          self._db.refresh(entity)
+          return entity
+
+      {% if soft_delete %}
+      def soft_delete(self, {{ primary_key }}: int) -> bool:
+          """软删除"""
+          entity = self.find_by_id({{ primary_key }})
+          if not entity:
+              return False
+          entity.deleted_at = datetime.utcnow()
+          self._db.commit()
+          return True
+      {% endif %}
+
+      def delete(self, {{ primary_key }}: int) -> bool:
+          """物理删除"""
+          entity = self.find_by_id({{ primary_key }})
+          if not entity:
+              return False
+          self._db.delete(entity)
+          self._db.commit()
+          return True
+      {% endif %}
+
+      async def count(self, filters: Dict[str, Any] = None) -> int:
+          """统计数量"""
+          query = f"SELECT COUNT(*) FROM {self._table} WHERE 1=1"
+          {% if soft_delete %}
+          query += " AND deleted_at IS NULL"
+          {% endif %}
+
+          params = {}
+          if filters:
+              for key, value in filters.items():
+                  query += f" AND {key} = :{key}"
+                  params[key] = value
+
+          result{% if async_mode %} = await{% endif %} self._db.execute(query, params)
+          return result.scalar()
