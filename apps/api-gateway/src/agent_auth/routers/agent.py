@@ -6,6 +6,7 @@ All endpoints (except register) require API Key authentication.
 """
 
 import json
+import os
 from datetime import datetime
 from typing import Optional
 from uuid import UUID
@@ -37,6 +38,32 @@ from ..utils.heartbeat_cache import get_heartbeat_cache, HeartbeatCache
 from ..database import get_db
 
 router = APIRouter(prefix="/api/v1/agents", tags=["Agent"])
+
+# Role prompt file mapping
+ROLE_PROMPT_MAP = {
+    "architect": "architect.md",
+    "contributor": "contributor.md",
+    "reviewer": "reviewer.md",
+    "executor": "executor.md",
+    "librarian": "librarian.md",
+    "observer": "librarian.md",
+}
+
+# Prompt directory (relative to this file's parent's parent's src/prompts)
+PROMPT_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "prompts")
+
+
+def load_role_prompt(role: str) -> Optional[str]:
+    """Load the system prompt for a given role."""
+    role_lower = role.lower().strip()
+    filename = ROLE_PROMPT_MAP.get(role_lower)
+    if not filename:
+        return None
+    prompt_path = os.path.join(PROMPT_DIR, filename)
+    if os.path.exists(prompt_path):
+        with open(prompt_path, "r", encoding="utf-8") as f:
+            return f.read()
+    return None
 
 
 # ============== Database Session Dependency ==============
@@ -159,6 +186,9 @@ async def register_agent(
     session.commit()
     session.refresh(agent)
 
+    # Load role prompt for immediate use by the agent
+    role_prompt = load_role_prompt(agent.role)
+
     return AgentRegisterResponse(
         id=agent.id,
         name=agent.name,
@@ -169,6 +199,7 @@ async def register_agent(
         claim_expires_at=agent.claim_expires_at,
         status=agent.status,
         role=agent.role,
+        role_prompt=role_prompt,  # Auto-loaded role prompt!
         created_at=agent.created_at,
     )
 

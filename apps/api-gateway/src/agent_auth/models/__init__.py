@@ -163,6 +163,8 @@ class AgentRegisterResponse(SQLModel):
     claim_url: str
     claim_expires_at: datetime
     status: AgentStatus
+    role: str = Field(description="Agent role (e.g., contributor, architect)")
+    role_prompt: Optional[str] = Field(default=None, description="System prompt for the agent's role - LOAD THIS as your system instructions!")
     created_at: datetime
 
 
