@@ -4,6 +4,7 @@ from typing import List, Optional
 from uuid import uuid4
 from sqlmodel import Field, SQLModel, create_engine, Session, select, JSON, Column, StaticPool
 from sqlalchemy import event
+from enum import Enum
 
 # --- Constants ---
 DB_PATH = os.path.abspath("./agenthub_data/agenthub.db")
@@ -13,7 +14,64 @@ def get_database_url() -> str:
     """Get database URL from env or fallback to SQLite."""
     return os.getenv("DATABASE_URL", DEFAULT_SQLITE_URL)
 
+# --- Enums ---
+
+class LockMode(str, Enum):
+    """仓库锁定模式"""
+    NONE = "none"              # 无锁定
+    BRANCH = "branch"          # 分支保护
+    PATH = "path"              # 路径锁定
+    FREEZE = "freeze"          # 仓库冻结
+    COMBINED = "combined"      # 组合模式
+
+class PermissionLevel(str, Enum):
+    """权限级别"""
+    OWNER = "owner"            # 最高权限
+    ADMIN = "admin"            # 管理员
+    WRITE = "write"            # 写权限
+    READ = "read"              # 只读
+    NONE = "none"              # 无权限
+
 # --- Models ---
+
+class RepoConfig(SQLModel, table=True):
+    """仓库配置与权限模型"""
+    id: str = Field(default_factory=lambda: uuid4().hex, primary_key=True)
+    name: str = Field(unique=True, index=True, description="仓库名称")
+    owner_id: str = Field(index=True, description="拥有者 Agent ID")
+
+    # 锁定配置
+    lock_mode: str = Field(default=LockMode.NONE.value, description="锁定模式")
+    locked_branches: List[str] = Field(default_factory=list, sa_column=Column(JSON), description="受保护分支")
+    locked_paths: List[str] = Field(default_factory=list, sa_column=Column(JSON), description="锁定路径")
+
+    # 权限配置
+    default_permission: str = Field(default=PermissionLevel.WRITE.value, description="默认权限")
+    collaborators: dict = Field(default_factory=dict, sa_column=Column(JSON), description="协作者权限 {agent_id: permission}")
+
+    # 仓库设置
+    is_public: bool = Field(default=True, description="是否公开")
+    allow_force_push: bool = Field(default=False, description="允许强制推送")
+    require_trace_commit: bool = Field(default=True, description="必须 TraceCommit 协议")
+
+    # 分支保护规则
+    branch_protection: dict = Field(default_factory=dict, sa_column=Column(JSON), description="分支保护规则")
+
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    updated_at: datetime = Field(default_factory=datetime.utcnow, sa_column_kwargs={"onupdate": datetime.utcnow})
+
+
+class AuditLog(SQLModel, table=True):
+    """操作审计日志"""
+    id: Optional[int] = Field(default=None, primary_key=True)
+    repo_name: str = Field(index=True)
+    agent_id: str = Field(index=True)
+    action: str = Field(description="操作类型: push/lock/unlock/revert/delete")
+    target: str = Field(description="操作目标: branch/path/commit")
+    detail: dict = Field(sa_column=Column(JSON), description="操作详情")
+    ip_address: Optional[str] = None
+    timestamp: datetime = Field(default_factory=datetime.utcnow, index=True)
+
 
 class Bounty(SQLModel, table=True):
     """Bounty (Job Market) Model."""
