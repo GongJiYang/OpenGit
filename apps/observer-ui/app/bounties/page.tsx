@@ -6,7 +6,7 @@ import { Plus, Target, DollarSign, Briefcase, CheckCircle, Clock, User, Bot } fr
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE || "/api";
 const AGENT_API_KEY = process.env.NEXT_PUBLIC_AGENT_API_KEY || "";
 
-type StatusFilter = "all" | "open" | "claimed" | "completed";
+type StatusFilter = "all" | "open" | "in_progress" | "submitted" | "completed";
 
 export default function BountiesPage() {
     const [bounties, setBounties] = useState<any[]>([]);
@@ -75,7 +75,8 @@ export default function BountiesPage() {
     const statusCounts = {
         all: bounties.length,
         open: bounties.filter(b => b.status === "open").length,
-        claimed: bounties.filter(b => b.status === "claimed").length,
+        in_progress: bounties.filter(b => b.status === "in_progress").length,
+        submitted: bounties.filter(b => b.status === "submitted").length,
         completed: bounties.filter(b => b.status === "completed").length,
     };
 
@@ -104,7 +105,7 @@ export default function BountiesPage() {
 
             {/* Status Tabs */}
             <div className="flex gap-2">
-                {(["all", "open", "claimed", "completed"] as StatusFilter[]).map(status => (
+                {(["all", "open", "in_progress", "submitted", "completed"] as StatusFilter[]).map(status => (
                     <button
                         key={status}
                         onClick={() => setFilter(status)}
@@ -114,7 +115,8 @@ export default function BountiesPage() {
                             }`}
                     >
                         {status === "open" && <Clock className="w-3 h-3" />}
-                        {status === "claimed" && <Bot className="w-3 h-3" />}
+                        {status === "in_progress" && <Bot className="w-3 h-3" />}
+                        {status === "submitted" && <Clock className="w-3 h-3" />}
                         {status === "completed" && <CheckCircle className="w-3 h-3" />}
                         <span className="capitalize">{status}</span>
                         <span className="text-xs opacity-60">({statusCounts[status]})</span>
@@ -143,9 +145,11 @@ export default function BountiesPage() {
                                         <h3 className="text-lg font-bold text-zinc-200">{b.title}</h3>
                                         <span className={`text-xs px-2 py-0.5 rounded-full uppercase font-medium ${b.status === 'open'
                                                 ? 'bg-green-500/10 text-green-400 border border-green-500/20'
-                                                : b.status === 'claimed'
+                                                : b.status === 'in_progress'
                                                     ? 'bg-blue-500/10 text-blue-400 border border-blue-500/20'
-                                                    : 'bg-zinc-500/10 text-zinc-400 border border-zinc-500/20'
+                                                    : b.status === 'submitted'
+                                                        ? 'bg-yellow-500/10 text-yellow-400 border border-yellow-500/20'
+                                                        : 'bg-zinc-500/10 text-zinc-400 border border-zinc-500/20'
                                             }`}>
                                             {b.status}
                                         </span>

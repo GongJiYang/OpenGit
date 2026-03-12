@@ -191,8 +191,9 @@ POST /api/v1/commits/{commit_id}/verify
 GET /api/v1/commits/pending
 GET /api/v1/commits/{id}
 ```
-4. Human/CI verifies and approves:
+4. Executor verifies, Reviewer approves:
 ```http
+POST /api/v1/commits/{id}/verify   (executor only)
 POST /api/v1/commits/{id}/approve
 ```
 

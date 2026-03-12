@@ -334,6 +334,10 @@ async def get_role_prompt(role_name: str, raw: bool = False):
     prompt_map = {
         "architect": "architect.md",
         "contributor": "contributor.md",
+        "reviewer": "reviewer.md",
+        "executor": "executor.md",
+        "librarian": "librarian.md",
+        "observer": "librarian.md",
     }
     filename = prompt_map.get(role)
     if not filename:
@@ -550,7 +554,7 @@ def claim_bounty(bounty_id: str, agent_id: str, session: Session = Depends(get_s
         
     # [Task Board] Pessimistic Locking
     if bounty.status != "open":
-        raise HTTPException(status_code=409, detail=f"Conflict: Task already claimed by Agent {bounty.assignee}")
+        raise HTTPException(status_code=409, detail=f"Conflict: Task already in progress by Agent {bounty.assignee}")
         
     # Verify Agent exists and Check Role Separation
     agent = auth_session.exec(select(Agent).where(Agent.id == agent_id)).first()
@@ -566,9 +570,9 @@ def claim_bounty(bounty_id: str, agent_id: str, session: Session = Depends(get_s
         raise HTTPException(status_code=404, detail="Agent identity not found")
 
     if agent.role.lower() != bounty.required_role.lower():
-        raise HTTPException(status_code=403, detail=f"Role Mismatch: This task requires Architect/Contributor/Reviewer: {bounty.required_role}")
+        raise HTTPException(status_code=403, detail=f"Role Mismatch: This task requires {bounty.required_role}")
 
-    bounty.status = "claimed"
+    bounty.status = "in_progress"
     bounty.assignee = agent_id
     session.add(bounty)
     session.commit()
@@ -675,8 +679,10 @@ async def api_commit(request: Request, repo_name: str, req: CommitRequest, sessi
             bounty = session.get(Bounty, req.bounty_id)
             if bounty:
                 # [Task Board] Ownership Verification
-                if bounty.assignee and bounty.assignee != trusted_agent_id:
+                if not bounty.assignee or bounty.assignee != trusted_agent_id:
                     raise HTTPException(status_code=403, detail=f"Forbidden: Task {req.bounty_id} is locked by Agent {bounty.assignee}")
+                if bounty.status not in {"in_progress", "submitted", "claimed"}:
+                    raise HTTPException(status_code=409, detail=f"Bounty {req.bounty_id} is not in progress (status={bounty.status}).")
 
                 # [Blind-Spot 2] Cost Control: Max Steps
                 if bounty.current_steps >= bounty.max_steps:
@@ -688,6 +694,7 @@ async def api_commit(request: Request, repo_name: str, req: CommitRequest, sessi
                     raise HTTPException(status_code=402, detail="Daily platform budget exceeded. Try again tomorrow.")
 
                 bounty.current_steps += 1
+                bounty.status = "submitted"
                 session.add(bounty)
 
                 verification_mode = (bounty.verification_mode or "auto").lower()
@@ -820,8 +827,8 @@ def approve_commit(commit_id: int, session: Session = Depends(get_session), agen
     record = session.get(CommitRecord, commit_id)
     if not record:
         raise HTTPException(status_code=404, detail="Commit record not found")
-    if agent.role.lower() not in {"architect", "reviewer", "executor"}:
-        raise HTTPException(status_code=403, detail="Forbidden: insufficient role to approve commits")
+    if agent.role.lower() != "reviewer":
+        raise HTTPException(status_code=403, detail="Forbidden: only reviewer can approve commits")
     if str(agent.id) == str(record.agent_id):
         raise HTTPException(status_code=403, detail="Forbidden: cannot approve own commit")
     
@@ -867,21 +874,26 @@ def reject_commit(commit_id: int, session: Session = Depends(get_session), agent
     record = session.get(CommitRecord, commit_id)
     if not record:
         raise HTTPException(status_code=404, detail="Commit record not found")
-    if agent.role.lower() not in {"architect", "reviewer", "executor"}:
-        raise HTTPException(status_code=403, detail="Forbidden: insufficient role to reject commits")
+    if agent.role.lower() != "reviewer":
+        raise HTTPException(status_code=403, detail="Forbidden: only reviewer can reject commits")
     if str(agent.id) == str(record.agent_id):
         raise HTTPException(status_code=403, detail="Forbidden: cannot reject own commit")
     
     record.status = "rejected"
     session.add(record)
+    if record.bounty_id:
+        bounty = session.get(Bounty, record.bounty_id)
+        if bounty and bounty.assignee == record.agent_id:
+            bounty.status = "in_progress"
+            session.add(bounty)
     session.commit()
     return {"message": f"Commit {commit_id} rejected.", "branch": record.branch_name}
 
 @app.post("/api/v1/commits/{commit_id}/verify")
 def verify_commit(commit_id: int, req: VerificationRequest, session: Session = Depends(get_session), agent: Agent = Depends(require_agent)):
     """Manual verification from executor/reviewer agents."""
-    if agent.role.lower() not in {"executor", "reviewer"}:
-        raise HTTPException(status_code=403, detail="Only executor/reviewer can verify")
+    if agent.role.lower() != "executor":
+        raise HTTPException(status_code=403, detail="Only executor can verify")
     record = session.get(CommitRecord, commit_id)
     if not record:
         raise HTTPException(status_code=404, detail="Commit record not found")

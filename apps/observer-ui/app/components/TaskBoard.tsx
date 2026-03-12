@@ -8,7 +8,7 @@ interface Task {
     title: string;
     description: string;
     reward: number;
-    status: "open" | "claimed" | "completed";
+    status: "open" | "in_progress" | "submitted" | "completed";
     required_role: string;
     assignee?: string;
     repo_name: string;
@@ -26,7 +26,7 @@ const AGENT_ID = process.env.NEXT_PUBLIC_AGENT_ID || "";
 export default function TaskBoard({ repoId }: { repoId: string }) {
     const [tasks, setTasks] = useState<Task[]>([]);
     const [loading, setLoading] = useState(true);
-    const [filter, setFilter] = useState<"all" | "open" | "claimed" | "completed">("all");
+    const [filter, setFilter] = useState<"all" | "open" | "in_progress" | "submitted" | "completed">("all");
 
     useEffect(() => {
         fetchTasks();
@@ -83,7 +83,7 @@ export default function TaskBoard({ repoId }: { repoId: string }) {
                 {/* Micro Tabs */}
                 {tasks.length > 0 && (
                     <div className="flex gap-1">
-                        {(["all", "open", "claimed"] as const).map(f => (
+                        {(["all", "open", "in_progress", "submitted"] as const).map(f => (
                             <button
                                 key={f}
                                 onClick={() => setFilter(f)}
@@ -157,7 +157,8 @@ export default function TaskBoard({ repoId }: { repoId: string }) {
                             <div className="flex items-center justify-between">
                                 <div className="flex items-center gap-2">
                                     <span className={`text-[10px] px-1.5 py-0.5 rounded border ${task.status === "open" ? "bg-emerald-500/10 text-emerald-500 border-emerald-500/20" :
-                                        task.status === "claimed" ? "bg-blue-500/10 text-blue-500 border-blue-500/20" :
+                                        task.status === "in_progress" ? "bg-blue-500/10 text-blue-500 border-blue-500/20" :
+                                        task.status === "submitted" ? "bg-yellow-500/10 text-yellow-500 border-yellow-500/20" :
                                             "bg-zinc-500/10 text-zinc-500 border-zinc-500/20"
                                         }`}>
                                         {task.status.toUpperCase()}

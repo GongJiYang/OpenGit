@@ -97,7 +97,7 @@ class Bounty(SQLModel, table=True):
     title: str = Field(index=True)
     description: str
     reward: int
-    status: str = Field(default="open", index=True) # open, claimed, completed
+    status: str = Field(default="open", index=True) # open, in_progress, submitted, completed
     repo_name: str = Field(index=True)
     required_role: str # architect, contributor, executor
     assignee: Optional[str] = Field(default=None, index=True)
