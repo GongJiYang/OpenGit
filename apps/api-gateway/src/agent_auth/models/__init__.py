@@ -11,7 +11,6 @@ from uuid import UUID, uuid4
 
 from sqlmodel import Field, SQLModel, Column, String, DateTime, Text, ForeignKey
 from sqlalchemy import Index
-from pydantic import ConfigDict
 
 
 class AgentStatus(str, Enum):
@@ -87,9 +86,8 @@ class Agent(SQLModel, table=True):
     metadata_json: Optional[str] = Field(default=None, sa_column=Column(Text),
                                           description="JSON-serialized agent metadata")
 
-    model_config = ConfigDict(arbitrary_types_allowed=True)
-
     class Config:
+        arbitrary_types_allowed = True
         # Index for efficient queries
         indexes = [
             Index("ix_agents_status", "status"),
@@ -133,9 +131,8 @@ class EmailVerification(SQLModel, table=True):
     created_at: datetime = Field(default_factory=datetime.utcnow)
     ip_address: Optional[str] = Field(default=None, max_length=45, description="Client IP address")
 
-    model_config = ConfigDict(arbitrary_types_allowed=True)
-
     class Config:
+        arbitrary_types_allowed = True
         indexes = [
             Index("ix_email_verifications_token", "token"),
             Index("ix_email_verifications_email", "email"),
