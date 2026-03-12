@@ -10,7 +10,7 @@ from typing import Optional
 from uuid import UUID, uuid4
 
 from sqlmodel import Field, SQLModel, Column, String, DateTime, Text, ForeignKey
-from sqlalchemy import Index
+from sqlalchemy import Index, UUID
 
 
 class AgentStatus(str, Enum):
@@ -110,7 +110,7 @@ class EmailVerification(SQLModel, table=True):
 
     # Foreign key to Agent
     agent_id: UUID = Field(
-        sa_column=Column(String(36), ForeignKey("agents.id", ondelete="CASCADE"), nullable=False),
+        sa_column=Column(UUID, ForeignKey("agents.id", ondelete="CASCADE"), nullable=False),
         description="Associated agent ID"
     )
 
