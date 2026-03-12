@@ -11,7 +11,7 @@ COPY services /app/services
 COPY apps/api-gateway /app/apps/api-gateway
 
 # Install dependencies
-RUN pip install fastapi uvicorn pydantic python-multipart gitpython requests httpx numpy zhipuai qdrant-client e2b-code-interpreter slowapi sqlmodel bcrypt apscheduler sniffio psycopg2-binary
+RUN pip install fastapi uvicorn pydantic python-multipart gitpython requests httpx numpy zhipuai qdrant-client e2b-code-interpreter slowapi sqlmodel bcrypt apscheduler sniffio psycopg2-binary aiohttp
 
 # Install Protocol Package
 RUN pip install /app/packages/protocol
