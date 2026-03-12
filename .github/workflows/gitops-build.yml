@@ -39,9 +39,12 @@ jobs:
           context: .
           file: apps/api-gateway/Dockerfile
           push: true
+          platforms: linux/amd64
           tags: |
-            ghcr.io/${{ github.repository_owner }}/opengit-api-gateway:${{ github.sha }}
-            ghcr.io/${{ github.repository_owner }}/opengit-api-gateway:prod
+            ghcr.io/gongjiyang/opengit-api-gateway:${{ github.sha }}
+            ghcr.io/gongjiyang/opengit-api-gateway:prod
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
 
       - name: Build & push observer-ui
         uses: docker/build-push-action@v5
@@ -49,11 +52,14 @@ jobs:
           context: apps/observer-ui
           file: apps/observer-ui/Dockerfile
           push: true
+          platforms: linux/amd64
           tags: |
-            ghcr.io/${{ github.repository_owner }}/opengit-observer-ui:${{ github.sha }}
-            ghcr.io/${{ github.repository_owner }}/opengit-observer-ui:prod
+            ghcr.io/gongjiyang/opengit-observer-ui:${{ github.sha }}
+            ghcr.io/gongjiyang/opengit-observer-ui:prod
           build-args: |
             NEXT_PUBLIC_API_BASE=/api
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
 
       - name: Setup kustomize
         uses: imranismail/setup-kustomize@v2
