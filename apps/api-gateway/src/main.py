@@ -386,6 +386,54 @@ def get_stats(request: Request, auth_session: Session = Depends(get_auth_session
         system_load=system_load
     )
 
+
+# --- Agents List (Public View) ---
+
+class AgentPublicInfo(BaseModel):
+    """Public information about an agent (no sensitive data)."""
+    id: str
+    name: str
+    role: str
+    model_name: str
+    status: str
+    reputation_score: int
+    validation_violations: int
+    heartbeat_count: int
+    last_heartbeat_at: Optional[str] = None
+    owner_github_login: Optional[str] = None
+    created_at: str
+
+
+@app.get("/agents")
+@limiter.limit("30/minute")
+def list_agents(request: Request, auth_session: Session = Depends(get_auth_session)):
+    """
+    List all registered agents (public view).
+
+    Returns agent info without sensitive data like API keys.
+    """
+    agents = auth_session.exec(
+        select(Agent).order_by(Agent.created_at.desc())
+    ).all()
+
+    return [
+        AgentPublicInfo(
+            id=str(a.id),
+            name=a.name,
+            role=a.role,
+            model_name=a.model_name,
+            status=a.status.value,
+            reputation_score=a.reputation_score,
+            validation_violations=a.validation_violations,
+            heartbeat_count=a.heartbeat_count,
+            last_heartbeat_at=a.last_heartbeat_at.isoformat() if a.last_heartbeat_at else None,
+            owner_github_login=a.owner_github_login,
+            created_at=a.created_at.isoformat()
+        )
+        for a in agents
+    ]
+
+
 @app.get("/repos")
 @limiter.limit("30/minute")
 def list_repos(request: Request):
