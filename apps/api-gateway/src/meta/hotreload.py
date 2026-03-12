@@ -81,7 +81,6 @@ class HotReloadManager:
             working_dir="./services/git-core",
             # Hooks are stateless, no restart needed
             restart_command=None,
-            action=ReloadAction.NONE,
         ),
     }
 
