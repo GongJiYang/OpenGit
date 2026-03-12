@@ -11,7 +11,7 @@ from fastapi import FastAPI, HTTPException, Body, Depends, Request, Header, stat
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlmodel import Session, select
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
