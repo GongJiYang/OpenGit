@@ -10,7 +10,7 @@ permissions:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_NAMESPACE: ${{ github.repository_owner }}
+  IMAGE_NAMESPACE: gongjiyang
   INFRA_REPO: ${{ secrets.INFRA_REPO }}
 
 jobs:
