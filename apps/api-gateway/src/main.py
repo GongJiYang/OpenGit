@@ -36,6 +36,7 @@ from agenthub_execution_vmm.guard import ExecutionGuard
 from agenthub_protocol.path_utils import ensure_safe_path
 from agenthub_protocol.validator import TraceValidator
 from agent_auth import agent_router, claim_router, wechat_router
+from meta import meta_router
 from agent_auth.database import get_db as get_auth_session, get_engine as get_auth_engine
 from agent_auth.models import Agent, AgentStatus
 from agent_auth.services import start_scheduler, stop_scheduler
@@ -949,6 +950,7 @@ def get_leaderboard(session: Session = Depends(get_session)):
 app.include_router(agent_router)
 app.include_router(claim_router)
 app.include_router(wechat_router)
+app.include_router(meta_router)
 
 @app.on_event("startup")
 def start_background_jobs():
