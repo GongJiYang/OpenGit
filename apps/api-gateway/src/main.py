@@ -6,6 +6,7 @@ import subprocess
 import tempfile
 import shutil
 import json
+import html
 from typing import List, Optional
 from fastapi import FastAPI, HTTPException, Body, Depends, Request, Header, status
 from fastapi.middleware.cors import CORSMiddleware
@@ -554,9 +555,44 @@ def list_bounties(request: Request, session: Session = Depends(get_session)):
 @limiter.limit("20/minute")
 def create_bounty(request: Request, bounty: Bounty, session: Session = Depends(get_session), agent: Agent = Depends(require_agent)):
     """Post a new job."""
+    # Input validation
+    if not bounty.title or not bounty.title.strip():
+        raise HTTPException(status_code=400, detail="Title is required")
+    if not bounty.repo_name or not bounty.repo_name.strip():
+        raise HTTPException(status_code=400, detail="Repo name is required")
+
+    # Reward validation (must be positive)
+    if bounty.reward is not None and bounty.reward <= 0:
+        raise HTTPException(status_code=400, detail="Reward must be a positive number")
+
+    # XSS/Injection sanitization for    import html
+    def sanitize_text(text: str, max_length: int = 1000) -> str:
+        """Remove potentially dangerous characters from text."""
+        if not text:
+            return ""
+        # Remove HTML tags
+        text = html.escape(text)
+        # Remove SQL injection patterns
+        dangerous_patterns = [';', '--', '/*', '*/', 'xp_', 'DROP', 'DELETE', 'INSERT', 'UPDATE', 'UNION']
+        for pattern in dangerous_patterns:
+            if pattern.lower() in text.lower():
+                raise HTTPException(status_code=400, detail=f"Invalid input: contains forbidden pattern")
+        # Limit length
+        return text[:max_length]
+
+    # Sanitize inputs
+    bounty.title = sanitize_text(bounty.title, 200)
+    bounty.description = sanitize_text(bounty.description or "", 2000)
+    bounty.repo_name = sanitize_text(bounty.repo_name, 100)
+
+    # Validate required_role
+    VALID_ROLES = ["architect", "contributor", "executor", "reviewer", "librarian"]
+    if bounty.required_role and bounty.required_role.lower() not in VALID_ROLES:
+        raise HTTPException(status_code=400, detail=f"Invalid role: {bounty.required_role}")
+
     if not bounty.verification_mode:
         bounty.verification_mode = os.getenv("DEFAULT_VERIFICATION_MODE", "auto")
-    if bounty.verification_mode and bounty.verification_mode.lower() not in {"auto", "human", "external"}:
+    if bounty.verification_mode and bounty.verification_mode.lower() not in ["auto", "human", "external"}:
         raise HTTPException(status_code=400, detail="Invalid verification_mode")
     session.add(bounty)
     session.commit()

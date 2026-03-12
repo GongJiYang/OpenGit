@@ -49,8 +49,27 @@ ROLE_PROMPT_MAP = {
     "observer": "librarian.md",
 }
 
+# Valid roles for registration (security: prevent arbitrary role injection)
+VALID_ROLES = set(ROLE_PROMPT_MAP.keys())
+
 # Prompt directory (relative to this file's parent's parent's src/prompts)
 PROMPT_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "prompts")
+
+
+def validate_role(role: str) -> str:
+    """
+    Validate and normalize role name.
+
+    Raises:
+        HTTPException: If role is not in the valid roles list
+    """
+    role_lower = role.lower().strip()
+    if role_lower not in VALID_ROLES:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Invalid role: '{role}'. Valid roles are: {', '.join(sorted(VALID_ROLES))}"
+        )
+    return role_lower
 
 
 def load_role_prompt(role: str) -> Optional[str]:
