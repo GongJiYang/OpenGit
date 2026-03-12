@@ -78,6 +78,12 @@ class Agent(SQLModel, table=True):
     last_heartbeat_at: Optional[datetime] = Field(default=None, description="Last heartbeat timestamp")
     heartbeat_count: int = Field(default=0, description="Total heartbeat count")
 
+    # Reputation & Penalty System
+    reputation_score: int = Field(default=100, description="Agent reputation score (0-100, starts at 100)")
+    validation_violations: int = Field(default=0, description="Count of output validation violations")
+    suspended_until: Optional[datetime] = Field(default=None, description="Temporary suspension end time")
+    last_violation_at: Optional[datetime] = Field(default=None, description="Last validation violation timestamp")
+
     # Timestamps
     created_at: datetime = Field(default_factory=datetime.utcnow)
     updated_at: datetime = Field(default_factory=datetime.utcnow)

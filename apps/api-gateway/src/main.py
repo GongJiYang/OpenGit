@@ -41,6 +41,8 @@ from agent_auth.database import get_db as get_auth_session, get_engine as get_au
 from agent_auth.models import Agent, AgentStatus
 from agent_auth.services import start_scheduler, stop_scheduler
 from agent_auth.utils import verify_api_key, get_api_key_prefix, get_legacy_api_key_prefix, is_valid_api_key_format
+from agent_auth.validators import StructuredOutputValidator, get_validator
+from agent_auth.services.penalty_service import PenaltyService
 from persistence import Bounty, CommitRecord, get_session, create_db_and_tables
 
 # --- Execution & Cost Guards ---
@@ -578,6 +580,93 @@ def claim_bounty(bounty_id: str, agent_id: str, session: Session = Depends(get_s
     session.commit()
     session.refresh(bounty)
     return bounty
+
+
+# --- Bounty Decision Endpoint (Structured Output Validation) ---
+
+class BountyDecisionRequest(BaseModel):
+    """Request for submitting bounty analysis/decision options."""
+    options_json: str = Field(..., description="JSON array of 3-5 options with 'option' and 'reason' fields")
+
+
+class BountyDecisionResponse(BaseModel):
+    """Response for bounty decision submission."""
+    success: bool
+    is_valid: bool
+    error_message: Optional[str] = None
+    retry_prompt: Optional[str] = None
+    parsed_options: Optional[List[dict]] = None
+    reputation_score: Optional[int] = None
+    is_suspended: bool = False
+
+
+@app.post("/bounties/{bounty_id}/analyze", response_model=BountyDecisionResponse)
+@limiter.limit("10/minute")
+async def analyze_bounty(
+    request: Request,
+    bounty_id: str,
+    req: BountyDecisionRequest,
+    agent: Agent = Depends(require_agent),
+    session: Session = Depends(get_session),
+    auth_session: Session = Depends(get_auth_session)
+):
+    """
+    Submit structured analysis/decision options for a bounty.
+
+    This endpoint enforces structured output format:
+    - Must be valid JSON array
+    - Must have 3-5 options
+    - Each option must have 'option' and 'reason' fields
+    - No questions or deflections allowed
+
+    If validation fails, a retry prompt is returned.
+    Repeated violations result in reputation penalties and potential suspension.
+    """
+    # Initialize services
+    validator = get_validator()
+    penalty_service = PenaltyService(auth_session)
+
+    # Check if agent is allowed to act
+    allowed, reason = penalty_service.is_agent_allowed(agent)
+    if not allowed:
+        return BountyDecisionResponse(
+            success=False,
+            is_valid=False,
+            error_message=reason,
+            is_suspended=True
+        )
+
+    # Validate the structured output
+    result, retry_prompt = validator.validate_with_retry_prompt(req.options_json)
+
+    if not result.is_valid:
+        # Record violation and apply penalty
+        is_suspended, suspension_msg = penalty_service.record_violation(
+            agent,
+            result.error_message or "Output validation failed",
+            result.penalty_points
+        )
+
+        return BountyDecisionResponse(
+            success=False,
+            is_valid=False,
+            error_message=result.error_message,
+            retry_prompt=retry_prompt,
+            reputation_score=agent.reputation_score,
+            is_suspended=is_suspended
+        )
+
+    # Validation passed - record success for reputation recovery
+    new_score = penalty_service.record_success(agent)
+
+    return BountyDecisionResponse(
+        success=True,
+        is_valid=True,
+        parsed_options=result.parsed_options,
+        reputation_score=new_score,
+        is_suspended=False
+    )
+
 
 # --- API-Based Git Operations ---
 
