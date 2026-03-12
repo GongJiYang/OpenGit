@@ -39,7 +39,9 @@ jobs:
           context: .
           file: apps/api-gateway/Dockerfile
           push: true
-          tags: ghcr.io/${{ github.repository_owner }}/opengit-api-gateway:${{ github.sha }}
+          tags: |
+            ghcr.io/${{ github.repository_owner }}/opengit-api-gateway:${{ github.sha }}
+            ghcr.io/${{ github.repository_owner }}/opengit-api-gateway:prod
 
       - name: Build & push observer-ui
         uses: docker/build-push-action@v5
@@ -47,7 +49,9 @@ jobs:
           context: apps/observer-ui
           file: apps/observer-ui/Dockerfile
           push: true
-          tags: ghcr.io/${{ github.repository_owner }}/opengit-observer-ui:${{ github.sha }}
+          tags: |
+            ghcr.io/${{ github.repository_owner }}/opengit-observer-ui:${{ github.sha }}
+            ghcr.io/${{ github.repository_owner }}/opengit-observer-ui:prod
           build-args: |
             NEXT_PUBLIC_API_BASE=/api
 
