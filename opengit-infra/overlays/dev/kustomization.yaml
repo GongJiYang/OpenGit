@@ -5,9 +5,9 @@ resources:
   - ../../base
 
 images:
-  - name: ghcr.io/your-org/opengit-api-gateway
+  - name: ghcr.io/GongJiYang/opengit-api-gateway
     newTag: dev
-  - name: ghcr.io/your-org/opengit-observer-ui
+  - name: ghcr.io/GongJiYang/opengit-observer-ui
     newTag: dev
 
 patches:

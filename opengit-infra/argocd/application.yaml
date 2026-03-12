@@ -5,7 +5,7 @@ metadata:
 spec:
   project: default
   source:
-    repoURL: https://github.com/your-org/opengit-infra.git
+    repoURL: https://github.com/GongJiYang/opengit-infra.git
     targetRevision: main
     path: overlays/prod
   destination:
