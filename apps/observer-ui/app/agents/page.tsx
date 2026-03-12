@@ -6,6 +6,7 @@ import { Bot, Shield, AlertCircle, CheckCircle, Clock, TrendingUp, Award, Activi
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE || "/api";
 
 type AgentStatus = "pending" | "verifying" | "claimed" | "suspended" | "expired";
+type FilterType = "all" | "claimed" | "suspended" | "pending";
 
 interface Agent {
     id: string;
@@ -24,7 +25,7 @@ interface Agent {
 export default function AgentsPage() {
     const [agents, setAgents] = useState<Agent[]>([]);
     const [loading, setLoading] = useState(true);
-    const [filter, setFilter] = useState<"all" | "claimed" | "suspended"> | "pending">);
+    const [filter, setFilter] = useState<FilterType>("all");
 
     useEffect(() => {
         fetchAgents();
@@ -53,7 +54,7 @@ export default function AgentsPage() {
         filter === "all" || a.status === filter
     );
 
-    const getStatusColor = (status: AgentStatus) => {
+    const getStatusColor = (status: AgentStatus): string => {
         switch (status) {
             case "claimed": return "text-green-400 bg-green-500/10 border-green-500/20";
             case "pending": return "text-yellow-400 bg-yellow-500/10 border-yellow-500/20";
@@ -71,13 +72,14 @@ export default function AgentsPage() {
         }
     };
 
-    const getReputationColor = (score: number) => {
+    const getReputationColor = (score: number): string => {
         if (score >= 80) return "text-emerald-400";
         if (score >= 50) return "text-yellow-400";
-        return "text-red-400";
+        if (score >= 30) return "text-red-400";
+        return "text-zinc-400";
     };
 
-    const formatRelativeTime = (dateStr: string | null) => {
+    const formatRelativeTime = (dateStr: string | null): string => {
         if (!dateStr) return "Never";
         const date = new Date(dateStr);
         const now = new Date();
@@ -117,19 +119,19 @@ export default function AgentsPage() {
 
             {/* Status Tabs */}
             <div className="flex gap-2">
-                {(["all", "claimed", "pending", "suspended"] as AgentStatus[]).map(status => (
+                {(["all", "claimed", "pending", "suspended"] as FilterType[]).map(s => (
                     <button
-                        key={status}
-                        onClick={() => setFilter(status)}
+                        key={s}
+                        onClick={() => setFilter(s)}
                         className={`px-3 py-1.5 rounded-lg text-sm font-medium transition-all flex items-center gap-2 ${
-                            filter === status
+                            filter === s
                                 ? "bg-purple-500/20 text-purple-400 border border-purple-500/30"
                                 : "bg-zinc-900 text-zinc-400 hover:bg-zinc-800 border border-zinc-800"
                         }`}
                     >
-                        {getStatusIcon(status)}
-                        <span className="capitalize">{status}</span>
-                        <span className="text-xs opacity-60">({statusCounts[status]})</span>
+                        {getStatusIcon(s as AgentStatus)}
+                        <span className="capitalize">{s}</span>
+                        <span className="text-xs opacity-60">({statusCounts[s]})</span>
                     </button>
                 ))}
             </div>
@@ -145,11 +147,10 @@ export default function AgentsPage() {
             ) : filteredAgents.length === 0 ? (
                 <div className="text-center py-16 border border-dashed border-zinc-800 rounded-xl">
                     <Bot className="w-12 h-12 text-zinc-700 mx-auto mb-4" />
-                    <p className="text-zinc-500">No agents registered</p>
-                    <p className="text-xs text-zinc-600 mt-1">Register an agent via API to get started</p>
+                    <p className="text-zinc-500">No agents registered yet</p>
                 </div>
             ) : (
-                <div className="grid gap-4">
+                <div className="space-y-4">
                     {filteredAgents.map((agent) => (
                         <div
                             key={agent.id}
