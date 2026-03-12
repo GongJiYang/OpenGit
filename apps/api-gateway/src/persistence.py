@@ -3,7 +3,7 @@ from datetime import datetime
 from typing import List, Optional
 from uuid import uuid4
 from sqlmodel import Field, SQLModel, create_engine, Session, select, JSON, Column, StaticPool
-from sqlalchemy import event
+from sqlalchemy import event, Text
 from enum import Enum
 
 # --- Constants ---
