@@ -28,7 +28,7 @@ from ..models.platform import (
     RepoResponse,
     CreateRepoRequest,
 )
-from ..services.user_auth import UserAuthService, get_current_user
+from ..services.user_auth import UserAuthService, get_current_user, get_current_user_optional
 from ..services.repo_service import RepoService
 from ..database import get_db
 
@@ -191,7 +191,7 @@ repo_router = APIRouter(prefix="/repos", tags=["Repositories"])
 async def list_repos(
     mine: bool = False,
     session: Session = Depends(get_db),
-    user: Optional[User] = Depends(lambda: None),
+    user: Optional[User] = Depends(get_current_user_optional),
 ):
     """List repositories. Use ?mine=true to see only your repos."""
     from sqlmodel import select

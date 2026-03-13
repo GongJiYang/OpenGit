@@ -42,8 +42,10 @@ from ..models.runner import (
     ComputeJobResponse,
     AuditLog,
 )
+from ..models.platform import User
 from ..database import get_db
 from ..services.verification import VerificationService
+from ..services.user_auth import get_current_user
 
 router = APIRouter(prefix="/runners", tags=["Runners"])
 
@@ -539,15 +541,15 @@ async def remove_runner_repo(
 @router.get("/{runner_id}", response_model=RunnerResponse)
 async def get_runner_info(
     runner_id: UUID,
-    user_id: UUID = Header(..., description="User ID from JWT"),
-    session: Session = Depends(get_db)
+    session: Session = Depends(get_db),
+    user: User = Depends(get_current_user)
 ):
     """Get detailed info about a specific runner."""
     runner = session.get(Runner, runner_id)
 
     if not runner:
         raise HTTPException(status_code=404, detail="Runner not found")
-    if runner.owner_user_id != user_id:
+    if runner.owner_user_id != user.id:
         raise HTTPException(status_code=403, detail="Not your runner")
 
     return RunnerResponse.model_validate(runner)
