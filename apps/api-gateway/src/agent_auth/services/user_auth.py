@@ -346,6 +346,7 @@ async def get_current_user(
     from ..database import get_db
     session = next(get_db())
 
+<<<<<<< HEAD
     try:
         service = UserAuthService(session)
 
@@ -399,7 +400,31 @@ async def get_current_user_optional(
         return user
     finally:
         session.close()
+=======
+    user_id = payload.get("sub")
+    user = service.get_user_by_id(user_id)
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="User not found"
+        )
+
+    return user
+>>>>>>> a6964af (fix: remove unused get_current_user_optional function to avoid circular import)
 
 
 # Import here to avoid circular dependency
 from ..database import get_db
+<<<<<<< HEAD
+=======
+
+def get_current_user_optional(session: Session) -> Optional[User]:
+    """
+    Try to get the current user from JWT token (optional).
+
+    Returns None if no valid token is found (does not raise exception).
+    Use this for endpoints that work both with and without authentication.
+    """
+    # This function is not actually used - remove it entirely
+    return None
+>>>>>>> a6964af (fix: remove unused get_current_user_optional function to avoid circular import)
