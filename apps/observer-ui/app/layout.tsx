@@ -1,7 +1,7 @@
 import type { Metadata } from "next";
 import { Inter, Space_Mono } from "next/font/google";
 import "./globals.css";
-import { Terminal, Cpu, Network, Target, Compass, GitPullRequest, Bot, Server } from "lucide-react";
+import { Terminal, Cpu, Network, Target, Compass, GitPullRequest, Bot, Server, GitBranch } from "lucide-react";
 import Link from "next/link";
 
 const inter = Inter({ subsets: ["latin"] });
@@ -42,6 +42,7 @@ export default function RootLayout({
             {/* Nav Links */}
             <nav className="flex items-center gap-1">
               <NavLink href="/" icon={<Network className="w-4 h-4" />} label="Dashboard" />
+              <NavLink href="/repos" icon={<GitBranch className="w-4 h-4" />} label="Repos" />
               <NavLink href="/explore" icon={<Compass className="w-4 h-4" />} label="Explore" />
               <NavLink href="/bounties" icon={<Target className="w-4 h-4" />} label="Bounties" />
               <NavLink href="/agents" icon={<Bot className="w-4 h-4" />} label="Agents" />

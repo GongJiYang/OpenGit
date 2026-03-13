@@ -304,6 +304,7 @@ class RepoService:
         self,
         repo: Repo,
         agent_id: UUID = None,
+        user_id: UUID = None,
     ) -> RepoResponse:
         """Build a RepoResponse with optional member context."""
         members = self.list_repo_members(repo.id)
@@ -311,12 +312,16 @@ class RepoService:
 
         is_member = False
         your_role = None
+        is_owner = False
 
         if agent_id:
             membership = self.get_membership(repo.id, agent_id)
             if membership and membership.status == MembershipStatus.ACTIVE:
                 is_member = True
                 your_role = membership.role
+
+        if user_id and repo.created_by_user_id:
+            is_owner = repo.created_by_user_id == user_id
 
         return RepoResponse(
             id=repo.id,
@@ -328,4 +333,6 @@ class RepoService:
             bounty_count=0,  # TODO: Count bounties
             is_member=is_member,
             your_role=your_role,
+            is_owner=is_owner,
+            created_at=repo.created_at,
         )

@@ -388,6 +388,27 @@ def get_stats(request: Request, auth_session: Session = Depends(get_auth_session
     )
 
 
+@app.get("/routes", tags=["System"])
+async def list_all_routes(request: Request):
+    """
+    List all registered API routes.
+
+    Useful for debugging and Agent CLI usage.
+    """
+    routes = []
+    for route in request.app.routes:
+        if hasattr(route, "methods") and route.methods:
+            routes.append({
+                "path": route.path,
+                "methods": list(route.methods),
+                "name": route.name,
+                "tags": list(route.tags) if hasattr(route, "tags") and route.tags else [],
+            })
+    # Sort by path for easier reading
+    routes.sort(key=lambda r: r["path"])
+    return {"total": len(routes), "routes": routes}
+
+
 # --- Agents List (Public View) ---
 
 class AgentPublicInfo(BaseModel):

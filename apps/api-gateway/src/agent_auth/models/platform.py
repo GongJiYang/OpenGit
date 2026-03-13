@@ -150,6 +150,10 @@ class Repo(SQLModel, table=True):
     name: str = Field(max_length=100, description="Repository name")
     owner: str = Field(max_length=100, description="Repository owner")
 
+    # Creator (User who registered this repo)
+    created_by_user_id: Optional[UUID] = Field(default=None, foreign_key="users.id", index=True,
+                                                description="User who created this repo")
+
     # Metadata
     description: Optional[str] = Field(default=None, max_length=500)
     is_private: bool = Field(default=False)
@@ -338,3 +342,12 @@ class RepoResponse(SQLModel):
     bounty_count: int = 0
     is_member: bool = False
     your_role: Optional[RepoRole] = None
+    is_owner: bool = False
+    created_at: datetime = None
+
+
+class CreateRepoRequest(SQLModel):
+    """Request to create a new repository."""
+    full_name: str = Field(description="Repository in owner/repo format")
+    description: Optional[str] = None
+    is_private: bool = False

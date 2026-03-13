@@ -26,6 +26,7 @@ from ..models.platform import (
     KickMemberRequest,
     RepoMemberResponse,
     RepoResponse,
+    CreateRepoRequest,
 )
 from ..services.user_auth import UserAuthService, get_current_user
 from ..services.repo_service import RepoService
@@ -128,16 +129,26 @@ repo_router = APIRouter(prefix="/repos", tags=["Repositories"])
 
 @repo_router.get("", response_model=List[RepoResponse])
 async def list_repos(
+    mine: bool = False,
     session: Session = Depends(get_db),
     user: Optional[User] = Depends(lambda: None),
 ):
-    """List all registered repositories."""
+    """List repositories. Use ?mine=true to see only your repos."""
     from sqlmodel import select
     from ..models.platform import Repo
 
     service = RepoService(session)
-    statement = select(Repo).where(Repo.is_active == True)
-    repos = session.exec(statement).all()
+
+    # If user wants their repos, filter by created_by_user_id
+    if mine and user:
+        statement = select(Repo).where(
+            Repo.is_active == True,
+            Repo.created_by_user_id == user.id
+        )
+        repos = session.exec(statement).all()
+    else:
+        statement = select(Repo).where(Repo.is_active == True)
+        repos = session.exec(statement).all()
 
     # Get agent context for membership check
     agent_id = None
@@ -148,15 +159,70 @@ async def list_repos(
         except HTTPException:
             pass  # User has no bound agent, that's ok
 
-    return [service.build_repo_response(repo, agent_id) for repo in repos]
+    return [service.build_repo_response(repo, agent_id, user.id if user else None) for repo in repos]
 
 
 @repo_router.post("", response_model=RepoResponse, status_code=status.HTTP_201_CREATED)
-async def create_repo(full_name: str, description: str = None, session: Session = Depends(get_db)):
-    """Register a new repository."""
+async def create_repo(
+    data: CreateRepoRequest,
+    user: User = Depends(get_current_user),
+    session: Session = Depends(get_db)
+):
+    """
+    Register a new repository.
+
+    Requirements:
+    - User must be authenticated
+    - User must have a bound Agent
+    - User's Agent must be an Architect in at least one repo
+    """
+    from ..models.platform import Repo
+
+    # Check if user has bound agent
+    agent, auth_service = _get_bound_agent_or_403(user, session)
+
+    # Check if user's agent is an Architect anywhere
+    # (This is the permission to create new repos)
     service = RepoService(session)
-    repo = service.get_or_create_repo(full_name, description=description)
-    return service.build_repo_response(repo)
+    agent_repos = service.list_agent_repos(agent.id)
+
+    is_architect = any(
+        member.role == RepoRole.ARCHITECT
+        for repo, member in agent_repos
+    )
+
+    if not is_architect:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only Architects can create new repositories"
+        )
+
+    # Check if repo already exists
+    existing = service.get_repo_by_full_name(data.full_name)
+    if existing:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Repository {data.full_name} already exists"
+        )
+
+    # Create repo
+    owner, name = data.full_name.split("/", 1)
+    repo = Repo(
+        full_name=data.full_name,
+        name=name,
+        owner=owner,
+        description=data.description,
+        is_private=data.is_private,
+        created_by_user_id=user.id,
+    )
+    session.add(repo)
+    session.commit()
+    session.refresh(repo)
+
+    # Auto-join the creator as Architect
+    service.join_repo(repo.id, agent.id, RepoRole.ARCHITECT, added_by_agent_id=agent.id)
+
+    return service.build_repo_response(repo, agent.id, user)
 
 
 @repo_router.get("/{repo_id}", response_model=RepoResponse)
@@ -174,6 +240,7 @@ async def get_repo(
 
     service = RepoService(session)
     agent_id = None
+    user_id = user.id if user else None
     if user:
         try:
             agent, _ = _get_bound_agent_or_403(user, session)
@@ -181,7 +248,7 @@ async def get_repo(
         except HTTPException:
             pass
 
-    return service.build_repo_response(repo, agent_id)
+    return service.build_repo_response(repo, agent_id, user_id)
 
 
 @repo_router.post("/{repo_id}/join")
