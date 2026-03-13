@@ -30,7 +30,6 @@ from ..models.platform import (
 )
 from ..models import Agent, AgentStatus
 
-
 # Configuration
 JWT_SECRET = os.getenv("JWT_SECRET", "change-this-in-production")
 JWT_ALGORITHM = "HS256"
@@ -63,7 +62,6 @@ class UserAuthService:
     @staticmethod
     def verify_password(plain_password: str, hashed_password: str) -> bool:
         """Verify a password against its hash.
-
         Applies the same truncation logic as hash_password.
         """
         # bcrypt 限制：密码不能超过 72 字节
@@ -108,12 +106,10 @@ class UserAuthService:
         """Get user by email."""
         statement = select(User).where(User.email == email.lower())
         return self.session.exec(statement).first()
-
     def get_user_by_github_id(self, github_id: str) -> Optional[User]:
         """Get user by GitHub ID."""
         statement = select(User).where(User.github_id == github_id)
         return self.session.exec(statement).first()
-
     def create_user(self, email: str, password: Optional[str] = None,
                     display_name: Optional[str] = None) -> User:
         """Create a new user with email."""
@@ -127,7 +123,6 @@ class UserAuthService:
         self.session.commit()
         self.session.refresh(user)
         return user
-
     def create_or_update_oauth_user(
         self,
         provider: AuthProvider,
@@ -138,7 +133,6 @@ class UserAuthService:
         **extra_fields
     ) -> User:
         """Create or update user from OAuth login."""
-
         if provider == AuthProvider.GITHUB:
             user = self.get_user_by_github_id(provider_id)
             if user:
@@ -153,7 +147,6 @@ class UserAuthService:
                 self.session.commit()
                 self.session.refresh(user)
                 return user
-
             # Create new user
             user = User(
                 email=email,
@@ -168,46 +161,36 @@ class UserAuthService:
             self.session.commit()
             self.session.refresh(user)
             return user
-
         raise ValueError(f"Unsupported OAuth provider: {provider}")
-
     # ============== Authentication ==============
 
     def authenticate_email(self, email: str, password: str) -> Tuple[Optional[User], Optional[str]]:
         """
         Authenticate user with email and password.
-
         Returns:
             Tuple of (user, error_message)
         """
         user = self.get_user_by_email(email)
         if not user:
             return None, "Invalid email or password"
-
         if not user.password_hash:
             return None, "Please use OAuth to login"
-
         if not self.verify_password(password, user.password_hash):
             return None, "Invalid email or password"
-
         # Update last login
         user.last_login_at = datetime.utcnow()
         self.session.add(user)
         self.session.commit()
-
         return user, None
-
     def login(self, email: str, password: str) -> Tuple[Optional[TokenResponse], Optional[str]]:
         """
         Login user and return JWT token.
-
         Returns:
             Tuple of (TokenResponse, error_message)
         """
         user, error = self.authenticate_email(email, password)
         if error:
             return None, error
-
         token = self.create_access_token(str(user.id))
         return TokenResponse(
             access_token=token,
@@ -221,11 +204,9 @@ class UserAuthService:
                 created_at=user.created_at,
             )
         ), None
-
     def register(self, data: UserCreate) -> Tuple[Optional[TokenResponse], Optional[str]]:
         """
         Register a new user.
-
         Returns:
             Tuple of (TokenResponse, error_message)
         """
@@ -233,13 +214,11 @@ class UserAuthService:
         existing = self.get_user_by_email(data.email)
         if existing:
             return None, "Email already registered"
-
         # Create user
         user = self.create_user(
             email=data.email,
             password=data.password,
         )
-
         # Generate token
         token = self.create_access_token(str(user.id))
         return TokenResponse(
@@ -254,13 +233,11 @@ class UserAuthService:
                 created_at=user.created_at,
             )
         ), None
-
     # ============== User-Agent Binding ==============
 
     def bind_agent_to_user(self, user: User, agent: Agent, ip_address: str = None) -> UserAgentBinding:
         """
         Permanently bind an agent to a user.
-
         Rules:
         - One user can only have ONE bound agent
         - One agent can only be bound to ONE user
@@ -272,14 +249,12 @@ class UserAuthService:
         ).first()
         if existing:
             raise ValueError("User already has a bound agent")
-
         # Check if agent is already bound
         existing = self.session.exec(
             select(UserAgentBinding).where(UserAgentBinding.agent_id == agent.id)
         ).first()
         if existing:
             raise ValueError("Agent is already bound to another user")
-
         # Create binding
         binding = UserAgentBinding(
             user_id=user.id,
@@ -288,7 +263,6 @@ class UserAuthService:
             is_permanent=True,
         )
         self.session.add(binding)
-
         # Update agent owner info
         agent.owner_email = user.email
         agent.owner_github_id = user.github_id
@@ -296,11 +270,9 @@ class UserAuthService:
         agent.status = AgentStatus.CLAIMED
         agent.claimed_at = datetime.utcnow()
         self.session.add(agent)
-
         self.session.commit()
         self.session.refresh(binding)
         return binding
-
     def get_user_bound_agent(self, user: User) -> Optional[Agent]:
         """Get the agent bound to a user."""
         binding = self.session.exec(
@@ -309,7 +281,6 @@ class UserAuthService:
         if not binding:
             return None
         return self.session.get(Agent, binding.agent_id)
-
     def get_agent_bound_user(self, agent: Agent) -> Optional[User]:
         """Get the user who bound an agent."""
         binding = self.session.exec(
@@ -331,7 +302,6 @@ async def get_current_user(
 ) -> User:
     """
     Validate JWT token and return the authenticated user.
-
     Use this for human user endpoints.
     """
     if not authorization.startswith("Bearer "):
@@ -339,24 +309,18 @@ async def get_current_user(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid authorization header. Use: Bearer <token>"
         )
-
     token = authorization[7:]  # Remove "Bearer "
-
     # Import here to avoid circular dependency
     from ..database import get_db
     session = next(get_db())
-
-<<<<<<< HEAD
     try:
         service = UserAuthService(session)
-
         payload = service.verify_token(token)
         if not payload:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Invalid or expired token"
             )
-
         user_id = payload.get("sub")
         user = service.get_user_by_id(user_id)
         if not user:
@@ -364,7 +328,6 @@ async def get_current_user(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="User not found"
             )
-
         return user
     finally:
         session.close()
@@ -375,56 +338,22 @@ async def get_current_user_optional(
 ) -> Optional[User]:
     """
     Validate JWT token and return the authenticated user if present.
-
     Returns None if no authorization header or invalid token.
     Use this for endpoints that work with or without authentication.
     """
     if not authorization or not authorization.startswith("Bearer "):
         return None
-
     token = authorization[7:]  # Remove "Bearer "
-
     # Import here to avoid circular dependency
     from ..database import get_db
     session = next(get_db())
-
     try:
         service = UserAuthService(session)
-
         payload = service.verify_token(token)
         if not payload:
             return None
-
         user_id = payload.get("sub")
         user = service.get_user_by_id(user_id)
         return user
     finally:
         session.close()
-=======
-    user_id = payload.get("sub")
-    user = service.get_user_by_id(user_id)
-    if not user:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="User not found"
-        )
-
-    return user
->>>>>>> a6964af (fix: remove unused get_current_user_optional function to avoid circular import)
-
-
-# Import here to avoid circular dependency
-from ..database import get_db
-<<<<<<< HEAD
-=======
-
-def get_current_user_optional(session: Session) -> Optional[User]:
-    """
-    Try to get the current user from JWT token (optional).
-
-    Returns None if no valid token is found (does not raise exception).
-    Use this for endpoints that work both with and without authentication.
-    """
-    # This function is not actually used - remove it entirely
-    return None
->>>>>>> a6964af (fix: remove unused get_current_user_optional function to avoid circular import)
