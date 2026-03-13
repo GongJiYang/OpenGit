@@ -48,12 +48,27 @@ class UserAuthService:
 
     @staticmethod
     def hash_password(password: str) -> str:
-        """Hash a password using bcrypt (with passlib)."""
+        """Hash a password using bcrypt (with passlib).
+
+        Note: bcrypt has a 72-byte limit, so we truncate longer passwords.
+        This is safe because truncating still maintains high entropy.
+        """
+        # bcrypt 限制：密码不能超过 72 字节
+        password_bytes = password.encode('utf-8')
+        if len(password_bytes) > 72:
+            password = password_bytes[:72].decode('utf-8', errors='ignore')
         return pwd_context.hash(password)
 
     @staticmethod
     def verify_password(plain_password: str, hashed_password: str) -> bool:
-        """Verify a password against its hash."""
+        """Verify a password against its hash.
+
+        Applies the same truncation logic as hash_password.
+        """
+        # bcrypt 限制：密码不能超过 72 字节
+        password_bytes = plain_password.encode('utf-8')
+        if len(password_bytes) > 72:
+            plain_password = password_bytes[:72].decode('utf-8', errors='ignore')
         return pwd_context.verify(plain_password, hashed_password)
 
     # ============== JWT Utilities ==============
