@@ -4,7 +4,7 @@ import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import {
     GitBranch, Plus, Search, Settings, Users, Target,
-    ExternalLink, Lock, Globe, Crown, Loader2
+    ExternalLink, Crown, Loader2, LogIn
 } from "lucide-react";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE || "/api";
@@ -30,7 +30,7 @@ export default function ReposPage() {
     const [showCreate, setShowCreate] = useState(false);
     const [mineOnly, setMineOnly] = useState(false);
     const [search, setSearch] = useState("");
-    const [isLoggedIn, setIsLoggedIn] = useState<boolean | null>(null);
+    const [isLoggedIn, setIsLoggedIn] = useState(false);
 
     // Create form
     const [newFullName, setNewFullName] = useState("");
@@ -38,29 +38,25 @@ export default function ReposPage() {
     const [creating, setCreating] = useState(false);
     const [error, setError] = useState("");
 
-    // Check login status
+    // Check login status (but don't block viewing)
     useEffect(() => {
         const token = localStorage.getItem("token");
-        if (!token) {
-            router.push("/login");
-        } else {
-            setIsLoggedIn(true);
-        }
-    }, [router]);
+        setIsLoggedIn(!!token);
+    }, []);
 
     useEffect(() => {
-        if (isLoggedIn) {
-            fetchRepos();
-        }
-    }, [mineOnly, isLoggedIn]);
+        fetchRepos();
+    }, [mineOnly]);
 
     const getAuthHeaders = () => {
-        const token = localStorage.getItem("token");
-        return {
+        const token = typeof window !== 'undefined' ? localStorage.getItem("token") : null;
+        const headers: Record<string, string> = {
             "Content-Type": "application/json",
-            "Authorization": `Bearer ${token}`,
-            "X-User-Id": "demo-user" // fallback for demo
         };
+        if (token) {
+            headers["Authorization"] = `Bearer ${token}`;
+        }
+        return headers;
     };
 
     const fetchRepos = async () => {
@@ -74,10 +70,6 @@ export default function ReposPage() {
             });
             if (res.ok) {
                 setRepos(await res.json());
-            } else if (res.status === 401) {
-                // Unauthorized - redirect to login
-                localStorage.removeItem("token");
-                router.push("/login");
             }
         } catch (e) {
             console.error(e);
@@ -86,7 +78,22 @@ export default function ReposPage() {
         }
     };
 
+    const requireAuth = () => {
+        if (!isLoggedIn) {
+            router.push("/login");
+            return false;
+        }
+        return true;
+    };
+
+    const handleCreateClick = () => {
+        if (!requireAuth()) return;
+        setShowCreate(true);
+    };
+
     const handleCreate = async () => {
+        if (!requireAuth()) return;
+
         if (!newFullName.includes("/")) {
             setError("Format must be owner/repo");
             return;
@@ -137,16 +144,6 @@ export default function ReposPage() {
 
     return (
         <div className="space-y-6">
-            {/* Checking login status */}
-            {isLoggedIn === null && (
-                <div className="text-center py-16">
-                    <Loader2 className="w-8 h-8 text-zinc-500 animate-spin mx-auto mb-4" />
-                    <p className="text-zinc-500">Checking authentication...</p>
-                </div>
-            )}
-
-            {isLoggedIn === true && (
-            <>
             {/* Header */}
             <div className="flex items-start justify-between">
                 <div>
@@ -155,16 +152,26 @@ export default function ReposPage() {
                         Repositories
                     </h1>
                     <p className="text-zinc-400 mt-2 max-w-xl">
-                        Manage your repositories and their CI/CD settings
+                        Browse repositories. {!isLoggedIn && <span className="text-emerald-400">Login to create and manage.</span>}
                     </p>
                 </div>
-                <button
-                    onClick={() => setShowCreate(true)}
-                    className="px-4 py-2 bg-emerald-500 hover:bg-emerald-600 text-white font-medium rounded-lg flex items-center gap-2 transition-colors"
-                >
-                    <Plus className="w-4 h-4" />
-                    New Repository
-                </button>
+                {isLoggedIn ? (
+                    <button
+                        onClick={handleCreateClick}
+                        className="px-4 py-2 bg-emerald-500 hover:bg-emerald-600 text-white font-medium rounded-lg flex items-center gap-2 transition-colors"
+                    >
+                        <Plus className="w-4 h-4" />
+                        New Repository
+                    </button>
+                ) : (
+                    <button
+                        onClick={() => router.push("/login")}
+                        className="px-4 py-2 bg-zinc-700 hover:bg-zinc-600 text-white font-medium rounded-lg flex items-center gap-2 transition-colors"
+                    >
+                        <LogIn className="w-4 h-4" />
+                        Login to Create
+                    </button>
+                )}
             </div>
 
             {/* Filters */}
@@ -179,15 +186,17 @@ export default function ReposPage() {
                         className="w-full bg-zinc-900/50 border border-zinc-800 rounded-lg py-2 pl-10 pr-4 text-white placeholder-zinc-600 focus:border-emerald-500/50 focus:outline-none"
                     />
                 </div>
-                <label className="flex items-center gap-2 text-sm text-zinc-400">
-                    <input
-                        type="checkbox"
-                        checked={mineOnly}
-                        onChange={(e) => setMineOnly(e.target.checked)}
-                        className="rounded"
-                    />
-                    Only my repos
-                </label>
+                {isLoggedIn && (
+                    <label className="flex items-center gap-2 text-sm text-zinc-400">
+                        <input
+                            type="checkbox"
+                            checked={mineOnly}
+                            onChange={(e) => setMineOnly(e.target.checked)}
+                            className="rounded"
+                        />
+                        Only my repos
+                    </label>
+                )}
             </div>
 
             {/* Create Modal */}
@@ -274,14 +283,6 @@ export default function ReposPage() {
                             : "Try adjusting your search or filters"
                         }
                     </p>
-                    {!mineOnly && (
-                        <button
-                            onClick={() => setMineOnly(true)}
-                            className="px-4 py-2 bg-zinc-700 hover:bg-zinc-600 text-white rounded-lg"
-                        >
-                            Show my repos only
-                        </button>
-                    )}
                 </div>
             ) : (
                 <div className="grid gap-4">
@@ -352,8 +353,6 @@ export default function ReposPage() {
                         </div>
                     ))}
                 </div>
-            )}
-            </>
             )}
         </div>
     );
