@@ -46,7 +46,7 @@ jobs:
           push: true
           platforms: linux/amd64
           tags: |
-            ghcr.io/${{ env.IMAGE_NAMESPACE }}/opengit-api-gateway:${{ github.sha }}
+            ghcr.io/${{ env.IMAGE_NAMESPACE }}/opengit-api-gateway:${{ github.sha }}.${{ github.run_number }}
             ghcr.io/${{ env.IMAGE_NAMESPACE }}/opengit-api-gateway:prod
           cache-from: type=gha
           cache-to: type=gha,mode=max
@@ -59,7 +59,7 @@ jobs:
           push: true
           platforms: linux/amd64
           tags: |
-            ghcr.io/${{ env.IMAGE_NAMESPACE }}/opengit-observer-ui:${{ github.sha }}
+            ghcr.io/${{ env.IMAGE_NAMESPACE }}/opengit-observer-ui:${{ github.sha }}.${{ github.run_number }}
             ghcr.io/${{ env.IMAGE_NAMESPACE }}/opengit-observer-ui:prod
           build-args: |
             NEXT_PUBLIC_API_BASE=/api
@@ -77,15 +77,16 @@ jobs:
             echo "INFRA_REPO secret is not set (e.g., your-org/opengit-infra)"
             exit 1
           fi
+          IMAGE_TAG="${GITHUB_SHA}.${{ github.run_number }}"
           git clone https://$GITOPS_TOKEN@github.com/$INFRA_REPO.git gitops
           cd gitops/overlays/dev
-          kustomize edit set image ghcr.io/opengit-dev/opengit-api-gateway=ghcr.io/opengit-dev/opengit-api-gateway:${GITHUB_SHA}
-          kustomize edit set image ghcr.io/opengit-dev/opengit-observer-ui=ghcr.io/opengit-dev/opengit-observer-ui:${GITHUB_SHA}
+          kustomize edit set image ghcr.io/opengit-dev/opengit-api-gateway=ghcr.io/opengit-dev/opengit-api-gateway:$IMAGE_TAG
+          kustomize edit set image ghcr.io/opengit-dev/opengit-observer-ui=ghcr.io/opengit-dev/opengit-observer-ui:$IMAGE_TAG
           cd ../..
           git config user.name "gitops-bot"
           git config user.email "gitops-bot@users.noreply.github.com"
           git add overlays/dev/kustomization.yaml
-          git commit -m "deploy: ${GITHUB_SHA}" || exit 0
+          git commit -m "deploy: ${GITHUB_SHA}.${{ github.run_number }}" || exit 0
           git push
 
       - name: Update GitOps repo (prod)
@@ -96,12 +97,13 @@ jobs:
             echo "INFRA_REPO secret is not set (e.g., your-org/opengit-infra)"
             exit 1
           fi
+          IMAGE_TAG="${GITHUB_SHA}.${{ github.run_number }}"
           cd gitops/overlays/prod
-          kustomize edit set image ghcr.io/opengit-dev/opengit-api-gateway=ghcr.io/opengit-dev/opengit-api-gateway:${GITHUB_SHA}
-          kustomize edit set image ghcr.io/opengit-dev/opengit-observer-ui=ghcr.io/opengit-dev/opengit-observer-ui:${GITHUB_SHA}
+          kustomize edit set image ghcr.io/opengit-dev/opengit-api-gateway=ghcr.io/opengit-dev/opengit-api-gateway:$IMAGE_TAG
+          kustomize edit set image ghcr.io/opengit-dev/opengit-observer-ui=ghcr.io/opengit-dev/opengit-observer-ui:$IMAGE_TAG
           cd ../..
           git config user.name "gitops-bot"
           git config user.email "gitops-bot@users.noreply.github.com"
           git add overlays/prod/kustomization.yaml
-          git commit -m "deploy: ${GITHUB_SHA} (prod)" || exit 0
+          git commit -m "deploy: ${GITHUB_SHA}.${{ github.run_number }} (prod)" || exit 0
           git push
