@@ -74,8 +74,8 @@ export default function SettingsPage() {
         }
 
         // Handle password change if provided
-        if (currentPassword && newPassword && confirmPasswordPassword) {
-            if (newPassword !== confirmPasswordPassword) {
+        if (currentPassword && newPassword && confirmPassword) {
+            if (newPassword !== confirmPassword) {
                 setError("New passwords do not match");
                 return;
             }
@@ -102,7 +102,7 @@ export default function SettingsPage() {
 
             if (res.ok) {
                 const data = await res.json();
-                const updatedUser = { ...user, display_name: data.display_name };
+                const updatedUser: UserProfile = { ...user, display_name: data.display_name } as UserProfile;
                 localStorage.setItem("user", JSON.stringify(updatedUser));
                 setUser(updatedUser);
                 setSaved(true);
