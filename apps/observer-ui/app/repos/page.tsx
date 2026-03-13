@@ -30,6 +30,7 @@ export default function ReposPage() {
     const [showCreate, setShowCreate] = useState(false);
     const [mineOnly, setMineOnly] = useState(false);
     const [search, setSearch] = useState("");
+    const [isLoggedIn, setIsLoggedIn] = useState<boolean | null>(null);
 
     // Create form
     const [newFullName, setNewFullName] = useState("");
@@ -37,9 +38,30 @@ export default function ReposPage() {
     const [creating, setCreating] = useState(false);
     const [error, setError] = useState("");
 
+    // Check login status
     useEffect(() => {
-        fetchRepos();
-    }, [mineOnly]);
+        const token = localStorage.getItem("token");
+        if (!token) {
+            router.push("/login");
+        } else {
+            setIsLoggedIn(true);
+        }
+    }, [router]);
+
+    useEffect(() => {
+        if (isLoggedIn) {
+            fetchRepos();
+        }
+    }, [mineOnly, isLoggedIn]);
+
+    const getAuthHeaders = () => {
+        const token = localStorage.getItem("token");
+        return {
+            "Content-Type": "application/json",
+            "Authorization": `Bearer ${token}`,
+            "X-User-Id": "demo-user" // fallback for demo
+        };
+    };
 
     const fetchRepos = async () => {
         try {
@@ -48,10 +70,14 @@ export default function ReposPage() {
             if (mineOnly) params.set("mine", "true");
 
             const res = await fetch(`${API_BASE}/api/v1/repos?${params}`, {
-                headers: { "X-User-Id": "demo-user" }
+                headers: getAuthHeaders()
             });
             if (res.ok) {
                 setRepos(await res.json());
+            } else if (res.status === 401) {
+                // Unauthorized - redirect to login
+                localStorage.removeItem("token");
+                router.push("/login");
             }
         } catch (e) {
             console.error(e);
@@ -72,10 +98,7 @@ export default function ReposPage() {
 
             const res = await fetch(`${API_BASE}/api/v1/repos`, {
                 method: "POST",
-                headers: {
-                    "Content-Type": "application/json",
-                    "X-User-Id": "demo-user"
-                },
+                headers: getAuthHeaders(),
                 body: JSON.stringify({
                     full_name: newFullName,
                     description: newDescription,
@@ -114,6 +137,16 @@ export default function ReposPage() {
 
     return (
         <div className="space-y-6">
+            {/* Checking login status */}
+            {isLoggedIn === null && (
+                <div className="text-center py-16">
+                    <Loader2 className="w-8 h-8 text-zinc-500 animate-spin mx-auto mb-4" />
+                    <p className="text-zinc-500">Checking authentication...</p>
+                </div>
+            )}
+
+            {isLoggedIn === true && (
+            <>
             {/* Header */}
             <div className="flex items-start justify-between">
                 <div>
@@ -319,6 +352,8 @@ export default function ReposPage() {
                         </div>
                     ))}
                 </div>
+            )}
+            </>
             )}
         </div>
     );
