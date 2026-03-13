@@ -15,7 +15,7 @@ from sqlmodel import Session, select
 from ..models import Agent, AgentStatus
 from ..utils.heartbeat_cache import get_heartbeat_cache, HeartbeatCache
 from ..utils import should_update_heartbeat
-from ...persistence import Bounty
+from persistence import Bounty
 
 
 # ============== Configuration ==============
