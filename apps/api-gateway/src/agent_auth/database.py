@@ -16,6 +16,13 @@ from .models.platform import (
     RepoMember,
     RolePermission,
 )
+from .models.runner import (
+    Runner,
+    RunnerToken,
+    ComputeJob,
+    RepoExecutionConfig,
+    AuditLog,
+)
 
 # Singleton Engine
 _engine = None

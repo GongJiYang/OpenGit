@@ -1,0 +1,488 @@
+"""
+Runner Router - Self-Hosted Compute Network API
+
+API endpoints for the distributed CI/CD compute network.
+
+Connection Flow:
+1. User generates token: POST /runners/generate-token
+2. User runs: agenthub-runner start --token=xxx
+3. Runner registers: POST /runners/register
+4. Runner sends heartbeats: POST /runners/heartbeat
+5. Runner polls for jobs: GET /runners/poll-jobs
+6. Runner submits results: POST /runners/submit-result
+
+Security:
+- All runner endpoints require valid runner token (not user JWT)
+- Token is verified against bcrypt hash
+- Banned runners are rejected with 403
+"""
+
+import secrets
+from datetime import datetime, timedelta
+from typing import List, Optional
+from uuid import UUID
+
+from fastapi import APIRouter, Depends, HTTPException, status, Header
+from sqlmodel import Session, select
+from passlib.context import CryptContext
+
+from ..models.runner import (
+    Runner,
+    RunnerStatus,
+    RunnerToken,
+    ComputeJob,
+    ComputeJobStatus,
+    ExecutionMode,
+    GenerateTokenResponse,
+    RunnerRegisterRequest,
+    JobAssignment,
+    SubmitResultRequest,
+    RunnerResponse,
+    ComputeJobResponse,
+    AuditLog,
+)
+from ..database import get_db
+from ..services.verification import VerificationService
+
+router = APIRouter(prefix="/runners", tags=["Runners"])
+
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+
+
+# ============== Helper Functions ==============
+
+def verify_runner_token(token: str, session: Session) -> Runner:
+    """Verify runner authentication token and return runner."""
+    if not token.startswith("ahauth_"):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid token format"
+        )
+
+    # Find all runners and verify hash (timing-safe)
+    runners = session.exec(select(Runner)).all()
+
+    for runner in runners:
+        if pwd_context.verify(token, runner.token_hash):
+            if runner.is_banned:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail=f"Runner banned: {runner.banned_reason or 'Policy violation'}"
+                )
+            return runner
+
+    raise HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Invalid runner token"
+    )
+
+
+async def get_runner_from_header(
+    x_runner_token: str = Header(..., description="Runner auth token"),
+    session: Session = Depends(get_db)
+) -> Runner:
+    """FastAPI dependency to authenticate runner via header."""
+    return verify_runner_token(x_runner_token, session)
+
+
+# ============== Token Generation (User Auth Required) ==============
+
+@router.post("/generate-token", response_model=GenerateTokenResponse)
+async def generate_runner_token(
+    user_id: UUID = Header(..., description="User ID from JWT"),
+    session: Session = Depends(get_db)
+):
+    """
+    Generate a one-time token for registering a new runner.
+
+    User must be authenticated (JWT). Token is shown ONLY ONCE.
+    """
+    token = f"ahrun_{secrets.token_urlsafe(32)}"
+    token_hash = pwd_context.hash(token)
+
+    runner_token = RunnerToken(
+        user_id=user_id,
+        token=token,
+        token_hash=token_hash,
+        expires_at=datetime.utcnow() + timedelta(hours=24),
+    )
+
+    session.add(runner_token)
+    session.commit()
+
+    return GenerateTokenResponse(
+        token=token,
+        expires_at=runner_token.expires_at,
+        command=f'agenthub-runner start --token="{token}"'
+    )
+
+
+# ============== Runner Registration ==============
+
+@router.post("/register")
+async def register_runner(
+    req: RunnerRegisterRequest,
+    session: Session = Depends(get_db)
+):
+    """
+    Register a new runner with one-time token.
+
+    Called by agenthub-runner CLI on first start.
+    Token is consumed and cannot be reused.
+    """
+    statement = select(RunnerToken).where(RunnerToken.token == req.token)
+    runner_token = session.exec(statement).first()
+
+    if not runner_token:
+        raise HTTPException(status_code=401, detail="Invalid or expired token")
+    if runner_token.is_used:
+        raise HTTPException(status_code=400, detail="Token already used")
+    if runner_token.expires_at < datetime.utcnow():
+        raise HTTPException(status_code=400, detail="Token expired")
+
+    # Generate runner auth token
+    runner_auth_token = f"ahauth_{secrets.token_urlsafe(32)}"
+    runner_auth_hash = pwd_context.hash(runner_auth_token)
+
+    # Create runner
+    runner = Runner(
+        name=req.name,
+        owner_user_id=runner_token.user_id,
+        token_hash=runner_auth_hash,
+        status=RunnerStatus.ONLINE,
+        last_heartbeat_at=datetime.utcnow(),
+        cpu_cores=req.cpu_cores,
+        memory_gb=req.memory_gb,
+        os_type=req.os_type,
+        os_version=req.os_version,
+        docker_version=req.docker_version,
+        labels=req.labels,
+    )
+
+    session.add(runner)
+
+    # Mark token as used
+    runner_token.is_used = True
+    runner_token.used_at = datetime.utcnow()
+    session.add(runner_token)
+
+    session.commit()
+    session.refresh(runner)
+
+    return {
+        "success": True,
+        "runner": RunnerResponse.model_validate(runner),
+        "auth_token": runner_auth_token,
+        "message": "Runner registered. Save the auth_token - it won't be shown again!"
+    }
+
+
+# ============== Heartbeat ==============
+
+@router.post("/heartbeat")
+async def runner_heartbeat(
+    x_runner_token: str = Header(..., description="Runner auth token"),
+    current_job_id: Optional[UUID] = None,
+    session: Session = Depends(get_db)
+):
+    """
+    Runner sends heartbeat to indicate it's still alive.
+
+    Should be called every 30 seconds.
+    Runners with no heartbeat for 60+ seconds are marked OFFLINE.
+    """
+    runner = verify_runner_token(x_runner_token, session)
+
+    runner.last_heartbeat_at = datetime.utcnow()
+    runner.current_job_id = current_job_id
+    runner.status = RunnerStatus.BUSY if current_job_id else RunnerStatus.ONLINE
+
+    session.add(runner)
+    session.commit()
+
+    return {
+        "success": True,
+        "server_time": datetime.utcnow(),
+        "next_heartbeat_seconds": 30
+    }
+
+
+# ============== Job Polling (Reverse Long-Polling) ==============
+
+@router.get("/poll-jobs", response_model=List[JobAssignment])
+async def poll_jobs(
+    max_jobs: int = 1,
+    runner: Runner = Depends(get_runner_from_header),
+    session: Session = Depends(get_db)
+):
+    """
+    Runner polls for available jobs.
+
+    This is the core of the reverse long-polling architecture.
+    Runner calls this endpoint every 5 seconds.
+    """
+    if runner.status == RunnerStatus.BUSY:
+        return []
+
+    statement = select(ComputeJob).where(
+        ComputeJob.status == ComputeJobStatus.PENDING,
+        ComputeJob.execution_mode == ExecutionMode.SELF_HOSTED,
+    ).limit(max_jobs)
+
+    jobs = session.exec(statement).all()
+
+    assignments = []
+    for job in jobs:
+        job.runner_id = runner.id
+        job.status = ComputeJobStatus.ASSIGNED
+        job.assigned_at = datetime.utcnow()
+        session.add(job)
+
+        assignments.append(JobAssignment(
+            job_id=job.id,
+            code_url=job.code_url or "",
+            code_branch=job.code_branch,
+            test_command=job.test_command,
+            env_vars=job.env_vars,
+            timeout_seconds=job.timeout_seconds,
+        ))
+
+    if assignments:
+        runner.status = RunnerStatus.BUSY
+        runner.current_job_id = assignments[0].job_id
+        session.add(runner)
+
+    session.commit()
+    return assignments
+
+
+# ============== Result Submission (Zero-Trust) ==============
+
+@router.post("/submit-result")
+async def submit_job_result(
+    req: SubmitResultRequest,
+    runner: Runner = Depends(get_runner_from_header),
+    session: Session = Depends(get_db)
+):
+    """
+    Runner submits job execution results.
+
+    Zero-Trust Requirements:
+    - stdout_log is MANDATORY
+    - Log is validated for real test output
+    - Random audits may be triggered
+    """
+    job = session.get(ComputeJob, req.job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    if job.runner_id != runner.id:
+        raise HTTPException(status_code=403, detail="Job not assigned to this runner")
+
+    # Zero-Trust: Validate stdout log
+    is_valid, validation_reason = VerificationService.validate_stdout(req.stdout_log)
+    if not is_valid:
+        raise HTTPException(
+            status_code=400,
+            detail=f"stdout_log validation failed: {validation_reason}"
+        )
+
+    # Update job
+    job.exit_code = req.exit_code
+    job.stdout_log = req.stdout_log
+    job.stderr_log = req.stderr_log
+    job.test_results = req.test_results
+    job.passed = req.passed
+    job.status = ComputeJobStatus.COMPLETED if req.exit_code == 0 else ComputeJobStatus.FAILED
+    job.completed_at = datetime.utcnow()
+    session.add(job)
+
+    # Update runner stats
+    runner.total_jobs_completed += 1
+    if job.started_at and job.completed_at:
+        runner.total_compute_seconds += int((job.completed_at - job.started_at).total_seconds())
+    runner.status = RunnerStatus.ONLINE
+    runner.current_job_id = None
+    session.add(runner)
+
+    # Check if audit should be triggered
+    audit_triggered = VerificationService.should_trigger_audit(runner)
+    if audit_triggered:
+        audit = VerificationService.create_audit(
+            session=session,
+            job=job,
+            reason="random" if runner.reputation_score >= 50 else "low_reputation"
+        )
+        job.is_audited = True
+        job.audit_job_id = audit.id
+        job.audit_result = "pending"
+        session.add(job)
+
+    session.commit()
+
+    return {
+        "success": True,
+        "job_id": str(job.id),
+        "status": job.status,
+        "audit_triggered": audit_triggered
+    }
+
+
+# ============== Runner Management (User Auth) ==============
+
+@router.get("", response_model=List[RunnerResponse])
+async def list_my_runners(
+    user_id: UUID = Header(..., description="User ID from JWT"),
+    session: Session = Depends(get_db)
+):
+    """List all runners owned by the authenticated user."""
+    statement = select(Runner).where(Runner.owner_user_id == user_id)
+    runners = session.exec(statement).all()
+    return [RunnerResponse.model_validate(r) for r in runners]
+
+
+@router.delete("/{runner_id}")
+async def delete_runner(
+    runner_id: UUID,
+    user_id: UUID = Header(..., description="User ID from JWT"),
+    session: Session = Depends(get_db)
+):
+    """Delete a runner (soft disable)."""
+    runner = session.get(Runner, runner_id)
+
+    if not runner:
+        raise HTTPException(status_code=404, detail="Runner not found")
+    if runner.owner_user_id != user_id:
+        raise HTTPException(status_code=403, detail="Not your runner")
+
+    runner.status = RunnerStatus.DISABLED
+    session.add(runner)
+    session.commit()
+
+    return {"success": True, "message": "Runner disabled"}
+
+
+@router.get("/{runner_id}", response_model=RunnerResponse)
+async def get_runner_info(
+    runner_id: UUID,
+    user_id: UUID = Header(..., description="User ID from JWT"),
+    session: Session = Depends(get_db)
+):
+    """Get detailed info about a specific runner."""
+    runner = session.get(Runner, runner_id)
+
+    if not runner:
+        raise HTTPException(status_code=404, detail="Runner not found")
+    if runner.owner_user_id != user_id:
+        raise HTTPException(status_code=403, detail="Not your runner")
+
+    return RunnerResponse.model_validate(runner)
+
+
+# ============== Job Status ==============
+
+@router.get("/jobs/{job_id}", response_model=ComputeJobResponse)
+async def get_job_status(
+    job_id: UUID,
+    session: Session = Depends(get_db)
+):
+    """Get status of a compute job."""
+    job = session.get(ComputeJob, job_id)
+
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    return ComputeJobResponse.model_validate(job)
+
+
+# ============== Internal Audit Endpoints ==============
+
+from pydantic import BaseModel
+from ..models.runner import AuditResult as AuditResultEnum
+
+
+class SubmitAuditResultRequest(BaseModel):
+    """Request to submit audit result from trusted infrastructure."""
+    audit_id: UUID
+    audited_stdout: str
+    audited_exit_code: int
+
+
+@router.post("/internal/audit/submit")
+async def submit_audit_result(
+    req: SubmitAuditResultRequest,
+    session: Session = Depends(get_db)
+):
+    """
+    Submit audit result from trusted infrastructure (E2B).
+
+    This is an internal endpoint called by the platform's audit worker.
+    It compares the runner's submission with the audited result and
+    applies reputation penalties or bans as needed.
+    """
+    from ..models.runner import AuditResult
+
+    audit = session.get(AuditLog, req.audit_id)
+    if not audit:
+        raise HTTPException(status_code=404, detail="Audit not found")
+
+    if audit.status != "pending":
+        raise HTTPException(status_code=400, detail="Audit already processed")
+
+    # Compare results
+    result, explanation = VerificationService.execute_audit(
+        original_stdout=audit.original_stdout or "",
+        original_exit_code=audit.original_exit_code or 0,
+        audited_stdout=req.audited_stdout,
+        audited_exit_code=req.audited_exit_code
+    )
+
+    # Apply result
+    VerificationService.apply_audit_result(
+        session=session,
+        audit=audit,
+        result=result,
+        explanation=explanation,
+        audited_stdout=req.audited_stdout,
+        audited_exit_code=req.audited_exit_code
+    )
+
+    # Update job audit status
+    job = session.get(ComputeJob, audit.job_id)
+    if job:
+        job.audit_result = result.value
+        job.audit_mismatch_details = explanation
+        if result == AuditResult.FAILED:
+            job.status = ComputeJobStatus.AUDIT_FAILED
+        session.add(job)
+        session.commit()
+
+    return {
+        "success": True,
+        "audit_id": str(audit.id),
+        "result": result.value,
+        "explanation": explanation
+    }
+
+
+@router.get("/internal/audit/pending")
+async def get_pending_audits(
+    limit: int = 10,
+    session: Session = Depends(get_db)
+):
+    """Get pending audits for the audit worker to process."""
+    statement = select(AuditLog).where(
+        AuditLog.status == "pending"
+    ).limit(limit)
+
+    audits = session.exec(statement).all()
+
+    return [
+        {
+            "audit_id": str(audit.id),
+            "job_id": str(audit.job_id),
+            "runner_id": str(audit.runner_id),
+            "reason": audit.reason,
+            "created_at": audit.created_at.isoformat()
+        }
+        for audit in audits
+    ]

@@ -1,0 +1,50 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "agenthub-runner"
+version = "0.1.0"
+description = "Self-hosted compute runner for AgentHub distributed CI/CD network"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.10"
+authors = [
+    { name = "AgentHub Team", email = "team@agenthub.dev" }
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+]
+keywords = ["agenthub", "ci", "cd", "runner", "distributed-compute"]
+
+dependencies = [
+    "httpx>=0.25.0",
+    "docker>=6.1.0",
+    "click>=8.1.0",
+    "rich>=13.0.0",
+    "pydantic>=2.0.0",
+    "psutil>=5.9.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
+    "pytest-asyncio>=0.21.0",
+    "ruff>=0.1.0",
+]
+
+[project.scripts]
+agenthub-runner = "agenthub_runner.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/agenthub_runner"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"

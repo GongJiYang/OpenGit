@@ -1128,6 +1128,10 @@ app.include_router(meta_router)
 from agent_auth.routers.platform import platform_router
 app.include_router(platform_router, prefix="/api/v1")
 
+# Runner Router (Self-Hosted Compute Network)
+from agent_auth.routers.runner import router as runner_router
+app.include_router(runner_router, prefix="/api/v1")
+
 @app.on_event("startup")
 def start_background_jobs():
     from sqlmodel import Session as AuthSession
