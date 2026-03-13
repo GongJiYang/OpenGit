@@ -65,7 +65,7 @@ export default function ReposPage() {
             const params = new URLSearchParams();
             if (mineOnly) params.set("mine", "true");
 
-            const res = await fetch(`${API_BASE}/api/v1/repos?${params}`, {
+            const res = await fetch(`${API_BASE}/v1/repos?${params}`, {
                 headers: getAuthHeaders()
             });
             if (res.ok) {
@@ -103,7 +103,7 @@ export default function ReposPage() {
             setCreating(true);
             setError("");
 
-            const res = await fetch(`${API_BASE}/api/v1/repos`, {
+            const res = await fetch(`${API_BASE}/v1/repos`, {
                 method: "POST",
                 headers: getAuthHeaders(),
                 body: JSON.stringify({

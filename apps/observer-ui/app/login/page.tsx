@@ -20,7 +20,7 @@ export default function LoginPage() {
         setError("");
 
         try {
-            const endpoint = mode === "login" ? "/api/v1/auth/login" : "/api/v1/auth/register";
+            const endpoint = mode === "login" ? "/v1/auth/login" : "/v1/auth/register";
             const res = await fetch(`${API_BASE}${endpoint}`, {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },

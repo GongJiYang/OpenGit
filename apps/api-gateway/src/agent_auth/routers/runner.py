@@ -23,8 +23,9 @@ from typing import List, Optional
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, status, Header
-from sqlmodel import Session, select
+from sqlmodel import Session, select, Field
 from passlib.context import CryptContext
+from pydantic import BaseModel
 
 from ..models.runner import (
     Runner,
@@ -220,19 +221,33 @@ async def poll_jobs(
 
     This is the core of the reverse long-polling architecture.
     Runner calls this endpoint every 5 seconds.
+
+    Repository Binding:
+    - If runner.is_global=True: can serve any repo
+    - If runner.is_global=False: only serve repos in allowed_repo_ids
     """
     if runner.status == RunnerStatus.BUSY:
         return []
 
+    # Build base query
     statement = select(ComputeJob).where(
         ComputeJob.status == ComputeJobStatus.PENDING,
         ComputeJob.execution_mode == ExecutionMode.SELF_HOSTED,
-    ).limit(max_jobs)
+    )
 
     jobs = session.exec(statement).all()
 
     assignments = []
     for job in jobs:
+        # Check repository binding
+        if not runner.is_global:
+            # Runner is repo-specific, check if job's repo is allowed
+            job_repo_id = str(job.repo_id) if job.repo_id else None
+            if not job_repo_id or job_repo_id not in runner.allowed_repo_ids:
+                # Skip this job - runner not allowed for this repo
+                continue
+
+        # Assign job to runner
         job.runner_id = runner.id
         job.status = ComputeJobStatus.ASSIGNED
         job.assigned_at = datetime.utcnow()
@@ -246,6 +261,9 @@ async def poll_jobs(
             env_vars=job.env_vars,
             timeout_seconds=job.timeout_seconds,
         ))
+
+        if len(assignments) >= max_jobs:
+            break
 
     if assignments:
         runner.status = RunnerStatus.BUSY
@@ -377,6 +395,145 @@ async def delete_runner(
     session.commit()
 
     return {"success": True, "message": "Runner disabled"}
+
+
+# ============== Repository Binding Management ==============
+
+class UpdateRepoBindingRequest(BaseModel):
+    """Request to update runner's repository bindings."""
+    allowed_repo_ids: List[str] = Field(description="List of repo IDs the runner can serve")
+    is_global: bool = Field(default=False, description="If True, runner serves all repos")
+
+
+@router.put("/{runner_id}/repos")
+async def update_runner_repos(
+    runner_id: UUID,
+    req: UpdateRepoBindingRequest,
+    user_id: Optional[str] = Header(None, alias="X-User-Id"),
+    session: Session = Depends(get_db)
+):
+    """
+    Update runner's repository bindings.
+
+    - is_global=True: Runner serves all repos (ignores allowed_repo_ids)
+    - is_global=False: Runner only serves repos in allowed_repo_ids
+    """
+    # Validate user_id
+    actual_user_id = None
+    if user_id:
+        try:
+            actual_user_id = UUID(user_id)
+        except ValueError:
+            pass
+
+    if not actual_user_id:
+        raise HTTPException(status_code=401, detail="Authentication required")
+
+    runner = session.get(Runner, runner_id)
+    if not runner:
+        raise HTTPException(status_code=404, detail="Runner not found")
+    if runner.owner_user_id != actual_user_id:
+        raise HTTPException(status_code=403, detail="Not your runner")
+
+    # Update bindings
+    runner.allowed_repo_ids = req.allowed_repo_ids
+    runner.is_global = req.is_global
+    session.add(runner)
+    session.commit()
+    session.refresh(runner)
+
+    return {
+        "success": True,
+        "runner_id": str(runner.id),
+        "is_global": runner.is_global,
+        "allowed_repo_ids": runner.allowed_repo_ids
+    }
+
+
+@router.post("/{runner_id}/repos/{repo_id}")
+async def add_runner_repo(
+    runner_id: UUID,
+    repo_id: UUID,
+    user_id: Optional[str] = Header(None, alias="X-User-Id"),
+    session: Session = Depends(get_db)
+):
+    """Add a single repository to runner's allowed list."""
+    # Validate user_id
+    actual_user_id = None
+    if user_id:
+        try:
+            actual_user_id = UUID(user_id)
+        except ValueError:
+            pass
+
+    if not actual_user_id:
+        raise HTTPException(status_code=401, detail="Authentication required")
+
+    runner = session.get(Runner, runner_id)
+    if not runner:
+        raise HTTPException(status_code=404, detail="Runner not found")
+    if runner.owner_user_id != actual_user_id:
+        raise HTTPException(status_code=403, detail="Not your runner")
+
+    repo_id_str = str(repo_id)
+
+    # Add repo if not already in list
+    if repo_id_str not in runner.allowed_repo_ids:
+        runner.allowed_repo_ids = runner.allowed_repo_ids + [repo_id_str]
+        runner.is_global = False  # Adding specific repo makes it non-global
+        session.add(runner)
+        session.commit()
+        session.refresh(runner)
+
+    return {
+        "success": True,
+        "runner_id": str(runner.id),
+        "is_global": runner.is_global,
+        "allowed_repo_ids": runner.allowed_repo_ids
+    }
+
+
+@router.delete("/{runner_id}/repos/{repo_id}")
+async def remove_runner_repo(
+    runner_id: UUID,
+    repo_id: UUID,
+    user_id: Optional[str] = Header(None, alias="X-User-Id"),
+    session: Session = Depends(get_db)
+):
+    """Remove a single repository from runner's allowed list."""
+    # Validate user_id
+    actual_user_id = None
+    if user_id:
+        try:
+            actual_user_id = UUID(user_id)
+        except ValueError:
+            pass
+
+    if not actual_user_id:
+        raise HTTPException(status_code=401, detail="Authentication required")
+
+    runner = session.get(Runner, runner_id)
+    if not runner:
+        raise HTTPException(status_code=404, detail="Runner not found")
+    if runner.owner_user_id != actual_user_id:
+        raise HTTPException(status_code=403, detail="Not your runner")
+
+    repo_id_str = str(repo_id)
+
+    # Remove repo from list
+    if repo_id_str in runner.allowed_repo_ids:
+        new_list = [r for r in runner.allowed_repo_ids if r != repo_id_str]
+        runner.allowed_repo_ids = new_list
+        session.add(runner)
+        session.commit()
+        session.refresh(runner)
+
+    return {
+        "success": True,
+        "runner_id": str(runner.id),
+        "is_global": runner.is_global,
+        "allowed_repo_ids": runner.allowed_repo_ids
+    }
 
 
 @router.get("/{runner_id}", response_model=RunnerResponse)

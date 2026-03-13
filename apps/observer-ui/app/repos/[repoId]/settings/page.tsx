@@ -92,7 +92,7 @@ export default function RepoSettingsPage() {
 
     const fetchRunners = async () => {
         try {
-            const res = await fetch(`${API_BASE}/api/v1/runners`, {
+            const res = await fetch(`${API_BASE}/v1/runners`, {
                 headers: { "X-User-Id": "demo-user" }
             });
             if (res.ok) {

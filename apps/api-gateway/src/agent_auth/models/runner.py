@@ -106,6 +106,17 @@ class Runner(SQLModel, table=True):
     labels: List[str] = Field(default_factory=list, sa_column=Column(JSON),
                                description="Custom labels for job matching, e.g., ['gpu', 'macos']")
 
+    # Repository Binding (empty = serve all repos = global runner)
+    allowed_repo_ids: List[str] = Field(
+        default_factory=list,
+        sa_column=Column(JSON),
+        description="Allowed repo IDs to serve. Empty = serve all repos (global runner)"
+    )
+    is_global: bool = Field(
+        default=True,
+        description="If True, can serve any repo. If False, only allowed_repo_ids"
+    )
+
     # Metrics
     total_jobs_completed: int = Field(default=0, description="Total jobs completed successfully")
     total_jobs_failed: int = Field(default=0, description="Total jobs failed")
@@ -400,6 +411,9 @@ class RunnerResponse(SQLModel):
     total_jobs_completed: int
     reputation_score: int
     last_heartbeat_at: Optional[datetime] = None
+    # Repository binding
+    allowed_repo_ids: List[str] = Field(default_factory=list)
+    is_global: bool = Field(default=True)
 
 
 class ComputeJobResponse(SQLModel):

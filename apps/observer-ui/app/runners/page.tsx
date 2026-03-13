@@ -4,7 +4,8 @@ import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import {
     Server, Plus, Trash2, Copy, Check, Terminal, Cpu, Clock,
-    Activity, AlertCircle, ExternalLink, LogIn, Loader2
+    Activity, AlertCircle, ExternalLink, LogIn, Loader2, Settings,
+    Globe, Lock
 } from "lucide-react";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE || "/api";
@@ -24,6 +25,8 @@ interface Runner {
     reputation_score: number;
     last_heartbeat_at: string | null;
     created_at: string;
+    allowed_repo_ids: string[];
+    is_global: boolean;
 }
 
 interface TokenInfo {
@@ -68,7 +71,7 @@ export default function RunnersPage() {
     const fetchRunners = async () => {
         try {
             setLoading(true);
-            const res = await fetch(`${API_BASE}/api/v1/runners`, {
+            const res = await fetch(`${API_BASE}/v1/runners`, {
                 headers: getAuthHeaders()
             });
             if (res.ok) {
@@ -96,7 +99,7 @@ export default function RunnersPage() {
         if (!requireAuth()) return;
 
         try {
-            const res = await fetch(`${API_BASE}/api/v1/runners/generate-token`, {
+            const res = await fetch(`${API_BASE}/v1/runners/generate-token`, {
                 method: "POST",
                 headers: getAuthHeaders()
             });
@@ -118,7 +121,7 @@ export default function RunnersPage() {
         if (!confirm("确定要禁用此 Runner 吗？")) return;
 
         try {
-            const res = await fetch(`${API_BASE}/api/v1/runners/${runnerId}`, {
+            const res = await fetch(`${API_BASE}/v1/runners/${runnerId}`, {
                 method: "DELETE",
                 headers: getAuthHeaders()
             });
@@ -274,7 +277,8 @@ export default function RunnersPage() {
                     {runners.map((runner) => (
                         <div
                             key={runner.id}
-                            className="glass-panel rounded-xl p-5 transition-all hover:border-purple-500/30"
+                            onClick={() => router.push(`/runners/${runner.id}`)}
+                            className="glass-panel rounded-xl p-5 transition-all hover:border-purple-500/30 cursor-pointer"
                         >
                             <div className="flex items-start justify-between">
                                 <div className="flex items-center gap-4">
@@ -287,6 +291,17 @@ export default function RunnersPage() {
                                             <span className={`text-xs px-2 py-0.5 rounded-full border ${getStatusColor(runner.status)}`}>
                                                 {runner.status}
                                             </span>
+                                            {runner.is_global ? (
+                                                <span className="text-xs px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 flex items-center gap-1">
+                                                    <Globe className="w-3 h-3" />
+                                                    Global
+                                                </span>
+                                            ) : (
+                                                <span className="text-xs px-2 py-0.5 rounded-full bg-purple-500/10 text-purple-400 border border-purple-500/20 flex items-center gap-1">
+                                                    <Lock className="w-3 h-3" />
+                                                    {runner.allowed_repo_ids.length} repos
+                                                </span>
+                                            )}
                                         </div>
                                         <div className="flex items-center gap-4 mt-1 text-sm text-zinc-400">
                                             {runner.os_type && (
@@ -309,7 +324,20 @@ export default function RunnersPage() {
                                         <p className="text-xs text-zinc-500">信誉分</p>
                                     </div>
                                     <button
-                                        onClick={() => deleteRunner(runner.id)}
+                                        onClick={(e) => {
+                                            e.stopPropagation();
+                                            router.push(`/runners/${runner.id}`);
+                                        }}
+                                        className="p-2 text-zinc-500 hover:text-purple-400 hover:bg-purple-500/10 rounded-lg transition-colors"
+                                        title="Settings"
+                                    >
+                                        <Settings className="w-5 h-5" />
+                                    </button>
+                                    <button
+                                        onClick={(e) => {
+                                            e.stopPropagation();
+                                            deleteRunner(runner.id);
+                                        }}
                                         className="p-2 text-zinc-500 hover:text-red-400 hover:bg-red-500/10 rounded-lg transition-colors"
                                     >
                                         <Trash2 className="w-5 h-5" />
