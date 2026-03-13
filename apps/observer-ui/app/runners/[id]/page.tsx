@@ -197,22 +197,30 @@ export default function RunnerDetailPage() {
     const addRepo = async (repoId: string) => {
         try {
             setSaving(true);
+            console.log("Adding repo:", repoId, "to runner:", runnerId);
             const res = await fetch(`${API_BASE}/v1/runners/${runnerId}/repos/${repoId}`, {
                 method: "POST",
                 headers: getAuthHeaders()
             });
 
+            console.log("Response status:", res.status);
             if (res.ok) {
                 const data = await res.json();
+                console.log("Response data:", data);
                 setRunner(prev => prev ? {
                     ...prev,
                     allowed_repo_ids: data.allowed_repo_ids,
                     is_global: data.is_global
                 } : null);
                 setIsGlobalMode(data.is_global);
+            } else {
+                const errorData = await res.json().catch(() => ({}));
+                console.error("Failed to add repo:", res.status, errorData);
+                alert(`Failed to add repository: ${errorData.detail || res.statusText}`);
             }
         } catch (e) {
-            console.error(e);
+            console.error("Error adding repo:", e);
+            alert(`Error adding repository: ${e}`);
         } finally {
             setSaving(false);
         }
