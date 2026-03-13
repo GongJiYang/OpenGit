@@ -328,7 +328,6 @@ from typing import Annotated
 
 async def get_current_user(
     authorization: Annotated[str, Header()],
-    session: Session = Depends(lambda: next(get_db()))
 ) -> User:
     """
     Validate JWT token and return the authenticated user.
@@ -342,29 +341,36 @@ async def get_current_user(
         )
 
     token = authorization[7:]  # Remove "Bearer "
-    service = UserAuthService(session)
 
-    payload = service.verify_token(token)
-    if not payload:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid or expired token"
-        )
+    # Import here to avoid circular dependency
+    from ..database import get_db
+    session = next(get_db())
 
-    user_id = payload.get("sub")
-    user = service.get_user_by_id(user_id)
-    if not user:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="User not found"
-        )
+    try:
+        service = UserAuthService(session)
 
-    return user
+        payload = service.verify_token(token)
+        if not payload:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid or expired token"
+            )
+
+        user_id = payload.get("sub")
+        user = service.get_user_by_id(user_id)
+        if not user:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="User not found"
+            )
+
+        return user
+    finally:
+        session.close()
 
 
 async def get_current_user_optional(
-    request: Request,
-    session: Session = Depends(get_db)
+    authorization: Annotated[Optional[str], Header()] = None,
 ) -> Optional[User]:
     """
     Validate JWT token and return the authenticated user if present.
@@ -372,20 +378,27 @@ async def get_current_user_optional(
     Returns None if no authorization header or invalid token.
     Use this for endpoints that work with or without authentication.
     """
-    auth_header = request.headers.get('authorization', '') or request.headers.get('Authorization', '')
-    if not auth_header or not auth_header.startswith("Bearer "):
+    if not authorization or not authorization.startswith("Bearer "):
         return None
 
-    token = auth_header[7:]  # Remove "Bearer "
-    service = UserAuthService(session)
+    token = authorization[7:]  # Remove "Bearer "
 
-    payload = service.verify_token(token)
-    if not payload:
-        return None
+    # Import here to avoid circular dependency
+    from ..database import get_db
+    session = next(get_db())
 
-    user_id = payload.get("sub")
-    user = service.get_user_by_id(user_id)
-    return user
+    try:
+        service = UserAuthService(session)
+
+        payload = service.verify_token(token)
+        if not payload:
+            return None
+
+        user_id = payload.get("sub")
+        user = service.get_user_by_id(user_id)
+        return user
+    finally:
+        session.close()
 
 
 # Import here to avoid circular dependency
