@@ -103,7 +103,12 @@ class Bounty(SQLModel, table=True):
     required_role: str # architect, contributor, executor
     assignee: Optional[str] = Field(default=None, index=True)
     parent_id: Optional[str] = Field(default=None, index=True, description="Parent bounty ID for decomposition")
-    
+
+    # Temporary Claim Support (for unauthenticated users)
+    is_temporary_claim: bool = Field(default=False, description="True if claimed by unauthenticated user")
+    claim_expires_at: Optional[datetime] = Field(default=None, index=True, description="Expiration time for temporary claims")
+    claimed_by_user_id: Optional[str] = Field(default=None, index=True, description="User ID who made the claim (if authenticated)")
+
     # Cost & Risk Control
     max_steps: int = Field(default=15, description="Max allowed submission attempts")
     current_steps: int = Field(default=0)

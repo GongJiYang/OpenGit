@@ -4,19 +4,23 @@ Bounty Service - Unified Bounty Management
 Encapsulates all bounty-related business logic:
 - Validation eligibility
 - Repository resolution
-- Claim management
+- Claim management (authenticated and temporary)
 """
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Optional, Tuple, List
 from uuid import UUID
 
 from sqlmodel import Session, select
 
 from ..models import Agent, AgentStatus
-from ..models.platform import Repo, RepoMember, RepoRole, MembershipStatus
+from ..models.platform import Repo, RepoMember, RepoRole, MembershipStatus, User
 from persistence import Bounty
+
+
+# Temporary claim expiration time (1 day)
+TEMPORARY_CLAIM_EXPIRATION_HOURS = 24
 
 
 @dataclass
@@ -226,6 +230,163 @@ class BountyService:
         self.bounty_session.refresh(eligibility.bounty)
 
         return eligibility.bounty, None
+
+    # ============== Temporary Claim (Unauthenticated User) ==============
+
+    def validate_temporary_claim_eligibility(
+        self,
+        bounty_id: str,
+    ) -> ClaimEligibility:
+        """
+        Validate eligibility for temporary claim (unauthenticated user).
+
+        Restrictions:
+        - Can only claim tasks with required_role = 'contributor' (not 'architect')
+        - Bounty must be open
+
+        Returns: ClaimEligibility with result
+        """
+        # Step 1: Get Bounty
+        bounty = self.bounty_session.get(Bounty, bounty_id)
+        if not bounty:
+            return ClaimEligibility(
+                is_eligible=False,
+                error_code="BOUNTY_NOT_FOUND",
+                error_message="Bounty not found"
+            )
+
+        # Step 2: Check bounty status
+        if bounty.status != "open":
+            return ClaimEligibility(
+                is_eligible=False,
+                error_code="BOUNTY_NOT_OPEN",
+                error_message=f"Bounty is {bounty.status}, assigned to {bounty.assignee}"
+            )
+
+        # Step 3: Check role restriction (temporary claims only for contributor)
+        if bounty.required_role.lower() == "architect":
+            return ClaimEligibility(
+                is_eligible=False,
+                error_code="ARCHITECT_REQUIRES_LOGIN",
+                error_message="Architect role requires login. Please login to claim this bounty."
+            )
+
+        # All checks passed
+        return ClaimEligibility(
+            is_eligible=True,
+            bounty=bounty,
+            agent=None,
+        )
+
+    def create_temporary_claim(
+        self,
+        bounty_id: str,
+        agent_id: str,
+    ) -> Tuple[Optional[Bounty], Optional[str]]:
+        """
+        Create a temporary claim for unauthenticated user.
+
+        The claim will expire in 24 hours if not converted to permanent claim.
+
+        Returns: (bounty, error_message)
+        """
+        eligibility = self.validate_temporary_claim_eligibility(bounty_id)
+
+        if not eligibility.is_eligible:
+            return None, eligibility.error_message
+
+        # Create temporary claim
+        now = datetime.utcnow()
+        expires_at = now + timedelta(hours=TEMPORARY_CLAIM_EXPIRATION_HOURS)
+
+        eligibility.bounty.status = "in_progress"
+        eligibility.bounty.assignee = str(agent_id)
+        eligibility.bounty.is_temporary_claim = True
+        eligibility.bounty.claim_expires_at = expires_at
+        eligibility.bounty.updated_at = now
+
+        self.bounty_session.add(eligibility.bounty)
+        self.bounty_session.commit()
+        self.bounty_session.refresh(eligibility.bounty)
+
+        return eligibility.bounty, None
+
+    def convert_temporary_claim_to_permanent(
+        self,
+        bounty_id: str,
+        user_id: str,
+        agent_id: str,
+    ) -> Tuple[Optional[Bounty], Optional[str]]:
+        """
+        Convert a temporary claim to permanent (user logged in).
+
+        This validates the agent can claim the bounty and removes the temporary flag.
+
+        Returns: (bounty, error_message)
+        """
+        bounty = self.bounty_session.get(Bounty, bounty_id)
+        if not bounty:
+            return None, "Bounty not found"
+
+        if not bounty.is_temporary_claim:
+            return None, "This is not a temporary claim"
+
+        if str(bounty.assignee) != str(agent_id):
+            return None, "Agent ID mismatch - this claim belongs to another agent"
+
+        # Validate full claim eligibility (with agent validation)
+        eligibility = self.validate_claim_eligibility(bounty_id, agent_id)
+        if not eligibility.is_eligible:
+            return None, eligibility.error_message
+
+        # Convert to permanent claim
+        bounty.is_temporary_claim = False
+        bounty.claim_expires_at = None
+        bounty.claimed_by_user_id = str(user_id)
+        bounty.updated_at = datetime.utcnow()
+
+        self.bounty_session.add(bounty)
+        self.bounty_session.commit()
+        self.bounty_session.refresh(bounty)
+
+        return bounty, None
+
+    def cleanup_expired_temporary_claims(self) -> dict:
+        """
+        Clean up expired temporary claims.
+
+        Called by the scheduler to release bounties that were temporarily claimed
+        but not converted to permanent claims within 24 hours.
+
+        Returns: dict with cleanup statistics
+        """
+        now = datetime.utcnow()
+
+        # Find expired temporary claims
+        statement = select(Bounty).where(
+            Bounty.is_temporary_claim == True,
+            Bounty.claim_expires_at < now,
+            Bounty.status == "in_progress"
+        )
+        expired_claims = self.bounty_session.exec(statement).all()
+
+        released_count = 0
+        for bounty in expired_claims:
+            # Release the bounty back to open
+            bounty.status = "open"
+            bounty.assignee = None
+            bounty.is_temporary_claim = False
+            bounty.claim_expires_at = None
+            bounty.updated_at = now
+            self.bounty_session.add(bounty)
+            released_count += 1
+
+        self.bounty_session.commit()
+
+        return {
+            "released_count": released_count,
+            "checked_at": now.isoformat(),
+        }
 
     # ============== Permission Checks ==============
 

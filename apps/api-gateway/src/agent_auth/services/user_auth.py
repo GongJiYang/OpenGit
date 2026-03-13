@@ -361,5 +361,36 @@ async def get_current_user(
     return user
 
 
+def get_current_user_optional(session: Session) -> Optional[User]:
+    """
+    Try to get the current user from JWT token (optional).
+
+    Returns None if no valid token is found (does not raise exception).
+    Use this for endpoints that work both with and without authentication.
+    """
+    try:
+        from fastapi import Request
+        # Try to get token from request context
+        import inspect
+        frame = inspect.currentframe()
+        while frame:
+            if 'request' in frame.f_locals:
+                request = frame.f_locals['request']
+                if hasattr(request, 'headers'):
+                    auth_header = request.headers.get('authorization', '') or request.headers.get('Authorization', '')
+                    if auth_header.startswith('Bearer '):
+                        token = auth_header[7:]
+                        service = UserAuthService(session)
+                        payload = service.verify_token(token)
+                        if payload:
+                            user_id = payload.get("sub")
+                            return service.get_user_by_id(user_id)
+                break
+            frame = frame.f_back
+    except Exception:
+        pass
+    return None
+
+
 # Import here to avoid circular dependency
 from ..database import get_db

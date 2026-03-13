@@ -651,23 +651,121 @@ def decompose_task(parent_id: str, sub_tasks: List[Bounty], agent_id: str, sessi
 def claim_bounty_route(
     bounty_id: str,
     agent_id: str,
+    authorization: Optional[str] = Header(None, alias="Authorization"),
     session: Session = Depends(get_session),
     auth_session: Session = Depends(get_auth_session),
-    agent: Agent = Depends(require_agent)
+    agent: Agent = Depends(require_agent),
 ):
-    """Agent claims a job."""
+    """
+    Agent claims a job.
+
+    Two modes:
+    1. Authenticated (user logged in): Permanent claim with full validation
+    2. Unauthenticated (no user): Temporary claim, expires in 24 hours, contributor role only
+    """
     if str(agent.id) != agent_id:
         raise HTTPException(status_code=403, detail="Agent ID mismatch")
 
     # Use BountyService for unified validation
     from agent_auth.services.bounty_service import BountyService
+    from agent_auth.services.user_auth import UserAuthService
     service = BountyService(bounty_session=session, auth_session=auth_session)
-    bounty, error = service.claim_bounty(bounty_id, agent_id)
+
+    # Check if user is authenticated via Authorization header
+    user = None
+    if authorization and authorization.startswith("Bearer "):
+        token = authorization[7:]
+        auth_service = UserAuthService(auth_session)
+        payload = auth_service.verify_token(token)
+        if payload:
+            user_id = payload.get("sub")
+            user = auth_service.get_user_by_id(user_id)
+
+    if user:
+        # Authenticated claim - permanent with full validation
+        bounty, error = service.claim_bounty(bounty_id, agent_id)
+        if error:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=error
+            )
+        # Mark as claimed by user
+        bounty.claimed_by_user_id = str(user.id)
+        bounty.is_temporary_claim = False
+        session.add(bounty)
+        session.commit()
+        session.refresh(bounty)
+    else:
+        # Unauthenticated claim - temporary with restrictions
+        bounty, error = service.create_temporary_claim(bounty_id, agent_id)
+        if error:
+            # Check if it's an architect restriction
+            if "Architect role requires login" in error:
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail=error
+                )
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=error
+            )
+
+    return bounty
+
+
+@app.post("/bounties/{bounty_id}/convert-claim")
+def convert_temporary_claim_route(
+    bounty_id: str,
+    agent_id: str,
+    authorization: str = Header(..., alias="Authorization"),
+    session: Session = Depends(get_session),
+    auth_session: Session = Depends(get_auth_session),
+    agent: Agent = Depends(require_agent),
+):
+    """
+    Convert a temporary claim to permanent (user logged in).
+
+    Requires valid JWT token. Validates agent eligibility and removes temporary flag.
+    """
+    if str(agent.id) != agent_id:
+        raise HTTPException(status_code=403, detail="Agent ID mismatch")
+
+    # Verify user authentication
+    if not authorization.startswith("Bearer "):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Authorization required. Use: Bearer <token>"
+        )
+
+    token = authorization[7:]
+    from agent_auth.services.user_auth import UserAuthService
+    auth_service = UserAuthService(auth_session)
+    payload = auth_service.verify_token(token)
+
+    if not payload:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or expired token"
+        )
+
+    user_id = payload.get("sub")
+    user = auth_service.get_user_by_id(user_id)
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="User not found"
+        )
+
+    # Convert temporary claim
+    from agent_auth.services.bounty_service import BountyService
+    service = BountyService(bounty_session=session, auth_session=auth_session)
+    bounty, error = service.convert_temporary_claim_to_permanent(
+        bounty_id, str(user.id), agent_id
+    )
 
     if error:
-        # Map error types to status codes
         raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
+            status_code=status.HTTP_400_BAD_REQUEST,
             detail=error
         )
 
