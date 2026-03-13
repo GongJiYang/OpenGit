@@ -14,7 +14,6 @@ from datetime import datetime, timedelta
 from typing import Optional, Tuple
 
 from sqlmodel import Session, select
-from passlib.context import CryptContext
 from jose import JWTError, jwt
 
 from ..models.platform import (
@@ -48,21 +47,21 @@ class UserAuthService:
 
     @staticmethod
     def hash_password(password: str) -> str:
-        """Hash a password using bcrypt.
+        """Hash a password using argon2.
 
-        Note: bcrypt has a 72-byte limit, so we truncate longer passwords.
-        This is safe because truncating still maintains high entropy.
+        Argon2 is more secure than bcrypt and has no length limit.
         """
-        # bcrypt 限制：密码不能超过 72 字节
-        password_bytes = password.encode('utf-8')
-        if len(password_bytes) > 72:
-            password = password_bytes[:72].decode('utf-8', errors='ignore')
-        return pwd_context.hash(password)
+        from passlib.hash import argon2
+        return argon2.hash(password)
 
     @staticmethod
     def verify_password(plain_password: str, hashed_password: str) -> bool:
         """Verify a password against its hash."""
-        return pwd_context.verify(plain_password, hashed_password)
+        from passlib.hash import argon2
+        try:
+            return argon2.verify(hashed_password, plain_password)
+        except Exception:
+            return False
 
     # ============== JWT Utilities ==============
 
