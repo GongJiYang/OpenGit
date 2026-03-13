@@ -13,7 +13,7 @@ from typing import List, Optional
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, status, Header
-from sqlmodel import Session
+from sqlmodel import Session, SQLModel
 
 from ..models.platform import (
     User,
