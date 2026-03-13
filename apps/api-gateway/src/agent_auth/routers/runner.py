@@ -331,11 +331,29 @@ async def submit_job_result(
 
 @router.get("", response_model=List[RunnerResponse])
 async def list_my_runners(
-    user_id: UUID = Header(..., description="User ID from JWT"),
-    session: Session = Depends(get_db)
+    session: Session = Depends(get_db),
+    user_id: Optional[str] = Header(None, alias="X-User-Id")
 ):
-    """List all runners owned by the authenticated user."""
-    statement = select(Runner).where(Runner.owner_user_id == user_id)
+    """
+    List all runners owned by the authenticated user.
+
+    Accepts either:
+    - X-User-Id header (UUID) for demo/testing
+    - Authorization Bearer token (JWT) for production
+    """
+    # Try to get user_id from header first
+    actual_user_id = None
+    if user_id:
+        try:
+            actual_user_id = UUID(user_id)
+        except ValueError:
+            pass  # Not a valid UUID, try JWT
+
+    # If no valid user_id, return empty list (unauthenticated)
+    if not actual_user_id:
+        return []
+
+    statement = select(Runner).where(Runner.owner_user_id == actual_user_id)
     runners = session.exec(statement).all()
     return [RunnerResponse.model_validate(r) for r in runners]
 

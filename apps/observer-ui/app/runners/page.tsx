@@ -4,7 +4,7 @@ import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import {
     Server, Plus, Trash2, Copy, Check, Terminal, Cpu, Clock,
-    Activity, AlertCircle, ExternalLink
+    Activity, AlertCircle, ExternalLink, LogIn, Loader2
 } from "lucide-react";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE || "/api";
@@ -38,19 +38,44 @@ export default function RunnersPage() {
     const [loading, setLoading] = useState(true);
     const [showToken, setShowToken] = useState<TokenInfo | null>(null);
     const [copied, setCopied] = useState(false);
+    const [isLoggedIn, setIsLoggedIn] = useState(false);
 
     useEffect(() => {
-        fetchRunners();
+        const token = localStorage.getItem("token");
+        setIsLoggedIn(!!token);
+        if (token) {
+            fetchRunners();
+        } else {
+            setLoading(false);
+        }
     }, []);
+
+    const getAuthHeaders = () => {
+        const token = localStorage.getItem("token");
+        const userId = localStorage.getItem("user_id");
+        const headers: Record<string, string> = {
+            "Content-Type": "application/json",
+        };
+        if (token) {
+            headers["Authorization"] = `Bearer ${token}`;
+        }
+        if (userId) {
+            headers["X-User-Id"] = userId;
+        }
+        return headers;
+    };
 
     const fetchRunners = async () => {
         try {
             setLoading(true);
             const res = await fetch(`${API_BASE}/api/v1/runners`, {
-                headers: { "X-User-Id": "demo-user" }
+                headers: getAuthHeaders()
             });
             if (res.ok) {
                 setRunners(await res.json());
+            } else if (res.status === 401) {
+                localStorage.removeItem("token");
+                setIsLoggedIn(false);
             }
         } catch (e) {
             console.error(e);
@@ -59,27 +84,43 @@ export default function RunnersPage() {
         }
     };
 
+    const requireAuth = () => {
+        if (!isLoggedIn) {
+            router.push("/login");
+            return false;
+        }
+        return true;
+    };
+
     const generateToken = async () => {
+        if (!requireAuth()) return;
+
         try {
             const res = await fetch(`${API_BASE}/api/v1/runners/generate-token`, {
                 method: "POST",
-                headers: { "X-User-Id": "demo-user" }
+                headers: getAuthHeaders()
             });
             if (res.ok) {
                 const data = await res.json();
                 setShowToken(data);
+            } else {
+                const data = await res.json();
+                alert(data.detail || "Failed to generate token");
             }
         } catch (e) {
             console.error(e);
+            alert("Network error");
         }
     };
 
     const deleteRunner = async (runnerId: string) => {
+        if (!requireAuth()) return;
         if (!confirm("确定要禁用此 Runner 吗？")) return;
+
         try {
             const res = await fetch(`${API_BASE}/api/v1/runners/${runnerId}`, {
                 method: "DELETE",
-                headers: { "X-User-Id": "demo-user" }
+                headers: getAuthHeaders()
             });
             if (res.ok) {
                 fetchRunners();
@@ -131,15 +172,26 @@ export default function RunnersPage() {
                     <p className="text-zinc-400 mt-2 max-w-xl">
                         <span className="text-purple-400 font-medium">自托管节点</span> -
                         连接你的服务器到 AgentHub，赚取算力分成
+                        {!isLoggedIn && <span className="text-emerald-400 ml-2">Login to manage.</span>}
                     </p>
                 </div>
-                <button
-                    onClick={generateToken}
-                    className="px-4 py-2 bg-purple-500 hover:bg-purple-600 text-white font-medium rounded-lg flex items-center gap-2 transition-colors"
-                >
-                    <Plus className="w-4 h-4" />
-                    添加服务器
-                </button>
+                {isLoggedIn ? (
+                    <button
+                        onClick={generateToken}
+                        className="px-4 py-2 bg-purple-500 hover:bg-purple-600 text-white font-medium rounded-lg flex items-center gap-2 transition-colors"
+                    >
+                        <Plus className="w-4 h-4" />
+                        添加服务器
+                    </button>
+                ) : (
+                    <button
+                        onClick={() => router.push("/login")}
+                        className="px-4 py-2 bg-zinc-700 hover:bg-zinc-600 text-white font-medium rounded-lg flex items-center gap-2 transition-colors"
+                    >
+                        <LogIn className="w-4 h-4" />
+                        Login to Add
+                    </button>
+                )}
             </div>
 
             {/* Token Modal */}
@@ -184,10 +236,23 @@ export default function RunnersPage() {
             {/* Runners List */}
             {loading ? (
                 <div className="text-center py-16">
-                    <div className="animate-pulse flex flex-col items-center gap-4">
-                        <Server className="w-12 h-12 text-zinc-700" />
-                        <p className="text-zinc-500">加载中...</p>
-                    </div>
+                    <Loader2 className="w-8 h-8 text-zinc-500 animate-spin mx-auto mb-4" />
+                    <p className="text-zinc-500">Loading...</p>
+                </div>
+            ) : !isLoggedIn ? (
+                <div className="glass-panel rounded-xl p-12 text-center">
+                    <Server className="w-16 h-16 text-zinc-600 mx-auto mb-4" />
+                    <h3 className="text-xl font-semibold text-white mb-2">Login Required</h3>
+                    <p className="text-zinc-400 mb-6">
+                        Login to view and manage your runners
+                    </p>
+                    <button
+                        onClick={() => router.push("/login")}
+                        className="px-6 py-3 bg-purple-500 hover:bg-purple-600 text-white font-medium rounded-lg inline-flex items-center gap-2"
+                    >
+                        <LogIn className="w-5 h-5" />
+                        Go to Login
+                    </button>
                 </div>
             ) : runners.length === 0 ? (
                 <div className="glass-panel rounded-xl p-12 text-center">
@@ -237,14 +302,12 @@ export default function RunnersPage() {
                                     </div>
                                 </div>
                                 <div className="flex items-center gap-4">
-                                    {/* Reputation */}
                                     <div className="text-right">
                                         <p className={`text-2xl font-bold ${getReputationColor(runner.reputation_score)}`}>
                                             {runner.reputation_score}
                                         </p>
                                         <p className="text-xs text-zinc-500">信誉分</p>
                                     </div>
-                                    {/* Delete */}
                                     <button
                                         onClick={() => deleteRunner(runner.id)}
                                         className="p-2 text-zinc-500 hover:text-red-400 hover:bg-red-500/10 rounded-lg transition-colors"
@@ -254,7 +317,6 @@ export default function RunnersPage() {
                                 </div>
                             </div>
 
-                            {/* Stats */}
                             <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mt-4 pt-4 border-t border-zinc-800">
                                 <div>
                                     <p className="text-xs text-zinc-500">完成任务</p>
