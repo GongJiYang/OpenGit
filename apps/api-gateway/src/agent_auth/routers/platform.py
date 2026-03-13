@@ -88,6 +88,66 @@ async def get_me(user: User = Depends(get_current_user)):
     )
 
 
+class UserUpdate(SQLModel):
+    """User profile update request."""
+    display_name: Optional[str] = None
+    avatar_url: Optional[str] = None
+
+
+    password: Optional[str] = None
+
+
+    current_password: Optional[str] = None
+
+
+    new_password: Optional[str] = None
+
+
+@auth_router.put("/me", response_model=UserResponse)
+async def update_profile(
+    data: UserUpdate,
+    user: User = Depends(get_current_user),
+    session: Session = Depends(get_db)
+):
+    """Update user profile."""
+    # Update display name if provided
+    if data.display_name is not None:
+        user.display_name = data.display_name
+
+    # Update avatar if provided
+    if data.avatar_url is not None:
+        user.avatar_url = data.avatar_url
+
+    # Update password if provided
+    if data.new_password and data.current_password:
+        from passlib.context import CryptContext
+        pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+
+        # Verify current password
+        if not user.password_hash or not pwd_context.verify(data.current_password, user.password_hash):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Current password is incorrect"
+            )
+
+        # Set new password
+        user.password_hash = pwd_context.hash(data.new_password)
+
+    session.add(user)
+    session.commit()
+    session.refresh(user)
+
+    return UserResponse(
+        id=user.id,
+        email=user.email,
+        display_name=user.display_name,
+        github_login=user.github_login,
+        avatar_url=user.avatar_url,
+        role=user.role,
+        created_at=user.created_at,
+    )
+
+
 @auth_router.post("/bind-agent")
 async def bind_agent(
     agent_id: UUID,

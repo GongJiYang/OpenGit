@@ -1,8 +1,12 @@
+"use client";
+
 import type { Metadata } from "next";
 import { Inter, Space_Mono } from "next/font/google";
 import "./globals.css";
-import { Terminal, Cpu, Network, Target, Compass, GitPullRequest, Bot, Server, GitBranch } from "lucide-react";
+import { Terminal, Network, Target, Compass, GitPullRequest, Bot, Server, GitBranch, User, LogIn, Settings, LogOut, ChevronDown, Check } from "lucide-react";
 import Link from "next/link";
+import { useState, useEffect } from "react";
+import { useRouter } from "next/navigation";
 
 const inter = Inter({ subsets: ["latin"] });
 const spaceMono = Space_Mono({ weight: "400", subsets: ["latin"] });
@@ -17,6 +21,34 @@ export default function RootLayout({
 }: Readonly<{
   children: React.ReactNode;
 }>) {
+  const router = useRouter();
+  const [isLoggedIn, setIsLoggedIn] = useState(false);
+  const [user, setUser] = useState<{ id: string; email: string; display_name: string; avatar_url?: string } | null>(null);
+  const [showUserMenu, setShowUserMenu] = useState(false);
+
+  useEffect(() => {
+    const token = localStorage.getItem("token");
+    const userStr = localStorage.getItem("user");
+    if (token && userStr) {
+        try {
+            setUser(JSON.parse(userStr));
+            setIsLoggedIn(true);
+        } catch (e) {
+            localStorage.removeItem("token");
+            localStorage.removeItem("user");
+        }
+    }
+  }, []);
+
+  const handleLogout = () => {
+    localStorage.removeItem("token");
+    localStorage.removeItem("user");
+    setIsLoggedIn(false);
+    setUser(null);
+    setShowUserMenu(false);
+    router.push("/");
+  };
+
   return (
     <html lang="en" className="dark">
       <head>
@@ -27,7 +59,7 @@ export default function RootLayout({
 
         {/* Floating Navbar */}
         <div className="fixed top-6 left-0 right-0 z-50 flex justify-center">
-          <header className="glass-panel rounded-full px-6 py-3 flex items-center justify-between gap-12 animate-float shadow-2xl shadow-black/50">
+          <header className="glass-panel rounded-full px-6 py-3 flex items-center justify-between gap-8 animate-float shadow-2xl shadow-black/50">
             {/* Logo */}
             <Link href="/" className="flex items-center gap-3 group">
               <div className="relative">
@@ -49,6 +81,59 @@ export default function RootLayout({
               <NavLink href="/runners" icon={<Server className="w-4 h-4" />} label="Runners" />
               <NavLink href="/reviews" icon={<GitPullRequest className="w-4 h-4" />} label="Reviews" />
             </nav>
+
+            {/* User Menu */}
+            <div className="relative ml-2">
+              {isLoggedIn && user ? (
+                <>
+                  <button
+                    onClick={() => setShowUserMenu(!showUserMenu)}
+                    className="flex items-center gap-2 px-3 py-1.5 rounded-full text-sm font-medium text-zinc-300 hover:text-white hover:bg-white/5 transition-all border border-transparent hover:border-white/10"
+                  >
+                    <div className="w-7 h-7 rounded-full bg-gradient-to-br from-emerald-500 to-purple-500 flex items-center justify-center text-white text-xs font-bold">
+                      {user.display_name?.charAt(0).toUpperCase() || user.email?.charAt(0).toUpperCase() || "U"}
+                    </div>
+                    <span className="text-white/90 hidden md:inline">{user.display_name || user.email?.split("@")[0]}</span>
+                    <ChevronDown className="w-4 h-4 text-zinc-400" />
+                  </button>
+
+                  {/* Dropdown Menu */}
+                  {showUserMenu && (
+                    <div
+                      className="absolute right-0 mt-2 w-48 glass-panel rounded-xl py-2 shadow-xl z-50"
+                      onMouseLeave={() => setShowUserMenu(false)}
+                    >
+                      <div className="px-3 py-2 text-xs text-zinc-500 border-b border-zinc-800">
+                        {user.email}
+                      </div>
+                      <Link
+                        href="/settings"
+                        onClick={() => setShowUserMenu(false)}
+                        className="flex items-center gap-2 px-3 py-2 text-sm text-zinc-300 hover:text-white hover:bg-white/5 rounded-lg transition-colors"
+                      >
+                        <Settings className="w-4 h-4" />
+                        Settings
+                      </Link>
+                      <button
+                        onClick={handleLogout}
+                        className="flex items-center gap-2 px-3 py-2 text-sm text-red-400 hover:text-red-300 hover:bg-red-500/10 rounded-lg transition-colors w-full"
+                      >
+                        <LogOut className="w-4 h-4" />
+                        Logout
+                      </button>
+                    </div>
+                  )}
+                </>
+              ) : (
+                <Link
+                  href="/login"
+                  className="flex items-center gap-2 px-4 py-1.5 rounded-full text-sm font-medium bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 hover:bg-emerald-500/20 transition-all"
+                >
+                  <LogIn className="w-4 h-4" />
+                  Login
+                </Link>
+              )}
+            </div>
           </header>
         </div>
 
