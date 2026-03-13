@@ -408,9 +408,14 @@ class RunnerResponse(SQLModel):
     cpu_cores: Optional[int] = None
     memory_gb: Optional[int] = None
     os_type: Optional[str] = None
+    os_version: Optional[str] = None
+    docker_version: Optional[str] = None
     total_jobs_completed: int
+    total_compute_seconds: int = 0
+    total_earnings: int = 0
     reputation_score: int
     last_heartbeat_at: Optional[datetime] = None
+    created_at: datetime = Field(default_factory=datetime.utcnow)
     # Repository binding
     allowed_repo_ids: List[str] = Field(default_factory=list)
     is_global: bool = Field(default=True)
