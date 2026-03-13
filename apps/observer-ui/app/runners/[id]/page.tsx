@@ -153,14 +153,21 @@ export default function RunnerDetailPage() {
 
     const fetchRepos = async () => {
         try {
+            console.log("Fetching repos with URL:", `${API_BASE}/v1/repos?mine=true`);
             const res = await fetch(`${API_BASE}/v1/repos?mine=true`, {
                 headers: getAuthHeaders()
             });
+            console.log("Repos response status:", res.status);
             if (res.ok) {
-                setAvailableRepos(await res.json());
+                const data = await res.json();
+                console.log("Fetched repos:", data);
+                setAvailableRepos(data);
+            } else {
+                const errorData = await res.json().catch(() => ({}));
+                console.error("Failed to fetch repos:", res.status, errorData);
             }
         } catch (e) {
-            console.error(e);
+            console.error("Error fetching repos:", e);
         }
     };
 
@@ -287,6 +294,15 @@ export default function RunnerDetailPage() {
     const unboundRepos = availableRepos.filter(
         r => !runner?.allowed_repo_ids.includes(r.id)
     );
+
+    // Debug logging for repo binding
+    useEffect(() => {
+        if (runner && availableRepos.length > 0) {
+            console.log("Runner allowed_repo_ids:", runner.allowed_repo_ids);
+            console.log("Available repos:", availableRepos.map(r => r.id));
+            console.log("Unbound repos:", unboundRepos.map(r => r.id));
+        }
+    }, [runner, availableRepos, unboundRepos]);
 
     if (loading) {
         return (
@@ -487,11 +503,17 @@ export default function RunnerDetailPage() {
                         <button
                             onClick={() => setShowRepoSelector(true)}
                             disabled={saving || unboundRepos.length === 0}
-                            className="w-full py-3 border border-dashed border-zinc-700 rounded-lg text-zinc-400 hover:border-purple-500/50 hover:text-purple-400 transition-colors flex items-center justify-center gap-2 disabled:opacity-50"
+                            title={availableRepos.length === 0 ? "No repositories available. Create a repository first." : unboundRepos.length === 0 ? "All repositories are already bound to this runner." : ""}
+                            className="w-full py-3 border border-dashed border-zinc-700 rounded-lg text-zinc-400 hover:border-purple-500/50 hover:text-purple-400 transition-colors flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
                         >
                             <Plus className="w-4 h-4" />
-                            Add Repository
+                            {availableRepos.length === 0 ? "No Repositories Available" : "Add Repository"}
                         </button>
+                        {availableRepos.length === 0 && (
+                            <p className="text-xs text-zinc-500 text-center mt-2">
+                                Create a repository first to bind it to this runner.
+                            </p>
+                        )}
                     </>
                 )}
 
