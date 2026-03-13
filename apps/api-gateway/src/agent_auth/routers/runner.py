@@ -90,7 +90,7 @@ async def get_runner_from_header(
 
 @router.post("/generate-token", response_model=GenerateTokenResponse)
 async def generate_runner_token(
-    user_id: UUID = Header(..., description="User ID from JWT"),
+    user_id: UUID = Header(..., alias="X-User-Id", description="User ID from JWT"),
     session: Session = Depends(get_db)
 ):
     """
