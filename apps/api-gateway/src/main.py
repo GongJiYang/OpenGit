@@ -592,7 +592,7 @@ def create_bounty(request: Request, bounty: Bounty, session: Session = Depends(g
 
     if not bounty.verification_mode:
         bounty.verification_mode = os.getenv("DEFAULT_VERIFICATION_MODE", "auto")
-    if bounty.verification_mode and bounty.verification_mode.lower() not in ["auto", "human", "external"}:
+    if bounty.verification_mode and bounty.verification_mode.lower() not in ["auto", "human", "external"]:
         raise HTTPException(status_code=400, detail="Invalid verification_mode")
     session.add(bounty)
     session.commit()
