@@ -5,7 +5,7 @@ import { useRouter, useParams } from "next/navigation";
 import {
     Server, ArrowLeft, Settings, Trash2, Plus, X, Check,
     Activity, Clock, Cpu, Terminal, AlertCircle, Loader2,
-    Globe, Lock, LogIn
+    Globe, Lock, LogIn, Play, CheckCircle, XCircle, Shield
 } from "lucide-react";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE || "/api";
@@ -37,6 +37,23 @@ interface Repo {
     description: string | null;
 }
 
+interface Job {
+    id: string;
+    bounty_id: string;
+    repo_id: string | null;
+    runner_id: string | null;
+    status: "pending" | "assigned" | "running" | "completed" | "failed" | "timeout" | "audit_failed";
+    execution_mode: "e2b_sandbox" | "shared_local" | "self_hosted" | "yolo_mode";
+    test_command: string;
+    exit_code: number | null;
+    passed: boolean | null;
+    is_audited: boolean;
+    audit_result: string | null;
+    created_at: string;
+    started_at: string | null;
+    completed_at: string | null;
+}
+
 export default function RunnerDetailPage() {
     const router = useRouter();
     const params = useParams();
@@ -52,6 +69,11 @@ export default function RunnerDetailPage() {
     const [isGlobalMode, setIsGlobalMode] = useState(true);
     const [saving, setSaving] = useState(false);
 
+    // Job history state
+    const [jobs, setJobs] = useState<Job[]>([]);
+    const [jobsLoading, setJobsLoading] = useState(false);
+    const [jobFilter, setJobFilter] = useState<string>("all");
+
     useEffect(() => {
         const token = localStorage.getItem("token");
         setIsLoggedIn(!!token);
@@ -62,6 +84,36 @@ export default function RunnerDetailPage() {
             setLoading(false);
         }
     }, [runnerId]);
+
+    // Fetch jobs when runner is loaded
+    useEffect(() => {
+        if (runner && isLoggedIn) {
+            fetchJobs();
+        }
+    }, [runner, jobFilter]);
+
+    const fetchJobs = async () => {
+        if (!runner) return;
+        try {
+            setJobsLoading(true);
+            const params = new URLSearchParams();
+            if (jobFilter !== "all") {
+                params.append("status", jobFilter);
+            }
+            params.append("limit", "20");
+
+            const res = await fetch(`${API_BASE}/v1/runners/${runnerId}/jobs?${params.toString()}`, {
+                headers: getAuthHeaders()
+            });
+            if (res.ok) {
+                setJobs(await res.json());
+            }
+        } catch (e) {
+            console.error("Failed to fetch jobs:", e);
+        } finally {
+            setJobsLoading(false);
+        }
+    };
 
     const getAuthHeaders = () => {
         const token = localStorage.getItem("token");
@@ -464,6 +516,119 @@ export default function RunnerDetailPage() {
                                 Cancel
                             </button>
                         </div>
+                    </div>
+                )}
+            </div>
+
+            {/* Job History */}
+            <div className="glass-panel rounded-xl p-5">
+                <div className="flex items-center justify-between mb-4">
+                    <h3 className="text-lg font-semibold text-white flex items-center gap-2">
+                        <Activity className="w-5 h-5 text-blue-400" />
+                        Job History
+                    </h3>
+                    <div className="flex gap-2">
+                        {["all", "completed", "failed", "running"].map((s) => (
+                            <button
+                                key={s}
+                                onClick={() => setJobFilter(s)}
+                                className={`px-2.5 py-1 rounded text-xs font-medium transition-colors ${
+                                    jobFilter === s
+                                        ? "bg-blue-500/20 text-blue-400 border border-blue-500/30"
+                                        : "bg-zinc-800 text-zinc-400 hover:text-white"
+                                }`}
+                            >
+                                {s.charAt(0).toUpperCase() + s.slice(1)}
+                            </button>
+                        ))}
+                    </div>
+                </div>
+
+                {jobsLoading ? (
+                    <div className="text-center py-8">
+                        <Loader2 className="w-6 h-6 text-zinc-500 animate-spin mx-auto mb-2" />
+                        <p className="text-zinc-500 text-sm">Loading jobs...</p>
+                    </div>
+                ) : jobs.length === 0 ? (
+                    <div className="text-center py-8 text-zinc-500">
+                        <Play className="w-8 h-8 mx-auto mb-2 opacity-50" />
+                        <p>No jobs found for this runner.</p>
+                    </div>
+                ) : (
+                    <div className="space-y-3">
+                        {jobs.map((job) => (
+                            <div
+                                key={job.id}
+                                className="bg-zinc-800/50 rounded-lg p-4"
+                            >
+                                <div className="flex items-start justify-between gap-4">
+                                    <div className="flex-1 min-w-0">
+                                        <div className="flex items-center gap-2 mb-1">
+                                            <code className="text-xs text-zinc-400 font-mono">
+                                                #{job.id.slice(0, 8)}
+                                            </code>
+                                            <span className={`text-xs px-1.5 py-0.5 rounded ${
+                                                job.status === "completed" ? "bg-green-500/10 text-green-400" :
+                                                job.status === "failed" ? "bg-red-500/10 text-red-400" :
+                                                job.status === "running" ? "bg-yellow-500/10 text-yellow-400" :
+                                                "bg-zinc-500/10 text-zinc-400"
+                                            }`}>
+                                                {job.status}
+                                            </span>
+                                            {job.is_audited && (
+                                                <span className="flex items-center gap-1 text-xs text-purple-400">
+                                                    <Shield className="w-3 h-3" />
+                                                    Audited
+                                                </span>
+                                            )}
+                                        </div>
+                                        <p className="text-sm text-zinc-300 font-mono truncate">
+                                            {job.test_command}
+                                        </p>
+                                        <div className="flex items-center gap-4 mt-2 text-xs text-zinc-500">
+                                            <span>Bounty: {job.bounty_id.slice(0, 8)}...</span>
+                                            <span>Mode: {job.execution_mode.replace("_", " ")}</span>
+                                            {job.exit_code !== null && (
+                                                <span className={job.exit_code === 0 ? "text-green-400" : "text-red-400"}>
+                                                    Exit: {job.exit_code}
+                                                </span>
+                                            )}
+                                        </div>
+                                    </div>
+                                    <div className="text-right text-xs text-zinc-500">
+                                        <p>{new Date(job.created_at).toLocaleDateString()}</p>
+                                        <p>{new Date(job.created_at).toLocaleTimeString()}</p>
+                                        {job.completed_at && job.started_at && (
+                                            <p className="text-zinc-600 mt-1">
+                                                {Math.round((new Date(job.completed_at).getTime() - new Date(job.started_at).getTime()) / 1000)}s
+                                            </p>
+                                        )}
+                                    </div>
+                                </div>
+                                {job.passed !== null && (
+                                    <div className="mt-3 pt-3 border-t border-zinc-700/50 flex items-center gap-2">
+                                        {job.passed ? (
+                                            <>
+                                                <CheckCircle className="w-4 h-4 text-green-400" />
+                                                <span className="text-sm text-green-400">Tests Passed</span>
+                                            </>
+                                        ) : (
+                                            <>
+                                                <XCircle className="w-4 h-4 text-red-400" />
+                                                <span className="text-sm text-red-400">Tests Failed</span>
+                                            </>
+                                        )}
+                                        {job.audit_result && (
+                                            <span className={`text-xs ml-auto ${
+                                                job.audit_result === "passed" ? "text-green-400" : "text-red-400"
+                                            }`}>
+                                                Audit: {job.audit_result}
+                                            </span>
+                                        )}
+                                    </div>
+                                )}
+                            </div>
+                        ))}
                     </div>
                 )}
             </div>

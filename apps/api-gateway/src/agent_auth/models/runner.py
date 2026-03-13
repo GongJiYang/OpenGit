@@ -425,8 +425,15 @@ class ComputeJobResponse(SQLModel):
     """Compute job info for API responses."""
     id: UUID
     bounty_id: str
+    repo_id: Optional[UUID] = None
+    runner_id: Optional[UUID] = None
     status: ComputeJobStatus
     execution_mode: ExecutionMode
+    test_command: str = "pytest"
+    exit_code: Optional[int] = None
     passed: Optional[bool] = None
-    created_at: datetime
+    is_audited: bool = False
+    audit_result: Optional[str] = None
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    started_at: Optional[datetime] = None
     completed_at: Optional[datetime] = None

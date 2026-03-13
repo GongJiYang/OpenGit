@@ -13,7 +13,7 @@ from typing import List, Optional
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, status, Header
-from sqlmodel import Session, SQLModel
+from sqlmodel import Session, SQLModel, select
 
 from ..models.platform import (
     User,
@@ -410,6 +410,52 @@ async def list_repo_members(
             ))
 
     return result
+
+
+@repo_router.get("/{repo_id}/jobs")
+async def get_repo_jobs(
+    repo_id: UUID,
+    status_filter: Optional[str] = None,
+    limit: int = 50,
+    offset: int = 0,
+    session: Session = Depends(get_db),
+    user: Optional[User] = Depends(get_current_user_optional),
+):
+    """
+    Get CI job history for a specific repository.
+
+    - status_filter: Filter by job status (pending, running, completed, failed, timeout, audit_failed)
+    - limit: Max number of jobs to return (default 50, max 100)
+    - offset: Pagination offset
+    """
+    from ..models.platform import Repo
+    from ..models.runner import ComputeJob, ComputeJobStatus, ComputeJobResponse
+
+    # Verify repo exists
+    repo = session.get(Repo, repo_id)
+    if not repo:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Repo not found")
+
+    # Build query
+    limit = min(limit, 100)  # Cap at 100
+    statement = select(ComputeJob).where(
+        ComputeJob.repo_id == repo_id
+    ).order_by(ComputeJob.created_at.desc())
+
+    # Apply status filter
+    if status_filter:
+        try:
+            status_enum = ComputeJobStatus(status_filter.lower())
+            statement = statement.where(ComputeJob.status == status_enum)
+        except ValueError:
+            raise HTTPException(status_code=400, detail=f"Invalid status: {status_filter}")
+
+    # Apply pagination
+    statement = statement.offset(offset).limit(limit)
+
+    jobs = session.exec(statement).all()
+
+    return [ComputeJobResponse.model_validate(job) for job in jobs]
 
 
 # Combine routers

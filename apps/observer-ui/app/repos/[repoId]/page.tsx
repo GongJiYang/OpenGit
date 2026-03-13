@@ -4,12 +4,29 @@ import { useState, useEffect } from "react";
 import Link from "next/link";
 import {
     FileCode, ArrowLeft, GitCommit, X, Copy, Check,
-    Bot, Code2, Activity
+    Bot, Code2, Activity, Loader2, Play, CheckCircle, XCircle, Shield, Server
 } from "lucide-react";
 import { useParams } from "next/navigation";
 import TaskBoard from "../../components/TaskBoard";
 
 // Types
+interface CIJob {
+    id: string;
+    bounty_id: string;
+    repo_id: string | null;
+    runner_id: string | null;
+    status: "pending" | "assigned" | "running" | "completed" | "failed" | "timeout" | "audit_failed";
+    execution_mode: "e2b_sandbox" | "shared_local" | "self_hosted" | "yolo_mode";
+    test_command: string;
+    exit_code: number | null;
+    passed: boolean | null;
+    is_audited: boolean;
+    audit_result: string | null;
+    created_at: string;
+    started_at: string | null;
+    completed_at: string | null;
+}
+
 interface PendingVerification {
     commit_id: number;
     repo_name: string;
@@ -209,14 +226,13 @@ export default function RepoPage() {
                         </div>
                     </div>
 
+                    {/* CI Job History */}
                     <div className="glass-panel rounded-2xl">
                         <div className="p-4 border-b border-white/5 flex items-center gap-2">
                             <Activity className="w-4 h-4 text-zinc-400" />
-                            <h2 className="text-sm font-medium text-zinc-400">Recent Activity</h2>
+                            <h2 className="text-sm font-medium text-zinc-400">CI Job History</h2>
                         </div>
-                        <div className="p-4 text-xs text-zinc-500">
-                            No activity data available yet.
-                        </div>
+                        <CIJobHistory repoId={repoId} />
                     </div>
                 </div>
 
@@ -261,6 +277,156 @@ export default function RepoPage() {
                     </div>
                 </div>
             </div>
+        </div>
+    );
+}
+
+// CI Job History Component
+function CIJobHistory({ repoId }: { repoId: string }) {
+    const [jobs, setJobs] = useState<CIJob[]>([]);
+    const [loading, setLoading] = useState(true);
+    const [filter, setFilter] = useState<string>("all");
+
+    const API_BASE = process.env.NEXT_PUBLIC_API_BASE || "/api";
+
+    useEffect(() => {
+        fetchJobs();
+    }, [repoId, filter]);
+
+    const fetchJobs = async () => {
+        try {
+            setLoading(true);
+            const params = new URLSearchParams();
+            if (filter !== "all") {
+                params.append("status_filter", filter);
+            }
+            params.append("limit", "10");
+
+            const res = await fetch(`${API_BASE}/v1/repos/${repoId}/jobs?${params.toString()}`);
+            if (res.ok) {
+                setJobs(await res.json());
+            }
+        } catch (e) {
+            console.error("Failed to fetch jobs:", e);
+        } finally {
+            setLoading(false);
+        }
+    };
+
+    const getStatusColor = (status: string) => {
+        const colors: Record<string, string> = {
+            completed: "bg-green-500/10 text-green-400",
+            failed: "bg-red-500/10 text-red-400",
+            running: "bg-yellow-500/10 text-yellow-400",
+            pending: "bg-zinc-500/10 text-zinc-400",
+            assigned: "bg-blue-500/10 text-blue-400",
+            timeout: "bg-orange-500/10 text-orange-400",
+            audit_failed: "bg-red-500/10 text-red-400",
+        };
+        return colors[status] || "bg-zinc-500/10 text-zinc-400";
+    };
+
+    return (
+        <div className="p-4">
+            {/* Filter Tabs */}
+            <div className="flex gap-2 mb-4">
+                {["all", "completed", "failed", "running"].map((s) => (
+                    <button
+                        key={s}
+                        onClick={() => setFilter(s)}
+                        className={`px-2.5 py-1 rounded text-xs font-medium transition-colors ${
+                            filter === s
+                                ? "bg-emerald-500/20 text-emerald-400 border border-emerald-500/30"
+                                : "bg-zinc-800 text-zinc-400 hover:text-white"
+                        }`}
+                    >
+                        {s.charAt(0).toUpperCase() + s.slice(1)}
+                    </button>
+                ))}
+            </div>
+
+            {loading ? (
+                <div className="flex items-center justify-center py-8">
+                    <Loader2 className="w-5 h-5 text-zinc-500 animate-spin" />
+                </div>
+            ) : jobs.length === 0 ? (
+                <div className="text-center py-8 text-zinc-500">
+                    <Play className="w-6 h-6 mx-auto mb-2 opacity-50" />
+                    <p className="text-xs">No CI jobs found for this repository.</p>
+                </div>
+            ) : (
+                <div className="space-y-2 max-h-[300px] overflow-auto">
+                    {jobs.map((job) => (
+                        <div
+                            key={job.id}
+                            className="bg-zinc-800/50 rounded-lg p-3"
+                        >
+                            <div className="flex items-start justify-between gap-3">
+                                <div className="flex-1 min-w-0">
+                                    <div className="flex items-center gap-2 mb-1">
+                                        <code className="text-[10px] text-zinc-500 font-mono">
+                                            #{job.id.slice(0, 8)}
+                                        </code>
+                                        <span className={`text-[10px] px-1.5 py-0.5 rounded ${getStatusColor(job.status)}`}>
+                                            {job.status}
+                                        </span>
+                                        {job.is_audited && (
+                                            <span className="flex items-center gap-1 text-[10px] text-purple-400">
+                                                <Shield className="w-2.5 h-2.5" />
+                                                Audited
+                                            </span>
+                                        )}
+                                    </div>
+                                    <p className="text-[11px] text-zinc-300 font-mono truncate">
+                                        {job.test_command}
+                                    </p>
+                                    <div className="flex items-center gap-3 mt-1.5 text-[10px] text-zinc-500">
+                                        <span className="flex items-center gap-1">
+                                            <Server className="w-2.5 h-2.5" />
+                                            {job.execution_mode.replace("_", " ")}
+                                        </span>
+                                        {job.exit_code !== null && (
+                                            <span className={job.exit_code === 0 ? "text-green-400" : "text-red-400"}>
+                                                Exit: {job.exit_code}
+                                            </span>
+                                        )}
+                                    </div>
+                                </div>
+                                <div className="text-right text-[10px] text-zinc-500">
+                                    <p>{new Date(job.created_at).toLocaleDateString()}</p>
+                                    {job.completed_at && job.started_at && (
+                                        <p className="text-zinc-600">
+                                            {Math.round((new Date(job.completed_at).getTime() - new Date(job.started_at).getTime()) / 1000)}s
+                                        </p>
+                                    )}
+                                </div>
+                            </div>
+                            {job.passed !== null && (
+                                <div className="mt-2 pt-2 border-t border-zinc-700/50 flex items-center gap-2">
+                                    {job.passed ? (
+                                        <>
+                                            <CheckCircle className="w-3 h-3 text-green-400" />
+                                            <span className="text-[10px] text-green-400">Passed</span>
+                                        </>
+                                    ) : (
+                                        <>
+                                            <XCircle className="w-3 h-3 text-red-400" />
+                                            <span className="text-[10px] text-red-400">Failed</span>
+                                        </>
+                                    )}
+                                    {job.audit_result && (
+                                        <span className={`text-[10px] ml-auto ${
+                                            job.audit_result === "passed" ? "text-green-400" : "text-red-400"
+                                        }`}>
+                                            Audit: {job.audit_result}
+                                        </span>
+                                    )}
+                                </div>
+                            )}
+                        </div>
+                    ))}
+                </div>
+            )}
         </div>
     );
 }

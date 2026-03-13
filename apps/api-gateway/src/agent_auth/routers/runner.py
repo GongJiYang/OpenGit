@@ -555,6 +555,50 @@ async def get_runner_info(
     return RunnerResponse.model_validate(runner)
 
 
+@router.get("/{runner_id}/jobs", response_model=List[ComputeJobResponse])
+async def get_runner_jobs(
+    runner_id: UUID,
+    status: Optional[str] = None,
+    limit: int = 50,
+    offset: int = 0,
+    session: Session = Depends(get_db),
+    user: User = Depends(get_current_user)
+):
+    """
+    Get job execution history for a specific runner.
+
+    - status: Filter by job status (pending, assigned, running, completed, failed, timeout, audit_failed)
+    - limit: Max number of jobs to return (default 50, max 100)
+    - offset: Pagination offset
+    """
+    # Verify runner ownership
+    runner = session.get(Runner, runner_id)
+    if not runner:
+        raise HTTPException(status_code=404, detail="Runner not found")
+    if runner.owner_user_id != user.id:
+        raise HTTPException(status_code=403, detail="Not your runner")
+
+    # Build query
+    limit = min(limit, 100)  # Cap at 100
+    statement = select(ComputeJob).where(
+        ComputeJob.runner_id == runner_id
+    ).order_by(ComputeJob.created_at.desc())
+
+    # Apply status filter
+    if status:
+        try:
+            status_enum = ComputeJobStatus(status.lower())
+            statement = statement.where(ComputeJob.status == status_enum)
+        except ValueError:
+            raise HTTPException(status_code=400, detail=f"Invalid status: {status}")
+
+    # Apply pagination
+    statement = statement.offset(offset).limit(limit)
+
+    jobs = session.exec(statement).all()
+    return [ComputeJobResponse.model_validate(job) for job in jobs]
+
+
 # ============== Job Status ==============
 
 @router.get("/jobs/{job_id}", response_model=ComputeJobResponse)
