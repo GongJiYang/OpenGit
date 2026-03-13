@@ -10,6 +10,6 @@ bcrypt>=4.1.0              # API key hashing
 httpx>=0.25.0              # GitHub OAuth HTTP client
 apscheduler>=3.10.0        # Background task scheduling
 
-# Optional (for production)
-# redis>=5.0.0             # For distributed heartbeat cache
-# python-jose>=3.3.0       # JWT tokens (if needed later)
+# User Authentication (JWT + Password)
+python-jose[cryptography]>=3.3.0   # JWT token generation
+passlib[bcrypt]>=1.7.4             # Password hashing

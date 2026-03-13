@@ -99,6 +99,7 @@ class Bounty(SQLModel, table=True):
     reward: int
     status: str = Field(default="open", index=True) # open, in_progress, submitted, completed
     repo_name: str = Field(index=True)
+    repo_id: Optional[str] = Field(default=None, index=True, description="Linked Repo ID for membership check")
     required_role: str # architect, contributor, executor
     assignee: Optional[str] = Field(default=None, index=True)
     parent_id: Optional[str] = Field(default=None, index=True, description="Parent bounty ID for decomposition")

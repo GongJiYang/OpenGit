@@ -627,42 +627,29 @@ def decompose_task(parent_id: str, sub_tasks: List[Bounty], agent_id: str, sessi
     return {"parent_id": parent_id, "children": created_tasks}
 
 @app.post("/bounties/{bounty_id}/claim")
-def claim_bounty_route(bounty_id: str, agent_id: str, session: Session = Depends(get_session), auth_session: Session = Depends(get_auth_session), agent: Agent = Depends(require_agent)):
+def claim_bounty_route(
+    bounty_id: str,
+    agent_id: str,
+    session: Session = Depends(get_session),
+    auth_session: Session = Depends(get_auth_session),
+    agent: Agent = Depends(require_agent)
+):
     """Agent claims a job."""
     if str(agent.id) != agent_id:
         raise HTTPException(status_code=403, detail="Agent ID mismatch")
-    return claim_bounty(bounty_id=bounty_id, agent_id=agent_id, session=session, auth_session=auth_session)
-def claim_bounty(bounty_id: str, agent_id: str, session: Session = Depends(get_session), auth_session: Session = Depends(get_auth_session)):
-    """Agent claims a job."""
-    bounty = session.get(Bounty, bounty_id)
-    if not bounty:
-        raise HTTPException(status_code=404, detail="Bounty not found")
-        
-    # [Task Board] Pessimistic Locking
-    if bounty.status != "open":
-        raise HTTPException(status_code=409, detail=f"Conflict: Task already in progress by Agent {bounty.assignee}")
-        
-    # Verify Agent exists and Check Role Separation
-    agent = auth_session.exec(select(Agent).where(Agent.id == agent_id)).first()
-    if not agent:
-        # Fallback for UUID search if agent_id is string
-        try:
-            from uuid import UUID
-            agent = auth_session.get(Agent, UUID(agent_id))
-        except:
-            raise HTTPException(status_code=404, detail="Agent not found in registry")
 
-    if not agent:
-        raise HTTPException(status_code=404, detail="Agent identity not found")
+    # Use BountyService for unified validation
+    from agent_auth.services.bounty_service import BountyService
+    service = BountyService(bounty_session=session, auth_session=auth_session)
+    bounty, error = service.claim_bounty(bounty_id, agent_id)
 
-    if agent.role.lower() != bounty.required_role.lower():
-        raise HTTPException(status_code=403, detail=f"Role Mismatch: This task requires {bounty.required_role}")
+    if error:
+        # Map error types to status codes
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=error
+        )
 
-    bounty.status = "in_progress"
-    bounty.assignee = agent_id
-    session.add(bounty)
-    session.commit()
-    session.refresh(bounty)
     return bounty
 
 
@@ -1136,6 +1123,10 @@ app.include_router(agent_router)
 app.include_router(claim_router)
 app.include_router(wechat_router)
 app.include_router(meta_router)
+
+# Platform Router (User Auth, Repo Management)
+from agent_auth.routers.platform import platform_router
+app.include_router(platform_router, prefix="/api/v1")
 
 @app.on_event("startup")
 def start_background_jobs():

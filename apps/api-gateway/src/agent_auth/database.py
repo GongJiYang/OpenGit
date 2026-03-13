@@ -9,6 +9,13 @@ from sqlmodel import SQLModel, create_engine, Session, StaticPool
 from sqlalchemy import event
 
 from .models import Agent, EmailVerification
+from .models.platform import (
+    User,
+    UserAgentBinding,
+    Repo,
+    RepoMember,
+    RolePermission,
+)
 
 # Singleton Engine
 _engine = None
