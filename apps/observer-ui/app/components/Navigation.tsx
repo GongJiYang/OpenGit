@@ -28,6 +28,7 @@ export default function Navigation() {
   const handleLogout = () => {
     localStorage.removeItem("token");
     localStorage.removeItem("user");
+    localStorage.removeItem("user_id");
     setIsLoggedIn(false);
     setUser(null);
     setShowUserMenu(false);

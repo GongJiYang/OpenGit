@@ -37,6 +37,7 @@ export default function LoginPage() {
             // Save token
             localStorage.setItem("token", data.access_token);
             localStorage.setItem("user", JSON.stringify(data.user));
+            localStorage.setItem("user_id", data.user.id);
 
             // Redirect to home
             router.push("/");
