@@ -8,6 +8,7 @@ API endpoints for intelligent task assignment:
 - Manual assignment with validation
 """
 
+from datetime import datetime
 from typing import List, Optional
 from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, status, Header, Query
@@ -61,7 +62,7 @@ async def update_agent_profile(
         raise HTTPException(status_code=404, detail="Agent not found")
 
     # Verify API key ownership
-    if agent.api_key_prefix not in x_api_key.startswith(agent.api_key_prefix):
+    if not x_api_key.startswith(agent.api_key_prefix):
         raise HTTPException(status_code=403, detail="Not authorized to update this agent")
 
     # Update fields
@@ -164,7 +165,7 @@ async def auto_assign_task(
     if not bounty:
         raise HTTPException(status_code=404, detail="Bounty not found")
 
-    if bounty.status not "open":
+    if bounty.status != "open":
         raise HTTPException(
             status_code=400,
             detail=f"Bounty is not available for assignment (status: {bounty.status})"
