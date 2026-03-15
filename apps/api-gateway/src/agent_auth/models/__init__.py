@@ -6,10 +6,10 @@ Database models and Pydantic schemas for Agent identity management.
 
 from datetime import datetime
 from enum import Enum
-from typing import Optional
+from typing import Optional, List
 from uuid import UUID, uuid4
 
-from sqlmodel import Field, SQLModel, Column, String, DateTime, Text, ForeignKey
+from sqlmodel import Field, SQLModel, Column, String, DateTime, Text, ForeignKey, JSON
 from sqlalchemy import Index
 
 
@@ -62,6 +62,22 @@ class Agent(SQLModel, table=True):
     
     # [Task Board] Role Separation
     role: str = Field(default="contributor", description="Agent role: architect, contributor, reviewer")
+
+    # [Task Assignment] Skills & Capabilities
+    skills: List[str] = Field(
+        default_factory=list,
+        sa_column=Column(JSON),
+        description="Agent skill tags: ['backend', 'python', 'api', 'frontend', 'react', 'testing']"
+    )
+    preferred_tracks: List[str] = Field(
+        default_factory=list,
+        sa_column=Column(JSON),
+        description="Preferred work tracks: ['backend', 'frontend', 'testing', 'infrastructure']"
+    )
+    max_concurrent_tasks: int = Field(
+        default=3,
+        description="Maximum concurrent tasks this agent can handle"
+    )
 
     # Owner info (filled after claim)
     owner_email: Optional[str] = Field(default=None, max_length=255,
@@ -146,6 +162,88 @@ class EmailVerification(SQLModel, table=True):
         ]
 
 
+class AgentMetrics(SQLModel, table=True):
+    """
+    Agent performance metrics for task assignment optimization.
+
+    Tracks historical performance to enable smart task matching.
+    """
+
+    __tablename__ = "agent_metrics"
+
+    # Primary key
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+
+    # Foreign key to Agent
+    agent_id: UUID = Field(
+        foreign_key="agents.id",
+        nullable=False,
+        unique=True,
+        index=True,
+        description="Associated agent ID"
+    )
+
+    # Task completion metrics
+    total_tasks_assigned: int = Field(default=0, description="Total tasks assigned to this agent")
+    total_tasks_completed: int = Field(default=0, description="Tasks completed successfully")
+    total_tasks_failed: int = Field(default=0, description="Tasks that failed or timed out")
+    total_tasks_cancelled: int = Field(default=0, description="Tasks cancelled by agent or system")
+
+    # Time metrics (in hours)
+    total_completion_time_hours: float = Field(default=0.0, description="Cumulative completion time")
+    avg_completion_time_hours: Optional[float] = Field(default=None, description="Average completion time")
+
+    # Quality metrics
+    total_quality_score: float = Field(default=0.0, description="Sum of quality scores (0-5 per task)")
+    avg_quality_score: Optional[float] = Field(default=None, description="Average quality score (0-5)")
+    first_attempt_success_rate: Optional[float] = Field(default=None, description="Percentage of tasks passed on first submission")
+
+    # Response time percentiles (in hours)
+    response_times_json: Optional[str] = Field(
+        default=None,
+        sa_column=Column(Text),
+        description="JSON array of response times for percentile calculation"
+    )
+    response_time_p50_hours: Optional[float] = Field(default=None, description="Median response time")
+    response_time_p95_hours: Optional[float] = Field(default=None, description="95th percentile response time")
+
+    # Track-specific performance
+    track_performance_json: Optional[str] = Field(
+        default=None,
+        sa_column=Column(Text),
+        description="JSON object with per-track metrics: {'backend': {'completed': 10, 'avg_time': 2.5}, ...}"
+    )
+
+    # Skill-specific performance
+    skill_performance_json: Optional[str] = Field(
+        default=None,
+        sa_column=Column(Text),
+        description="JSON object with per-skill metrics: {'python': {'completed': 15, 'avg_quality': 4.2}, ...}"
+    )
+
+    # Current workload
+    current_active_tasks: int = Field(default=0, description="Currently active tasks count")
+
+    # Computed scores (updated periodically)
+    overall_score: Optional[float] = Field(default=None, description="Computed overall performance score (0-100)")
+    reliability_tier: str = Field(
+        default="new",
+        max_length=20,
+        description="Reliability tier: new, bronze, silver, gold, platinum"
+    )
+
+    # Timestamps
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    updated_at: datetime = Field(default_factory=datetime.utcnow)
+    last_task_at: Optional[datetime] = Field(default=None, description="When last task was assigned/completed")
+
+    class Config:
+        indexes = [
+            Index("ix_agent_metrics_agent_id", "agent_id"),
+            Index("ix_agent_metrics_reliability_tier", "reliability_tier"),
+        ]
+
+
 # ============== Pydantic Schemas ==============
 
 class AgentRegisterRequest(SQLModel):
@@ -227,3 +325,115 @@ class HeartbeatResponse(SQLModel):
     success: bool
     server_time: datetime
     next_heartbeat_within_seconds: int = Field(default=1800, description="Recommended next heartbeat interval")
+
+
+# ============== Task Assignment Schemas ==============
+
+class AgentProfileUpdateRequest(SQLModel):
+    """Request body for updating agent profile (skills, preferences)."""
+    skills: Optional[List[str]] = Field(default=None, description="Skill tags to set")
+    preferred_tracks: Optional[List[str]] = Field(default=None, description="Preferred work tracks")
+    max_concurrent_tasks: Optional[int] = Field(default=None, ge=1, le=10, description="Max concurrent tasks limit")
+
+
+class AgentProfileResponse(SQLModel):
+    """Response with agent profile info for task assignment."""
+    id: UUID
+    name: str
+    role: str
+    status: AgentStatus
+    skills: List[str] = []
+    preferred_tracks: List[str] = []
+    max_concurrent_tasks: int = 3
+    current_active_tasks: int = 0
+    availability: float = Field(description="Availability score 0-1 (0=full, 1=available)")
+    reliability_tier: str = "new"
+    overall_score: Optional[float] = None
+
+
+class AgentMetricsResponse(SQLModel):
+    """Response with detailed agent performance metrics."""
+    agent_id: UUID
+    agent_name: str
+
+    # Completion stats
+    total_tasks_assigned: int
+    total_tasks_completed: int
+    total_tasks_failed: int
+    completion_rate: Optional[float] = Field(description="completed/assigned ratio")
+
+    # Time stats
+    avg_completion_time_hours: Optional[float]
+    response_time_p50_hours: Optional[float]
+    response_time_p95_hours: Optional[float]
+
+    # Quality stats
+    avg_quality_score: Optional[float]
+    first_attempt_success_rate: Optional[float]
+
+    # Current state
+    current_active_tasks: int
+    availability: float
+
+    # Computed
+    overall_score: Optional[float]
+    reliability_tier: str
+
+
+class AgentRecommendation(SQLModel):
+    """A single agent recommendation for a task."""
+    agent_id: UUID
+    agent_name: str
+    role: str
+    match_score: float = Field(description="Overall match score (0-1)")
+    match_breakdown: dict = Field(description="Score breakdown by component")
+
+    # Score components
+    skill_match_score: float = Field(description="Skill matching score (0-1)")
+    availability_score: float = Field(description="Availability score (0-1)")
+    performance_score: float = Field(description="Historical performance score (0-1)")
+    preference_score: float = Field(description="Track preference score (0-1)")
+
+    # Quick info
+    current_active_tasks: int
+    max_concurrent_tasks: int
+    reliability_tier: str
+    matched_skills: List[str] = Field(description="Skills that matched the task")
+
+
+class TaskRecommendationResponse(SQLModel):
+    """Response with recommended agents for a task."""
+    bounty_id: str
+    bounty_title: str
+    required_role: str
+    track: Optional[str]
+    recommendations: List[AgentRecommendation]
+    total_agents_evaluated: int
+
+
+class AgentWorkloadResponse(SQLModel):
+    """Response with agent workload status."""
+    agent_id: UUID
+    agent_name: str
+    role: str
+    status: AgentStatus
+
+    # Workload
+    current_active_tasks: int
+    max_concurrent_tasks: int
+    availability: float = Field(description="0=full, 1=empty")
+
+    # Active task IDs
+    active_task_ids: List[str] = []
+
+    # Recent performance
+    completion_rate_7d: Optional[float] = Field(description="Completion rate in last 7 days")
+    avg_completion_time_hours_7d: Optional[float]
+
+
+class AllAgentsWorkloadResponse(SQLModel):
+    """Response with all agents' workload status."""
+    agents: List[AgentWorkloadResponse]
+    total_agents: int
+    available_agents: int = Field(description="Agents with availability > 0")
+    avg_availability: float = Field(description="Average availability across all agents")

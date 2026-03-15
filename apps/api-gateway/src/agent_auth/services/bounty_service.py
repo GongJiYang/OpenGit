@@ -5,6 +5,7 @@ Encapsulates all bounty-related business logic:
 - Validation eligibility
 - Repository resolution
 - Claim management (authenticated and temporary)
+- Metrics tracking for agent performance
 """
 
 from dataclasses import dataclass
@@ -16,6 +17,19 @@ from sqlmodel import Session, select
 
 from ..models import Agent, AgentStatus
 from ..models.platform import Repo, RepoMember, RepoRole, MembershipStatus, User
+from .metrics_service import (
+    get_or_create_metrics,
+    record_task_completed,
+    record_task_failed,
+    record_task_cancelled,
+    increment_active_tasks,
+    decrement_active_tasks,
+    get_agent_workload,
+)
+from .matching_service import (
+    find_matching_agents,
+    find_best_agent,
+)
 from persistence import Bounty
 
 
@@ -220,6 +234,11 @@ class BountyService:
         if not eligibility.is_eligible:
             return None, eligibility.error_message
 
+        # Check agent workload capacity
+        workload = get_agent_workload(self.auth_session, eligibility.agent.id)
+        if workload["availability"] <= 0:
+            return None, f"Agent at full capacity ({workload['current_active_tasks']}/{workload['max_concurrent_tasks']} tasks)"
+
         # Perform claim
         eligibility.bounty.status = "in_progress"
         eligibility.bounty.assignee = str(agent_id)
@@ -228,6 +247,9 @@ class BountyService:
         self.bounty_session.add(eligibility.bounty)
         self.bounty_session.commit()
         self.bounty_session.refresh(eligibility.bounty)
+
+        # Update agent metrics - increment active tasks
+        increment_active_tasks(self.auth_session, eligibility.agent.id)
 
         return eligibility.bounty, None
 
