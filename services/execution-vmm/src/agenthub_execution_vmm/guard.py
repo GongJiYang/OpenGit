@@ -79,11 +79,6 @@ class ExecutionGuard:
     def estimate_cost(is_new_session: bool, command_count: int = 1) -> float:
         """
         Rough cost estimation in USD.
-        E2B Session: ~$0.05 per start (approximation of overhead/lifecycle).
         Command: ~$0.001 per command trace.
         """
-        cost = 0.0
-        if is_new_session:
-            cost += 0.05
-        cost += command_count * 0.001
-        return cost
+        return command_count * 0.001

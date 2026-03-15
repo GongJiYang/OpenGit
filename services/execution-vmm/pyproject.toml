@@ -6,8 +6,7 @@ build-backend = "hatchling.build"
 name = "agenthub-execution-vmm"
 version = "0.1.0"
 dependencies = [
-    "agenthub-protocol",
-    "e2b-code-interpreter"
+    "agenthub-protocol"
 ]
 requires-python = ">=3.10"
 

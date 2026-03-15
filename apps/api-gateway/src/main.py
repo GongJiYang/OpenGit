@@ -32,7 +32,6 @@ from agenthub_git_core.repo_manager import RepoManager
 from agenthub_semantic_store.indexer import VectorIndexer
 from agenthub_semantic_store.ast_parser import PythonASTParser
 from agenthub_execution_vmm.sandbox import SubprocessSandbox
-from agenthub_execution_vmm.e2b_sandbox import E2BSandbox
 from agenthub_execution_vmm.guard import ExecutionGuard
 from agenthub_protocol.path_utils import ensure_safe_path
 from agenthub_protocol.validator import TraceValidator
@@ -189,29 +188,11 @@ parser = PythonASTParser()
 # Memory Store removed, using SQLite via SQLModel
 
 # --- Security Configuration & Sandbox Selection ---
-# [AI-Note] APP_ENV='production' forces E2B Cloud Sandbox. SubprocessSandbox is for development ONLY.
-APP_ENV = os.getenv("APP_ENV", "production").lower()
-E2B_API_KEY = os.getenv("E2B_API_KEY")
-ALLOW_INSECURE_SANDBOX = os.getenv("ALLOW_INSECURE_SANDBOX", "0") == "1"
-
-if APP_ENV == "production":
-    if not E2B_API_KEY:
-        print("❌ [CRITICAL] E2B_API_KEY is missing in PRODUCTION environment.")
-        print("❌ Security policy prohibits local SubprocessSandbox in production. System exit.")
-        sys.exit(1)
-    print("🔐 [Core] PROD MODE: Initializing Secure Cloud Sandbox (E2B)...")
-    sandbox = E2BSandbox()
-else:
-    # Development Mode Fallback
-    if E2B_API_KEY:
-        print("🔐 [Core] DEV MODE: E2B_API_KEY detected. Using Secure Cloud Sandbox.")
-        sandbox = E2BSandbox()
-    else:
-        if not ALLOW_INSECURE_SANDBOX:
-            raise RuntimeError("E2B_API_KEY missing and ALLOW_INSECURE_SANDBOX=0. Refusing to use SubprocessSandbox.")
-        print("⚠️ [Core] DEV MODE: E2B_API_KEY not found. Fallback to INSECURE SubprocessSandbox.")
-        print("⚠️ [Security] This mode is strictly for local development and should not be used with untrusted code.")
-        sandbox = SubprocessSandbox()
+# [AI-Note] E2B Cloud Sandbox has been removed. Using local SubprocessSandbox.
+# ⚠️ [Security] SubprocessSandbox is for local development and demonstration only.
+print("⚠️ [Core] INITIALIZING LOCAL SUBPROCESS SANDBOX.")
+print("⚠️ [Security] This mode provides NO isolation and should only be used with trusted code.")
+sandbox = SubprocessSandbox()
 
 # --- Models ---
 
@@ -250,6 +231,20 @@ class VerificationRequest(BaseModel):
     exit_code: Optional[int] = None
     stdout: Optional[str] = None
     note: Optional[str] = None
+
+class BlackboxTestResult(BaseModel):
+    api_path: str
+    method: str
+    payload: Optional[dict] = None
+    expected: int
+    actual: int
+    passed: bool
+
+class BlackboxReport(BaseModel):
+    test_id: str
+    endpoint: str
+    results: List[BlackboxTestResult]
+    overall_verdict: str  # PASS or FAIL
 
 ALLOWED_TEST_COMMANDS = ["pytest", "python", "python3", "tox", "nose"]
 
@@ -607,7 +602,7 @@ def create_bounty(request: Request, bounty: Bounty, session: Session = Depends(g
     bounty.repo_name = sanitize_text(bounty.repo_name, 100)
 
     # Validate required_role
-    VALID_ROLES = ["architect", "contributor", "executor", "reviewer", "librarian"]
+    VALID_ROLES = ["architect", "contributor", "executor", "tester", "librarian"]
     if bounty.required_role and bounty.required_role.lower() not in VALID_ROLES:
         raise HTTPException(status_code=400, detail=f"Invalid role: {bounty.required_role}")
 
@@ -646,6 +641,243 @@ def decompose_task(parent_id: str, sub_tasks: List[Bounty], agent_id: str, sessi
     for t in created_tasks:
         session.refresh(t)
     return {"parent_id": parent_id, "children": created_tasks}
+
+
+# === Hierarchical Bounty System (DAG) ===
+
+class TaskNode(BaseModel):
+    """Nested task structure for hierarchical decomposition."""
+    title: str
+    description: str = ""
+    reward: int = 0
+    required_role: str = "contributor"
+    estimated_hours: Optional[int] = None
+    track: Optional[str] = None
+    dependencies: List[str] = Field(default_factory=list, description="List of task titles this depends on (resolved after creation)")
+    children: List["TaskNode"] = Field(default_factory=list, description="Sub-tasks")
+    test_command: str = "pytest"
+    verification_mode: str = "auto"
+
+TaskNode.model_rebuild()  # Enable recursive model
+
+class DecomposedBountyRequest(BaseModel):
+    """Request for creating a hierarchical bounty tree."""
+    repo_name: str
+    repo_id: Optional[str] = None
+    root_task: TaskNode
+
+class DecomposedBountyResponse(BaseModel):
+    """Response with all created bounties and their dependencies."""
+    total_created: int
+    bounties: List[dict]
+    dependency_map: dict  # {task_title: bounty_id}
+
+
+def _flatten_task_tree(
+    node: TaskNode,
+    parent_id: Optional[str],
+    repo_name: str,
+    repo_id: Optional[str],
+    title_to_id: dict,
+    all_bounties: List[Bounty]
+) -> Bounty:
+    """Recursively flatten a task tree into individual Bounty records."""
+    from persistence import BountyStatus
+
+    bounty = Bounty(
+        title=node.title,
+        description=node.description,
+        reward=node.reward,
+        repo_name=repo_name,
+        repo_id=repo_id,
+        required_role=node.required_role,
+        parent_id=parent_id,
+        estimated_hours=node.estimated_hours,
+        track=node.track,
+        dependencies=[],
+        test_command=node.test_command,
+        verification_mode=node.verification_mode,
+        status=BountyStatus.PENDING.value if node.dependencies else BountyStatus.OPEN.value
+    )
+    all_bounties.append(bounty)
+    return bounty
+
+
+@app.post("/api/v1/bounties/decomposed", response_model=DecomposedBountyResponse)
+@limiter.limit("10/minute")
+def create_decomposed_bounties(
+    request: Request,
+    req: DecomposedBountyRequest,
+    session: Session = Depends(get_session),
+    agent: Agent = Depends(require_agent)
+):
+    """
+    Create a hierarchical bounty tree from a nested JSON structure.
+
+    Enables Architect agents to create complex task DAGs with:
+    - Parallel tracks (via 'track' field)
+    - Dependencies between tasks (via 'dependencies' field)
+    - Automatic status management (pending -> open when dependencies complete)
+
+    Example:
+    {
+        "repo_name": "my-repo",
+        "root_task": {
+            "title": "Feature X",
+            "children": [
+                {"title": "Backend API", "track": "backend"},
+                {"title": "Frontend UI", "track": "frontend"}
+            ]
+        }
+    }
+    """
+    from persistence import BountyStatus
+
+    # Verify Architect Role
+    if agent.role.lower() != "architect":
+        raise HTTPException(status_code=403, detail="Forbidden: Only Architect agents can create decomposed bounties.")
+
+    # Validate repo exists
+    repo_path = get_secure_repo_path(req.repo_name)
+    if not os.path.exists(repo_path):
+        raise HTTPException(status_code=404, detail=f"Repo '{req.repo_name}' not found")
+
+    all_bounties: List[Bounty] = []
+    title_to_id: dict = {}
+
+    def process_node(node: TaskNode, parent_id: Optional[str] = None):
+        """Recursively process a task node."""
+        bounty = _flatten_task_tree(
+            node=node,
+            parent_id=parent_id,
+            repo_name=req.repo_name,
+            repo_id=req.repo_id,
+            title_to_id=title_to_id,
+            all_bounties=all_bounties
+        )
+        session.add(bounty)
+        session.flush()
+        title_to_id[node.title] = bounty.id
+
+        for child in node.children:
+            process_node(child, bounty.id)
+
+    process_node(req.root_task)
+
+    # Resolve dependencies (title -> bounty_id)
+    def find_node_deps(node: TaskNode, target_title: str) -> Optional[List[str]]:
+        if node.title == target_title:
+            return node.dependencies
+        for child in node.children:
+            result = find_node_deps(child, target_title)
+            if result is not None:
+                return result
+        return None
+
+    for bounty in all_bounties:
+        original_deps = find_node_deps(req.root_task, bounty.title)
+        if original_deps:
+            node_deps = []
+            for dep_title in original_deps:
+                if dep_title in title_to_id:
+                    node_deps.append(title_to_id[dep_title])
+                else:
+                    raise HTTPException(status_code=400, detail=f"Dependency '{dep_title}' not found for task '{bounty.title}'")
+            bounty.dependencies = node_deps
+            bounty.status = BountyStatus.PENDING.value
+        else:
+            bounty.status = BountyStatus.OPEN.value
+
+    session.commit()
+
+    for bounty in all_bounties:
+        session.refresh(bounty)
+
+    bounty_dicts = [
+        {
+            "id": b.id,
+            "title": b.title,
+            "status": b.status,
+            "dependencies": b.dependencies,
+            "track": b.track,
+            "estimated_hours": b.estimated_hours,
+            "parent_id": b.parent_id
+        }
+        for b in all_bounties
+    ]
+
+    return DecomposedBountyResponse(
+        total_created=len(all_bounties),
+        bounties=bounty_dicts,
+        dependency_map=title_to_id
+    )
+
+
+def resolve_bounty_dependencies(bounty_id: str, session: Session) -> int:
+    """
+    Check and update bounty status when dependencies complete.
+
+    Handles two cases:
+    1. pending -> open (when all dependencies complete)
+    2. ready_for_preparation -> open/in_progress (when all dependencies complete)
+
+    Returns the number of bounties that transitioned.
+    """
+    from persistence import BountyStatus
+
+    updated_count = 0
+
+    # Case 1: pending bounties
+    pending_bounties = session.exec(
+        select(Bounty).where(
+            Bounty.status == BountyStatus.PENDING.value,
+            Bounty.dependencies.contains([bounty_id])
+        )
+    ).all()
+
+    for bounty in pending_bounties:
+        all_deps_completed = True
+        for dep_id in bounty.dependencies:
+            dep_bounty = session.get(Bounty, dep_id)
+            if not dep_bounty or dep_bounty.status != BountyStatus.COMPLETED.value:
+                all_deps_completed = False
+                break
+
+        if all_deps_completed:
+            bounty.status = BountyStatus.OPEN.value
+            session.add(bounty)
+            updated_count += 1
+
+    # Case 2: ready_for_preparation bounties (with or without assignee)
+    preparable_bounties = session.exec(
+        select(Bounty).where(
+            Bounty.status == BountyStatus.READY_FOR_PREPARATION.value,
+            Bounty.dependencies.contains([bounty_id])
+        )
+    ).all()
+
+    for bounty in preparable_bounties:
+        all_deps_completed = True
+        for dep_id in bounty.dependencies:
+            dep_bounty = session.get(Bounty, dep_id)
+            if not dep_bounty or dep_bounty.status != BountyStatus.COMPLETED.value:
+                all_deps_completed = False
+                break
+
+        if all_deps_completed:
+            # If someone claimed for preparation, they get auto-promoted to in_progress
+            if bounty.assignee:
+                bounty.status = BountyStatus.IN_PROGRESS.value
+            else:
+                bounty.status = BountyStatus.OPEN.value
+            session.add(bounty)
+            updated_count += 1
+
+    if updated_count > 0:
+        session.commit()
+
+    return updated_count
+
 
 @app.post("/bounties/{bounty_id}/claim")
 def claim_bounty_route(
@@ -770,6 +1002,201 @@ def convert_temporary_claim_route(
         )
 
     return bounty
+
+
+# === Preparation Mode Endpoints ===
+
+@app.post("/api/v1/bounties/{bounty_id}/mark-preparable")
+@limiter.limit("20/minute")
+def mark_bounty_preparable(
+    request: Request,
+    bounty_id: str,
+    session: Session = Depends(get_session),
+    agent: Agent = Depends(require_agent)
+):
+    """
+    Mark a pending bounty as ready for preparation.
+
+    Only Architect agents can mark bounties as preparable.
+    This allows Contributors to claim and prepare while dependencies are being completed.
+
+    Status transition: pending -> ready_for_preparation
+    """
+    from persistence import BountyStatus
+
+    # Verify Architect Role
+    if agent.role.lower() != "architect":
+        raise HTTPException(status_code=403, detail="Forbidden: Only Architect agents can mark bounties as preparable.")
+
+    bounty = session.get(Bounty, bounty_id)
+    if not bounty:
+        raise HTTPException(status_code=404, detail="Bounty not found")
+
+    if bounty.status != BountyStatus.PENDING.value:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Bounty must be in 'pending' status. Current status: {bounty.status}"
+        )
+
+    bounty.status = BountyStatus.READY_FOR_PREPARATION.value
+    bounty.updated_at = datetime.utcnow()
+    session.add(bounty)
+    session.commit()
+    session.refresh(bounty)
+
+    return {
+        "id": bounty.id,
+        "title": bounty.title,
+        "status": bounty.status,
+        "message": "Bounty marked as ready for preparation. Contributors can now prepare."
+    }
+
+
+class PreparationClaimRequest(BaseModel):
+    """Request for claiming a bounty in preparation mode."""
+    agent_id: str
+    preparation_notes: Optional[str] = None
+
+
+@app.post("/api/v1/bounties/{bounty_id}/claim-preparation")
+@limiter.limit("10/minute")
+def claim_bounty_for_preparation(
+    request: Request,
+    bounty_id: str,
+    req: PreparationClaimRequest,
+    session: Session = Depends(get_session),
+    agent: Agent = Depends(require_agent)
+):
+    """
+    Claim a bounty for preparation (early access).
+
+    This endpoint allows Contributors to:
+    - View and analyze the task
+    - Study the codebase
+    - Prepare implementation plan
+    - BUT cannot submit code until all dependencies complete
+
+    Requirements:
+    - Bounty must be in 'ready_for_preparation' status
+    - Agent must have matching role (contributor)
+    - Dependencies must still be tracked
+
+    When all dependencies complete, the bounty auto-transitions to 'open' and
+    the preparing agent gets first priority to claim.
+    """
+    from persistence import BountyStatus
+
+    if str(agent.id) != req.agent_id:
+        raise HTTPException(status_code=403, detail="Agent ID mismatch")
+
+    bounty = session.get(Bounty, bounty_id)
+    if not bounty:
+        raise HTTPException(status_code=404, detail="Bounty not found")
+
+    # Check status - must be ready_for_preparation
+    if bounty.status != BountyStatus.READY_FOR_PREPARATION.value:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Bounty is not ready for preparation. Current status: {bounty.status}"
+        )
+
+    # Check role match
+    if agent.role.lower() != bounty.required_role.lower():
+        raise HTTPException(
+            status_code=403,
+            detail=f"This task requires role '{bounty.required_role}', agent has '{agent.role}'"
+        )
+
+    # Check if already claimed for preparation
+    if bounty.assignee:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Bounty already claimed for preparation by agent {bounty.assignee}"
+        )
+
+    # Claim for preparation
+    bounty.assignee = str(agent.id)
+    bounty.updated_at = datetime.utcnow()
+
+    # Store preparation notes in description or a new field if available
+    if req.preparation_notes:
+        bounty.description = f"{bounty.description}\n\n[Preparation Notes]: {req.preparation_notes}"
+
+    session.add(bounty)
+    session.commit()
+    session.refresh(bounty)
+
+    return {
+        "id": bounty.id,
+        "title": bounty.title,
+        "status": bounty.status,
+        "assignee": bounty.assignee,
+        "dependencies": bounty.dependencies,
+        "message": "Bounty claimed for preparation. You can prepare but cannot submit until dependencies complete.",
+        "warning": "Code submission will be blocked until all dependencies are completed."
+    }
+
+
+@app.post("/api/v1/bounties/{bounty_id}/activate-from-preparation")
+@limiter.limit("10/minute")
+def activate_from_preparation(
+    request: Request,
+    bounty_id: str,
+    session: Session = Depends(get_session)
+):
+    """
+    Internal endpoint to activate a prepared bounty when dependencies complete.
+
+    Called automatically by resolve_bounty_dependencies when all dependencies
+    are marked as completed. Transitions status from ready_for_preparation to open.
+
+    The agent who claimed for preparation gets first priority.
+    """
+    from persistence import BountyStatus
+
+    bounty = session.get(Bounty, bounty_id)
+    if not bounty:
+        raise HTTPException(status_code=404, detail="Bounty not found")
+
+    if bounty.status != BountyStatus.READY_FOR_PREPARATION.value:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Bounty is not in preparation mode. Current status: {bounty.status}"
+        )
+
+    # Check if all dependencies are completed
+    all_deps_completed = True
+    for dep_id in bounty.dependencies:
+        dep_bounty = session.get(Bounty, dep_id)
+        if not dep_bounty or dep_bounty.status != BountyStatus.COMPLETED.value:
+            all_deps_completed = False
+            break
+
+    if not all_deps_completed:
+        raise HTTPException(
+            status_code=400,
+            detail="Not all dependencies are completed yet"
+        )
+
+    # Activate the bounty
+    bounty.status = BountyStatus.OPEN.value
+    bounty.updated_at = datetime.utcnow()
+
+    # If there's a preparer, they get auto-promoted to in_progress
+    if bounty.assignee:
+        bounty.status = BountyStatus.IN_PROGRESS.value
+
+    session.add(bounty)
+    session.commit()
+    session.refresh(bounty)
+
+    return {
+        "id": bounty.id,
+        "title": bounty.title,
+        "status": bounty.status,
+        "assignee": bounty.assignee,
+        "message": "Bounty activated. Preparer can now submit code."
+    }
 
 
 # --- Bounty Decision Endpoint (Structured Output Validation) ---
@@ -1100,73 +1527,64 @@ def list_pending_verifications(repo_name: Optional[str] = None, session: Session
         })
     return results
 
-@app.post("/api/v1/commits/{commit_id}/approve")
-def approve_commit(commit_id: int, session: Session = Depends(get_session), agent: Agent = Depends(require_agent)):
-    """Approve an agent's submission and 'merge' it."""
+@app.post("/api/v1/commits/{commit_id}/blackbox-test")
+def submit_blackbox_test(commit_id: int, report: BlackboxReport, session: Session = Depends(get_session), agent: Agent = Depends(require_agent)):
+    """Submit a blackbox test report for a commit."""
+    if agent.role.lower() != "tester":
+        raise HTTPException(status_code=403, detail="Forbidden: only tester can submit blackbox reports")
+    
     record = session.get(CommitRecord, commit_id)
     if not record:
         raise HTTPException(status_code=404, detail="Commit record not found")
-    if agent.role.lower() != "reviewer":
-        raise HTTPException(status_code=403, detail="Forbidden: only reviewer can approve commits")
-    if str(agent.id) == str(record.agent_id):
-        raise HTTPException(status_code=403, detail="Forbidden: cannot approve own commit")
+        
+    record.blackbox_report = report.model_dump()
+    record.blackbox_status = "passed" if report.overall_verdict.upper() == "PASS" else "failed"
     
-    record.status = "approved"
+    # Auto-merge if blackbox test passed
+    if record.blackbox_status == "passed":
+        record.status = "approved"
+        # Fast-forward logic (moved from approve_commit)
+        if record.branch_name:
+            repo_path = get_secure_repo_path(record.repo_name)
+            ref_name = f"refs/heads/{record.branch_name}"
+            try:
+                main_ref = "refs/heads/main"
+                main_exists = subprocess.run(["git", "show-ref", "--verify", "--quiet", main_ref], cwd=repo_path).returncode == 0
+                if main_exists:
+                    ff_check = subprocess.run(
+                        ["git", "merge-base", "--is-ancestor", main_ref, ref_name],
+                        cwd=repo_path
+                    )
+                    if ff_check.returncode != 0:
+                        record.status = "conflict"
+                        session.add(record)
+                        session.commit()
+                        raise HTTPException(status_code=409, detail="Non-fast-forward merge detected; manual review required.")
+
+                sha = subprocess.check_output(["git", "rev-parse", ref_name], cwd=repo_path).decode().strip()
+                subprocess.run(["git", "update-ref", "refs/heads/main", sha], cwd=repo_path, check=True)
+            except subprocess.CalledProcessError as e:
+                raise HTTPException(status_code=500, detail=f"Failed to update main: {e}")
+        
+        if record.bounty_id:
+            bounty = session.get(Bounty, record.bounty_id)
+            if bounty:
+                from persistence import BountyStatus
+                bounty.status = BountyStatus.COMPLETED.value
+                session.add(bounty)
+                # Trigger dependency resolution - unlock dependent tasks
+                resolve_bounty_dependencies(bounty.id, session)
+    else:
+        record.status = "rejected"
+        if record.bounty_id:
+            bounty = session.get(Bounty, record.bounty_id)
+            if bounty and bounty.assignee == record.agent_id:
+                bounty.status = "in_progress"
+                session.add(bounty)
+                
     session.add(record)
-
-    # Fast-forward main to the approved branch head
-    if record.branch_name:
-        repo_path = get_secure_repo_path(record.repo_name)
-        ref_name = f"refs/heads/{record.branch_name}"
-        try:
-            # If main exists, require fast-forward only
-            main_ref = "refs/heads/main"
-            main_exists = subprocess.run(["git", "show-ref", "--verify", "--quiet", main_ref], cwd=repo_path).returncode == 0
-            if main_exists:
-                ff_check = subprocess.run(
-                    ["git", "merge-base", "--is-ancestor", main_ref, ref_name],
-                    cwd=repo_path
-                )
-                if ff_check.returncode != 0:
-                    record.status = "conflict"
-                    session.add(record)
-                    session.commit()
-                    raise HTTPException(status_code=409, detail="Non-fast-forward merge detected; manual review required.")
-
-            sha = subprocess.check_output(["git", "rev-parse", ref_name], cwd=repo_path).decode().strip()
-            subprocess.run(["git", "update-ref", "refs/heads/main", sha], cwd=repo_path, check=True)
-        except subprocess.CalledProcessError as e:
-            raise HTTPException(status_code=500, detail=f"Failed to update main: {e}")
-    
-    if record.bounty_id:
-        bounty = session.get(Bounty, record.bounty_id)
-        if bounty:
-            bounty.status = "completed"
-            session.add(bounty)
-            
     session.commit()
-    return {"message": f"Commit {commit_id} approved."}
-
-@app.post("/api/v1/commits/{commit_id}/reject")
-def reject_commit(commit_id: int, session: Session = Depends(get_session), agent: Agent = Depends(require_agent)):
-    """Reject an agent's submission."""
-    record = session.get(CommitRecord, commit_id)
-    if not record:
-        raise HTTPException(status_code=404, detail="Commit record not found")
-    if agent.role.lower() != "reviewer":
-        raise HTTPException(status_code=403, detail="Forbidden: only reviewer can reject commits")
-    if str(agent.id) == str(record.agent_id):
-        raise HTTPException(status_code=403, detail="Forbidden: cannot reject own commit")
-    
-    record.status = "rejected"
-    session.add(record)
-    if record.bounty_id:
-        bounty = session.get(Bounty, record.bounty_id)
-        if bounty and bounty.assignee == record.agent_id:
-            bounty.status = "in_progress"
-            session.add(bounty)
-    session.commit()
-    return {"message": f"Commit {commit_id} rejected.", "branch": record.branch_name}
+    return {"message": f"Blackbox test submitted. Status: {record.blackbox_status}", "commit_id": commit_id}
 
 @app.post("/api/v1/commits/{commit_id}/verify")
 def verify_commit(commit_id: int, req: VerificationRequest, session: Session = Depends(get_session), agent: Agent = Depends(require_agent)):

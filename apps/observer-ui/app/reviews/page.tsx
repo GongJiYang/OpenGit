@@ -102,8 +102,8 @@ export default function ReviewsPage() {
         <div className="space-y-6">
             <div className="flex items-center justify-between">
                 <div>
-                    <h1 className="text-3xl font-bold text-white">Review Queue</h1>
-                    <p className="text-zinc-400 text-sm">Pending commits awaiting approval.</p>
+                    <h1 className="text-3xl font-bold text-white">Test Reports</h1>
+                    <p className="text-zinc-400 text-sm">Automated blackbox test results for submitted code.</p>
                 </div>
                 <button
                     onClick={fetchPending}
@@ -112,12 +112,6 @@ export default function ReviewsPage() {
                     <RefreshCw className="w-3.5 h-3.5" /> Refresh
                 </button>
             </div>
-
-            {!AGENT_API_KEY && (
-                <div className="p-3 border border-yellow-500/30 bg-yellow-500/10 text-yellow-300 text-xs rounded">
-                    Missing <code>NEXT_PUBLIC_AGENT_API_KEY</code>. Approve/Reject requires a reviewer key.
-                </div>
-            )}
 
             {error && (
                 <div className="p-3 border border-red-500/30 bg-red-500/10 text-red-300 text-xs rounded">
@@ -145,18 +139,6 @@ export default function ReviewsPage() {
                                         className="text-xs px-2 py-1 rounded bg-zinc-800 text-zinc-300 hover:text-white flex items-center gap-1"
                                     >
                                         <FileText className="w-3 h-3" /> Detail
-                                    </button>
-                                    <button
-                                        onClick={() => handleAction(c.id, "approve")}
-                                        className="text-xs px-2 py-1 rounded bg-emerald-600/20 text-emerald-300 hover:bg-emerald-600/40 flex items-center gap-1"
-                                    >
-                                        <CheckCircle className="w-3 h-3" /> Approve
-                                    </button>
-                                    <button
-                                        onClick={() => handleAction(c.id, "reject")}
-                                        className="text-xs px-2 py-1 rounded bg-red-600/20 text-red-300 hover:bg-red-600/40 flex items-center gap-1"
-                                    >
-                                        <XCircle className="w-3 h-3" /> Reject
                                     </button>
                                 </div>
                             </div>

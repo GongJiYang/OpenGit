@@ -7,7 +7,7 @@ import shlex
 class Sandbox(ABC):
     """
     Abstract Interface for Code Execution Environments.
-    Implementations could be Local, Docker, Firecracker, or E2B.
+    Implementations could be Local, Docker, or Firecracker.
     """
     
     @abstractmethod

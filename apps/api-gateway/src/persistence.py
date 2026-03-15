@@ -50,6 +50,17 @@ class UpdateStatus(str, Enum):
     FAILED = "failed"          # 失败
     ROLLED_BACK = "rolled_back"  # 已回滚
 
+
+class BountyStatus(str, Enum):
+    """Bounty 状态 (支持层次化依赖)"""
+    PENDING = "pending"                    # 被依赖阻塞，等待前置任务完成
+    READY_FOR_PREPARATION = "ready_for_preparation"  # 可提前准备，但不能执行
+    OPEN = "open"                          # 开放认领
+    IN_PROGRESS = "in_progress"            # 执行中
+    SUBMITTED = "submitted"                # 已提交，待审核
+    COMPLETED = "completed"                # 已完成
+    CANCELLED = "cancelled"                # 已取消
+
 # --- Models ---
 
 class RepoConfig(SQLModel, table=True):
@@ -92,17 +103,30 @@ class AuditLog(SQLModel, table=True):
 
 
 class Bounty(SQLModel, table=True):
-    """Bounty (Job Market) Model."""
+    """Bounty (Job Market) Model with hierarchical dependencies support."""
     id: str = Field(default_factory=lambda: uuid4().hex, primary_key=True)
     title: str = Field(index=True)
     description: str
     reward: int
-    status: str = Field(default="open", index=True) # open, in_progress, submitted, completed
+    status: str = Field(default=BountyStatus.OPEN.value, index=True)
+    # Status flow: pending -> ready_for_preparation -> open -> in_progress -> submitted -> completed
+    # pending: blocked by dependencies
+    # ready_for_preparation: can prepare but not execute
+    # open: ready to claim
     repo_name: str = Field(index=True)
     repo_id: Optional[str] = Field(default=None, index=True, description="Linked Repo ID for membership check")
     required_role: str # architect, contributor, executor
     assignee: Optional[str] = Field(default=None, index=True)
     parent_id: Optional[str] = Field(default=None, index=True, description="Parent bounty ID for decomposition")
+
+    # === Hierarchical Dependency System (DAG) ===
+    dependencies: List[str] = Field(
+        default_factory=list,
+        sa_column=Column(JSON),
+        description="List of bounty IDs that must complete before this task becomes open"
+    )
+    estimated_hours: Optional[int] = Field(default=None, description="Estimated hours to complete")
+    track: Optional[str] = Field(default=None, index=True, description="Parallel track identifier (e.g., 'frontend', 'backend')")
 
     # Temporary Claim Support (for unauthenticated users)
     is_temporary_claim: bool = Field(default=False, description="True if claimed by unauthenticated user")
@@ -112,14 +136,14 @@ class Bounty(SQLModel, table=True):
     # Cost & Risk Control
     max_steps: int = Field(default=15, description="Max allowed submission attempts")
     current_steps: int = Field(default=0)
-    
+
     # Store lists as JSON in SQLite
     context_files: List[str] = Field(default_factory=list, sa_column=Column(JSON))
     target_files: List[str] = Field(default_factory=list, sa_column=Column(JSON))
     acceptance_criteria: Optional[str] = None
     test_command: str = Field(default="pytest", description="Command to run for verification")
     verification_mode: str = Field(default="auto", description="auto | human | external")
-    
+
     created_at: datetime = Field(default_factory=datetime.utcnow)
     updated_at: datetime = Field(default_factory=datetime.utcnow, sa_column_kwargs={"onupdate": datetime.utcnow})
 
@@ -147,6 +171,10 @@ class CommitRecord(SQLModel, table=True):
     
     # Full TraceCommit JSON for deep inspection
     trace_json: dict = Field(sa_column=Column(JSON))
+
+      # 新增黑盒测试专用字段
+    blackbox_status: str = Field(default="pending") # pending, testing, passed, failed
+    blackbox_report: Optional[dict] = Field(default=None, sa_column=Column(JSON))
 
 
 # === Meta-Repository Models ===

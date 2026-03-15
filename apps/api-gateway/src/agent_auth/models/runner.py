@@ -12,7 +12,7 @@ Architecture:
 
 Trust Model:
 - Mandatory full log upload (stdout, stderr, exit code)
-- Random audit: every 10th job is re-run on official E2B sandbox
+- Random audit: every 10th job is re-run on trusted infrastructure
 - Mismatch = permanent ban + reputation penalty
 """
 
@@ -49,7 +49,6 @@ class ComputeJobStatus(str, Enum):
 
 class ExecutionMode(str, Enum):
     """Repository execution mode for CI/CD."""
-    E2B_SANDBOX = "e2b_sandbox"      # Official E2B sandbox (paid, most secure)
     SHARED_LOCAL = "shared_local"    # Platform shared servers (free, queued)
     YOLO_MODE = "yolo_mode"          # Skip testing, direct human review
     SELF_HOSTED = "self_hosted"      # Community/self-hosted runners
@@ -246,7 +245,7 @@ class ComputeJob(SQLModel, table=True):
     # Audit (Random verification)
     is_audited: bool = Field(default=False, description="Was this job randomly audited?")
     audit_job_id: Optional[UUID] = Field(default=None,
-                                          description="Reference job run on E2B for audit")
+                                          description="Reference job run on trusted infra for audit")
     audit_result: Optional[str] = Field(default=None, max_length=50,
                                          description="audit_passed / audit_failed / audit_pending")
     audit_mismatch_details: Optional[str] = Field(default=None, sa_column=Column(Text))
@@ -270,7 +269,7 @@ class AuditLog(SQLModel, table=True):
     Audit log for Zero-Trust verification.
 
     When a job is flagged for audit, it's re-run on trusted infrastructure
-    (E2B sandbox) and the results are compared to the runner's submission.
+    and the results are compared to the runner's submission.
     """
 
     __tablename__ = "audit_logs"
@@ -286,7 +285,7 @@ class AuditLog(SQLModel, table=True):
     original_exit_code: Optional[int] = Field(default=None)
     original_passed: Optional[bool] = Field(default=None)
 
-    # Audited result (from trusted E2B)
+    # Audited result (from trusted infra)
     audited_stdout: Optional[str] = Field(default=None, sa_column=Column(Text))
     audited_exit_code: Optional[int] = Field(default=None)
 
@@ -333,8 +332,8 @@ class RepoExecutionConfig(SQLModel, table=True):
     sponsor_user_id: Optional[UUID] = Field(default=None,
                                              description="User sponsoring compute (gets 20% of bounty)")
 
-    # E2B settings
-    e2b_budget_limit: int = Field(default=1000, description="Max E2B budget in cents")
+    # Budget settings
+    budget_limit: int = Field(default=1000, description="Max compute budget in cents")
 
     # YOLO mode settings
     yolo_require_human_review: bool = Field(default=True,

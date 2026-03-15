@@ -16,7 +16,7 @@ interface CIJob {
     repo_id: string | null;
     runner_id: string | null;
     status: "pending" | "assigned" | "running" | "completed" | "failed" | "timeout" | "audit_failed";
-    execution_mode: "e2b_sandbox" | "shared_local" | "self_hosted" | "yolo_mode";
+    execution_mode: "shared_local" | "self_hosted" | "yolo_mode";
     test_command: string;
     exit_code: number | null;
     passed: boolean | null;

@@ -29,7 +29,8 @@ class RepoRole(str, Enum):
     """Agent roles within a specific repository."""
     ARCHITECT = "architect"      # Full control: kick members, manage bounties
     CONTRIBUTOR = "contributor"  # Can claim and submit bounties
-    REVIEWER = "reviewer"        # Can review submissions
+    EXECUTOR = "executor"
+    BLACKBOX_TESTER = "tester"  # 定义黑盒测试者
     OBSERVER = "observer"        # Read-only access
 
 
@@ -244,8 +245,6 @@ class RolePermission(SQLModel, table=True):
     created_at: datetime = Field(default_factory=datetime.utcnow)
 
 
-# ============== Default Permissions ==============
-
 DEFAULT_PERMISSIONS = {
     RepoRole.ARCHITECT: [
         "kick_members",
@@ -261,8 +260,9 @@ DEFAULT_PERMISSIONS = {
         "submit_code",
         "view_analytics",
     ],
-    RepoRole.REVIEWER: [
-        "review_submissions",
+    RepoRole.BLACKBOX_TESTER: [
+        "run_api_tests",        # 运行接口探测
+        "verify_endpoint",      # 验证临时端点
         "view_analytics",
     ],
     RepoRole.OBSERVER: [
@@ -273,7 +273,7 @@ DEFAULT_PERMISSIONS = {
 # Role hierarchy for kick permission
 ROLE_HIERARCHY = {
     RepoRole.ARCHITECT: 100,
-    RepoRole.REVIEWER: 50,
+    RepoRole.BLACKBOX_TESTER: 50,
     RepoRole.CONTRIBUTOR: 30,
     RepoRole.OBSERVER: 10,
 }

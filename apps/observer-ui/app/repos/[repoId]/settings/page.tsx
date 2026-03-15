@@ -9,7 +9,7 @@ import {
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE || "/api";
 
-type ExecutionMode = "e2b_sandbox" | "shared_local" | "yolo_mode" | "self_hosted";
+type ExecutionMode = "shared_local" | "yolo_mode" | "self_hosted";
 
 interface Runner {
     id: string;
@@ -26,21 +26,12 @@ interface Runner {
 interface RepoConfig {
     execution_mode: ExecutionMode;
     preferred_runner_ids: string[];
-    e2b_budget_limit: number;
+    budget_limit: number;
     yolo_require_human_review: boolean;
 }
 
 const EXECUTION_MODES = [
-    {
-        id: "e2b_sandbox" as ExecutionMode,
-        icon: Cloud,
-        title: "☁️ 官方沙箱",
-        subtitle: "E2B Sandbox",
-        description: "极度安全，按秒计费，与外网隔离",
-        cost: "消耗 Bounty 预算 10%",
-        useCase: "恶意代码高风险项目",
-        color: "blue",
-    },
+
     {
         id: "shared_local" as ExecutionMode,
         icon: Server,
@@ -224,22 +215,7 @@ export default function RepoSettingsPage() {
                 </div>
             )}
 
-            {/* E2B Budget */}
-            {mode === "e2b_sandbox" && (
-                <div className="glass-panel rounded-xl p-6">
-                    <h3 className="text-lg font-semibold text-white mb-4">E2B 预算设置</h3>
-                    <div className="flex items-center gap-4">
-                        <input
-                            type="number"
-                            value={e2bBudget}
-                            onChange={(e) => setE2bBudget(parseInt(e.target.value) || 0)}
-                            className="flex-1 bg-zinc-800 border border-zinc-700 rounded-lg px-4 py-2 text-white"
-                        />
-                        <span className="text-zinc-400">美分 (cents)</span>
-                    </div>
-                    <p className="text-xs text-zinc-500 mt-2">余额将在每次测试后自动扣除</p>
-                </div>
-            )}
+
 
             {/* Save Button */}
             <div className="flex justify-end">

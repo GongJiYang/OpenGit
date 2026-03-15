@@ -634,7 +634,7 @@ async def submit_audit_result(
     session: Session = Depends(get_db)
 ):
     """
-    Submit audit result from trusted infrastructure (E2B).
+    Submit audit result from trusted infrastructure.
 
     This is an internal endpoint called by the platform's audit worker.
     It compares the runner's submission with the audited result and
