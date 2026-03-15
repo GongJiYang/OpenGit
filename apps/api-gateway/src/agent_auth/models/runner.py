@@ -250,6 +250,14 @@ class ComputeJob(SQLModel, table=True):
                                          description="audit_passed / audit_failed / audit_pending")
     audit_mismatch_details: Optional[str] = Field(default=None, sa_column=Column(Text))
 
+    # Service Endpoint (for blackbox testing)
+    service_endpoint: Optional[str] = Field(default=None, max_length=500,
+                                             description="URL where the deployed service is accessible")
+    access_token: Optional[str] = Field(default=None, max_length=500,
+                                         description="Temporary JWT token for accessing the service endpoint")
+    token_expires_at: Optional[datetime] = Field(default=None,
+                                                  description="When the access token expires")
+
     # Timestamps
     created_at: datetime = Field(default_factory=datetime.utcnow)
     updated_at: datetime = Field(default_factory=datetime.utcnow)

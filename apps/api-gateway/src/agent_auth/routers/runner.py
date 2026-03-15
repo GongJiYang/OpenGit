@@ -347,6 +347,107 @@ async def submit_job_result(
     }
 
 
+# ============== Service Ready Notification ==============
+
+class ServiceReadyRequest(BaseModel):
+    """Request to report service endpoint is ready."""
+    job_id: UUID
+    service_endpoint: str = Field(..., max_length=500,
+                                   description="URL where the deployed service is accessible")
+    health_check_path: str = Field(default="/health", max_length=100,
+                                    description="Health check endpoint path")
+    access_token_validity_hours: int = Field(default=1, ge=1, le=24,
+                                               description="How long the access token should be valid")
+
+
+class ServiceReadyResponse(BaseModel):
+    """Response for service ready notification."""
+    success: bool
+    job_id: UUID
+    service_endpoint: str
+    access_token: str
+    expires_at: datetime
+    message: str
+
+
+@router.post("/service-ready", response_model=ServiceReadyResponse)
+async def report_service_ready(
+    req: ServiceReadyRequest,
+    runner: Runner = Depends(get_runner_from_header),
+    session: Session = Depends(get_db)
+):
+    """
+    Runner reports that the service is deployed and ready for testing.
+
+    This endpoint:
+    1. Validates the runner owns the job
+    2. Generates a temporary JWT access token for the tester
+    3. Stores the endpoint and token in the job record
+    4. Notifies any waiting testers
+
+    The access token:
+    - Is a JWT signed with platform secret
+    - Expires after specified hours (default 1 hour)
+    - Can only access the specified service endpoint
+    - Includes job_id and runner_id for audit
+    """
+    import jwt as pyjwt
+    import os
+
+    # Get the job
+    job = session.get(ComputeJob, req.job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    if job.runner_id != runner.id:
+        raise HTTPException(status_code=403, detail="Job not assigned to this runner")
+    if job.status != ComputeJobStatus.RUNNING:
+        raise HTTPException(status_code=400,
+                            detail=f"Job status must be 'running', current: {job.status}")
+
+    # Generate JWT access token for tester
+    jwt_secret = os.getenv("JWT_SECRET_KEY", "dev-secret-key-change-in-production")
+    expires_at = datetime.utcnow() + timedelta(hours=req.access_token_validity_hours)
+
+    token_payload = {
+        "job_id": str(job.id),
+        "runner_id": str(runner.id),
+        "bounty_id": job.bounty_id,
+        "endpoint": req.service_endpoint,
+        "type": "service_access",
+        "iat": int(datetime.utcnow().timestamp()),
+        "exp": int(expires_at.timestamp())
+    }
+
+    access_token = pyjwt.encode(token_payload, jwt_secret, algorithm="HS256")
+
+    # Update job with endpoint info
+    job.service_endpoint = req.service_endpoint
+    job.access_token = access_token
+    job.token_expires_at = expires_at
+    session.add(job)
+
+    # Create audit log entry
+    audit_entry = AuditLog(
+        job_id=job.id,
+        runner_id=runner.id,
+        reason="service_endpoint_registered",
+        status="completed",
+        explanation=f"Service endpoint registered: {req.service_endpoint}"
+    )
+    session.add(audit_entry)
+
+    session.commit()
+
+    return ServiceReadyResponse(
+        success=True,
+        job_id=job.id,
+        service_endpoint=req.service_endpoint,
+        access_token=access_token,
+        expires_at=expires_at,
+        message="Service endpoint registered. Tester can now access the service."
+    )
+
+
 # ============== Runner Management (User Auth) ==============
 
 @router.get("", response_model=List[RunnerResponse])

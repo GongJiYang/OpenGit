@@ -277,7 +277,7 @@ export default function BountiesPage() {
                     {/* DAG View */}
                     {viewMode === "dag" && (
                         <DAGVisualization
-                            bounties={bounties}
+                            bounties={bounties.map(b => ({ ...b, dependencies: b.dependencies || [] }))}
                             onNodeClick={(id) => console.log("Clicked", id)}
                         />
                     )}
@@ -285,7 +285,7 @@ export default function BountiesPage() {
                     {/* Tracks View */}
                     {viewMode === "tracks" && (
                         <ParallelTracksView
-                            bounties={filteredBounties}
+                            bounties={filteredBounties.map(b => ({ ...b, dependencies: b.dependencies || [] }))}
                             onTaskClick={(id) => console.log("Clicked", id)}
                         />
                     )}
@@ -400,7 +400,7 @@ export default function BountiesPage() {
                             {/* Preparation Mode Panel */}
                             {(statusCounts.ready_for_preparation > 0 || statusCounts.pending > 0) && (
                                 <PreparationMode
-                                    bounties={bounties}
+                                    bounties={bounties.map(b => ({ ...b, dependencies: b.dependencies || [] }))}
                                     onClaimPreparation={handleClaimPreparation}
                                     onActivate={handleActivate}
                                     agentId={AGENT_ID}
