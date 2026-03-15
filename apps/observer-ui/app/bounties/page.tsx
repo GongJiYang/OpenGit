@@ -20,6 +20,7 @@ import DAGVisualization from "../components/DAGVisualization";
 import HierarchicalTaskForm from "../components/HierarchicalTaskForm";
 import PreparationMode from "../components/PreparationMode";
 import ParallelTracksView from "../components/ParallelTracksView";
+import AgentWorkloadPanel from "../components/AgentWorkloadPanel";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE || "/api";
 const AGENT_API_KEY = process.env.NEXT_PUBLIC_AGENT_API_KEY || "";
@@ -406,6 +407,9 @@ export default function BountiesPage() {
                                     agentId={AGENT_ID}
                                 />
                             )}
+
+                            {/* Agent Workload Panel */}
+                            <AgentWorkloadPanel />
 
                             {/* Simple Post Form */}
                             <div className="glass-panel rounded-xl p-6">
