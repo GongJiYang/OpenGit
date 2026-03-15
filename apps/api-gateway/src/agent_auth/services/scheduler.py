@@ -32,6 +32,12 @@ HEARTBEAT_TIMEOUT_HOURS = 2
 # Temporary bounty claim cleanup interval
 TEMPORARY_CLAIM_CLEANUP_INTERVAL_MINUTES = 60
 
+# Runner health check interval
+RUNNER_HEALTH_CHECK_INTERVAL_SECONDS = 30
+
+# Runner offline threshold (seconds without heartbeat)
+RUNNER_OFFLINE_THRESHOLD_SECONDS = 60
+
 
 # ============== Heartbeat Flush Task ==============
 
@@ -203,6 +209,133 @@ def check_heartbeat_timeouts(session: Session) -> dict:
     }
 
 
+# ============== Runner Health Check Task ==============
+
+def check_runner_health(session: Session) -> dict:
+    """
+    Check runner health and handle offline runners.
+
+    This task:
+    1. Marks runners as OFFLINE if they haven't sent heartbeat in a while
+    2. Handles jobs assigned to offline runners (timeout or reassign)
+    3. Updates runner status for UI display
+
+    Args:
+        session: Database session
+
+    Returns:
+        dict: Health check statistics
+    """
+    from ..models.runner import Runner, RunnerStatus, ComputeJob, ComputeJobStatus
+
+    now = datetime.utcnow()
+    offline_threshold = now - timedelta(seconds=RUNNER_OFFLINE_THRESHOLD_SECONDS)
+
+    # Find runners that should be marked as OFFLINE
+    online_runners = session.exec(
+        select(Runner).where(
+            Runner.status.in_([RunnerStatus.ONLINE, RunnerStatus.BUSY])
+        )
+    ).all()
+
+    marked_offline = 0
+    jobs_affected = 0
+
+    for runner in online_runners:
+        # Check if heartbeat is stale
+        if runner.last_heartbeat_at is None or runner.last_heartbeat_at < offline_threshold:
+            # Mark runner as offline
+            old_status = runner.status
+            runner.status = RunnerStatus.OFFLINE
+            session.add(runner)
+            marked_offline += 1
+
+            # Handle any running job
+            if runner.current_job_id:
+                job = session.get(ComputeJob, runner.current_job_id)
+                if job and job.status in [ComputeJobStatus.ASSIGNED, ComputeJobStatus.RUNNING]:
+                    # Check if job has been running too long
+                    if job.started_at:
+                        running_time = (now - job.started_at).total_seconds()
+                        if running_time > job.timeout_seconds:
+                            # Job timed out
+                            job.status = ComputeJobStatus.TIMEOUT
+                            job.completed_at = now
+                        else:
+                            # Reset job to PENDING for reassignment
+                            job.status = ComputeJobStatus.PENDING
+                            job.runner_id = None
+                            job.assigned_at = None
+                            job.started_at = None
+                    else:
+                        # Job was assigned but never started
+                        job.status = ComputeJobStatus.PENDING
+                        job.runner_id = None
+                        job.assigned_at = None
+
+                    session.add(job)
+                    jobs_affected += 1
+
+            # Clear current job reference
+            runner.current_job_id = None
+            session.add(runner)
+
+    session.commit()
+
+    return {
+        "marked_offline": marked_offline,
+        "jobs_affected": jobs_affected,
+        "offline_threshold_seconds": RUNNER_OFFLINE_THRESHOLD_SECONDS,
+        "checked_at": now.isoformat(),
+    }
+
+
+def check_stale_jobs(session: Session) -> dict:
+    """
+    Check for jobs that have been in ASSIGNED state too long without starting.
+
+    This catches cases where:
+    - Runner accepted job but crashed before starting
+    - Network issues prevented job from starting
+
+    Args:
+        session: Database session
+
+    Returns:
+        dict: Check statistics
+    """
+    from ..models.runner import ComputeJob, ComputeJobStatus
+
+    now = datetime.utcnow()
+    # Jobs should start within 5 minutes of assignment
+    assignment_timeout = now - timedelta(minutes=5)
+
+    # Find stale assigned jobs
+    stale_jobs = session.exec(
+        select(ComputeJob).where(
+            ComputeJob.status == ComputeJobStatus.ASSIGNED,
+            ComputeJob.assigned_at < assignment_timeout
+        )
+    ).all()
+
+    reset_count = 0
+    for job in stale_jobs:
+        # Reset to PENDING for reassignment
+        job.status = ComputeJobStatus.PENDING
+        job.runner_id = None
+        job.assigned_at = None
+        session.add(job)
+        reset_count += 1
+
+    session.commit()
+
+    return {
+        "reset_count": reset_count,
+        "assignment_timeout_minutes": 5,
+        "checked_at": now.isoformat(),
+    }
+
+
 # ============== Scheduler Setup ==============
 
 _scheduler: Optional[AsyncIOScheduler] = None
@@ -273,6 +406,30 @@ def setup_scheduled_tasks(session_factory) -> AsyncIOScheduler:
             service = BountyService(bounty_session=session)
             result = service.cleanup_expired_temporary_claims()
             print(f"[Scheduler] Temporary claim cleanup: {result}")
+
+    # Runner health check job
+    @scheduler.scheduled_job(
+        IntervalTrigger(seconds=RUNNER_HEALTH_CHECK_INTERVAL_SECONDS),
+        id="runner_health_check",
+        name="Check runner health and handle offline runners"
+    )
+    def runner_health_check_job():
+        with session_factory() as session:
+            result = check_runner_health(session)
+            if result["marked_offline"] > 0 or result["jobs_affected"] > 0:
+                print(f"[Scheduler] Runner health check: {result}")
+
+    # Stale job check job
+    @scheduler.scheduled_job(
+        IntervalTrigger(minutes=1),
+        id="stale_job_check",
+        name="Check for jobs stuck in ASSIGNED state"
+    )
+    def stale_job_check_job():
+        with session_factory() as session:
+            result = check_stale_jobs(session)
+            if result["reset_count"] > 0:
+                print(f"[Scheduler] Stale job check: {result}")
 
     return scheduler
 

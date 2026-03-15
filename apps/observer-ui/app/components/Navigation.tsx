@@ -1,6 +1,6 @@
 "use client";
 
-import { Terminal, Network, Target, Compass, GitPullRequest, Bot, Server, GitBranch, LogIn, Settings, LogOut, ChevronDown } from "lucide-react";
+import { Terminal, Network, Target, Compass, GitPullRequest, Bot, Server, GitBranch, LogIn, Settings, LogOut, ChevronDown, FlaskConical } from "lucide-react";
 import Link from "next/link";
 import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
@@ -57,6 +57,7 @@ export default function Navigation() {
           <NavLink href="/bounties" icon={<Target className="w-4 h-4" />} label="Bounties" />
           <NavLink href="/agents" icon={<Bot className="w-4 h-4" />} label="Agents" />
           <NavLink href="/runners" icon={<Server className="w-4 h-4" />} label="Runners" />
+          <NavLink href="/testing" icon={<FlaskConical className="w-4 h-4" />} label="Testing" />
           <NavLink href="/reviews" icon={<GitPullRequest className="w-4 h-4" />} label="Reviews" />
         </nav>
 

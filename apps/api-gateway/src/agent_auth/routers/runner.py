@@ -808,3 +808,216 @@ async def get_pending_audits(
         }
         for audit in audits
     ]
+
+
+# ============== Service Status API (for Testers) ==============
+
+class ServiceStatusResponse(BaseModel):
+    """Response for service status query."""
+    job_id: UUID
+    status: str
+    service_endpoint: Optional[str] = None
+    access_token: Optional[str] = None
+    token_expires_at: Optional[datetime] = None
+    token_expires_in_seconds: Optional[int] = None
+    runner_id: Optional[UUID] = None
+    runner_status: Optional[str] = None
+    is_ready_for_testing: bool = False
+    message: str
+
+
+@router.get("/jobs/{job_id}/service-status", response_model=ServiceStatusResponse)
+async def get_service_status(
+    job_id: UUID,
+    session: Session = Depends(get_db)
+):
+    """
+    Get the current status of a service deployment.
+
+    This endpoint allows testers to poll for service availability
+    without relying on push notifications.
+
+    Status values:
+    - pending: Job is waiting for a runner
+    - assigned: Job assigned to runner, not started
+    - running: Runner is executing the job
+    - service_ready: Service is deployed and accessible
+    - completed: Job completed successfully
+    - failed: Job failed
+    """
+    job = session.get(ComputeJob, job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    # Determine if service is ready for testing
+    is_ready = (
+        job.service_endpoint is not None and
+        job.access_token is not None and
+        job.token_expires_at is not None and
+        job.token_expires_at > datetime.utcnow()
+    )
+
+    # Calculate remaining token validity
+    expires_in = None
+    if job.token_expires_at:
+        now = datetime.utcnow()
+        if job.token_expires_at > now:
+            expires_in = int((job.token_expires_at - now).total_seconds())
+
+    # Get runner status if assigned
+    runner_status = None
+    if job.runner_id:
+        runner = session.get(Runner, job.runner_id)
+        if runner:
+            runner_status = runner.status.value
+
+    # Determine message based on status
+    if job.status == ComputeJobStatus.PENDING:
+        message = "Waiting for available runner"
+    elif job.status == ComputeJobStatus.ASSIGNED:
+        message = "Job assigned to runner, deployment pending"
+    elif job.status == ComputeJobStatus.RUNNING:
+        if is_ready:
+            message = "Service is ready for testing"
+        else:
+            message = "Runner is deploying the service"
+    elif job.status == ComputeJobStatus.COMPLETED:
+        message = "Job completed"
+    elif job.status == ComputeJobStatus.FAILED:
+        message = "Job failed"
+    elif job.status == ComputeJobStatus.TIMEOUT:
+        message = "Job timed out"
+    elif job.status == ComputeJobStatus.AUDIT_FAILED:
+        message = "Job failed audit verification"
+    else:
+        message = f"Job status: {job.status.value}"
+
+    return ServiceStatusResponse(
+        job_id=job.id,
+        status=job.status.value,
+        service_endpoint=job.service_endpoint if is_ready else None,
+        access_token=job.access_token if is_ready else None,
+        token_expires_at=job.token_expires_at if is_ready else None,
+        token_expires_in_seconds=expires_in,
+        runner_id=job.runner_id,
+        runner_status=runner_status,
+        is_ready_for_testing=is_ready,
+        message=message
+    )
+
+
+class EndpointInfoResponse(BaseModel):
+    """Response for quick endpoint info (for authenticated testers)."""
+    job_id: UUID
+    bounty_id: str
+    service_endpoint: str
+    access_token: str
+    expires_at: datetime
+    expires_in_seconds: int
+    health_check_url: Optional[str] = None
+
+
+@router.get("/jobs/{job_id}/endpoint", response_model=EndpointInfoResponse)
+async def get_service_endpoint(
+    job_id: UUID,
+    user_id: str = Header(..., alias="X-User-Id", description="User ID for auth"),
+    session: Session = Depends(get_db)
+):
+    """
+    Get the service endpoint info for testing.
+
+    This is a convenience endpoint for testers to quickly get
+    the endpoint URL and access token.
+
+    Requires authentication - only the bounty owner or assigned tester
+    can access this endpoint.
+    """
+    job = session.get(ComputeJob, job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    # Check if service is ready
+    if not job.service_endpoint:
+        raise HTTPException(
+            status_code=400,
+            detail="Service endpoint not yet registered. Runner may still be deploying."
+        )
+
+    # Check if token is still valid
+    if not job.token_expires_at or job.token_expires_at <= datetime.utcnow():
+        raise HTTPException(
+            status_code=410,
+            detail="Access token has expired. Request a new token from the runner."
+        )
+
+    # Calculate remaining time
+    expires_in = int((job.token_expires_at - datetime.utcnow()).total_seconds())
+
+    return EndpointInfoResponse(
+        job_id=job.id,
+        bounty_id=job.bounty_id,
+        service_endpoint=job.service_endpoint,
+        access_token=job.access_token,
+        expires_at=job.token_expires_at,
+        expires_in_seconds=expires_in,
+        health_check_url=f"{job.service_endpoint.rstrip('/')}/health"
+    )
+
+
+# ============== Job Listing (For Testers) ==============
+
+@router.get("/jobs", response_model=List[ComputeJobResponse])
+async def list_compute_jobs(
+    status: Optional[str] = None,
+    limit: int = 50,
+    offset: int = 0,
+    user_id: str = Header(None, alias="X-User-Id", description="Optional user ID for auth"),
+    session: Session = Depends(get_db)
+):
+    """
+    List compute jobs for testing interface.
+
+    Query parameters:
+    - status: Filter by job status (pending, running, completed, failed, etc.)
+    - limit: Max number of results (default 50)
+    - offset: Pagination offset
+
+    Returns jobs sorted by creation time (newest first).
+    """
+    query = select(ComputeJob)
+
+    # Apply status filter if provided
+    if status:
+        try:
+            status_enum = ComputeJobStatus(status)
+            query = query.where(ComputeJob.status == status_enum)
+        except ValueError:
+            pass  # Invalid status, ignore filter
+
+    # Order by creation time, newest first
+    query = query.order_by(ComputeJob.created_at.desc())
+
+    # Apply pagination
+    query = query.offset(offset).limit(limit)
+
+    jobs = session.exec(query).all()
+
+    return [
+        ComputeJobResponse(
+            id=job.id,
+            bounty_id=job.bounty_id,
+            repo_id=job.repo_id,
+            runner_id=job.runner_id,
+            status=job.status,
+            execution_mode=job.execution_mode,
+            test_command=job.test_command,
+            exit_code=job.exit_code,
+            passed=job.passed,
+            is_audited=job.is_audited,
+            audit_result=job.audit_result,
+            created_at=job.created_at,
+            started_at=job.started_at,
+            completed_at=job.completed_at
+        )
+        for job in jobs
+    ]
