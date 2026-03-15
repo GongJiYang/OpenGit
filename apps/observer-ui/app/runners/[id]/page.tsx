@@ -5,7 +5,8 @@ import { useRouter, useParams } from "next/navigation";
 import {
     Server, ArrowLeft, Settings, Trash2, Plus, X, Check,
     Activity, Clock, Cpu, Terminal, AlertCircle, Loader2,
-    Globe, Lock, LogIn, Play, CheckCircle, XCircle, Shield
+    Globe, Lock, LogIn, Play, CheckCircle, XCircle, Shield,
+    RefreshCw, AlertTriangle, UserCheck, ArrowDownCircle
 } from "lucide-react";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE || "/api";
@@ -42,7 +43,7 @@ interface Job {
     bounty_id: string;
     repo_id: string | null;
     runner_id: string | null;
-    status: "pending" | "assigned" | "running" | "completed" | "failed" | "timeout" | "audit_failed";
+    status: "pending" | "assigned" | "running" | "completed" | "failed" | "timeout" | "audit_failed" | "partial_pass" | "human_review";
     execution_mode: "shared_local" | "self_hosted" | "yolo_mode";
     test_command: string;
     exit_code: number | null;
@@ -52,6 +53,19 @@ interface Job {
     created_at: string;
     started_at: string | null;
     completed_at: string | null;
+    // Recovery-related fields
+    retry_count: number;
+    max_retries: number;
+    failure_reason: string | null;
+    failure_severity: "critical" | "warning" | "info" | null;
+    used_fallback: boolean;
+    original_runner_id: string | null;
+    requires_manual_review: boolean;
+    // Test results
+    total_tests: number;
+    passed_tests: number;
+    failed_tests: number;
+    warnings: Array<{ type: string; message?: string }> | null;
 }
 
 export default function RunnerDetailPage() {
@@ -557,8 +571,8 @@ export default function RunnerDetailPage() {
                         <Activity className="w-5 h-5 text-blue-400" />
                         Job History
                     </h3>
-                    <div className="flex gap-2">
-                        {["all", "completed", "failed", "running"].map((s) => (
+                    <div className="flex gap-2 flex-wrap">
+                        {["all", "completed", "failed", "running", "partial_pass", "human_review"].map((s) => (
                             <button
                                 key={s}
                                 onClick={() => setJobFilter(s)}
@@ -568,7 +582,9 @@ export default function RunnerDetailPage() {
                                         : "bg-zinc-800 text-zinc-400 hover:text-white"
                                 }`}
                             >
-                                {s.charAt(0).toUpperCase() + s.slice(1)}
+                                {s === "partial_pass" ? "Partial Pass" :
+                                 s === "human_review" ? "Human Review" :
+                                 s.charAt(0).toUpperCase() + s.slice(1)}
                             </button>
                         ))}
                     </div>
@@ -593,7 +609,7 @@ export default function RunnerDetailPage() {
                             >
                                 <div className="flex items-start justify-between gap-4">
                                     <div className="flex-1 min-w-0">
-                                        <div className="flex items-center gap-2 mb-1">
+                                        <div className="flex items-center gap-2 mb-1 flex-wrap">
                                             <code className="text-xs text-zinc-400 font-mono">
                                                 #{job.id.slice(0, 8)}
                                             </code>
@@ -601,9 +617,13 @@ export default function RunnerDetailPage() {
                                                 job.status === "completed" ? "bg-green-500/10 text-green-400" :
                                                 job.status === "failed" ? "bg-red-500/10 text-red-400" :
                                                 job.status === "running" ? "bg-yellow-500/10 text-yellow-400" :
+                                                job.status === "partial_pass" ? "bg-amber-500/10 text-amber-400 border border-amber-500/20" :
+                                                job.status === "human_review" ? "bg-purple-500/10 text-purple-400 border border-purple-500/20" :
                                                 "bg-zinc-500/10 text-zinc-400"
                                             }`}>
-                                                {job.status}
+                                                {job.status === "partial_pass" ? "Partial Pass" :
+                                                 job.status === "human_review" ? "Human Review" :
+                                                 job.status}
                                             </span>
                                             {job.is_audited && (
                                                 <span className="flex items-center gap-1 text-xs text-purple-400">
@@ -611,11 +631,25 @@ export default function RunnerDetailPage() {
                                                     Audited
                                                 </span>
                                             )}
+                                            {/* Retry indicator */}
+                                            {job.retry_count > 0 && (
+                                                <span className="flex items-center gap-1 text-xs text-orange-400 bg-orange-500/10 px-1.5 py-0.5 rounded">
+                                                    <RefreshCw className="w-3 h-3" />
+                                                    Retry {job.retry_count}/{job.max_retries || 3}
+                                                </span>
+                                            )}
+                                            {/* Fallback indicator */}
+                                            {job.used_fallback && (
+                                                <span className="flex items-center gap-1 text-xs text-cyan-400 bg-cyan-500/10 px-1.5 py-0.5 rounded">
+                                                    <ArrowDownCircle className="w-3 h-3" />
+                                                    Fallback
+                                                </span>
+                                            )}
                                         </div>
                                         <p className="text-sm text-zinc-300 font-mono truncate">
                                             {job.test_command}
                                         </p>
-                                        <div className="flex items-center gap-4 mt-2 text-xs text-zinc-500">
+                                        <div className="flex items-center gap-4 mt-2 text-xs text-zinc-500 flex-wrap">
                                             <span>Bounty: {job.bounty_id.slice(0, 8)}...</span>
                                             <span>Mode: {job.execution_mode.replace("_", " ")}</span>
                                             {job.exit_code !== null && (
@@ -635,8 +669,31 @@ export default function RunnerDetailPage() {
                                         )}
                                     </div>
                                 </div>
+
+                                {/* Failure Reason */}
+                                {job.failure_reason && (
+                                    <div className="mt-3 pt-3 border-t border-zinc-700/50 flex items-start gap-2">
+                                        <AlertTriangle className={`w-4 h-4 mt-0.5 flex-shrink-0 ${
+                                            job.failure_severity === "critical" ? "text-red-400" :
+                                            job.failure_severity === "warning" ? "text-yellow-400" :
+                                            "text-zinc-400"
+                                        }`} />
+                                        <div>
+                                            <span className="text-xs text-zinc-400">Failure Reason: </span>
+                                            <span className={`text-xs ${
+                                                job.failure_severity === "critical" ? "text-red-400" :
+                                                job.failure_severity === "warning" ? "text-yellow-400" :
+                                                "text-zinc-300"
+                                            }`}>
+                                                {job.failure_reason}
+                                            </span>
+                                        </div>
+                                    </div>
+                                )}
+
+                                {/* Test Results & Pass Status */}
                                 {job.passed !== null && (
-                                    <div className="mt-3 pt-3 border-t border-zinc-700/50 flex items-center gap-2">
+                                    <div className="mt-3 pt-3 border-t border-zinc-700/50 flex items-center gap-2 flex-wrap">
                                         {job.passed ? (
                                             <>
                                                 <CheckCircle className="w-4 h-4 text-green-400" />
@@ -648,6 +705,12 @@ export default function RunnerDetailPage() {
                                                 <span className="text-sm text-red-400">Tests Failed</span>
                                             </>
                                         )}
+                                        {/* Test counts */}
+                                        {job.total_tests > 0 && (
+                                            <span className="text-xs text-zinc-400 ml-2">
+                                                ({job.passed_tests}/{job.total_tests} passed)
+                                            </span>
+                                        )}
                                         {job.audit_result && (
                                             <span className={`text-xs ml-auto ${
                                                 job.audit_result === "passed" ? "text-green-400" : "text-red-400"
@@ -655,6 +718,16 @@ export default function RunnerDetailPage() {
                                                 Audit: {job.audit_result}
                                             </span>
                                         )}
+                                    </div>
+                                )}
+
+                                {/* Human Review Badge */}
+                                {job.status === "human_review" && (
+                                    <div className="mt-3 pt-3 border-t border-zinc-700/50 flex items-center gap-2">
+                                        <UserCheck className="w-4 h-4 text-purple-400" />
+                                        <span className="text-sm text-purple-400">
+                                            Awaiting manual review
+                                        </span>
                                     </div>
                                 )}
                             </div>

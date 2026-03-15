@@ -291,7 +291,15 @@ async def submit_job_result(
     - stdout_log is MANDATORY
     - Log is validated for real test output
     - Random audits may be triggered
+
+    Recovery Features:
+    - Failure classification (critical/warning/info)
+    - Automatic retry with exponential backoff
+    - Partial pass detection (>= 80% tests pass)
+    - Human review fallback when retries exhausted
     """
+    from ..services.recovery_service import RecoveryService, FailureSeverity
+
     job = session.get(ComputeJob, req.job_id)
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
@@ -306,45 +314,137 @@ async def submit_job_result(
             detail=f"stdout_log validation failed: {validation_reason}"
         )
 
-    # Update job
+    # Update job with results
     job.exit_code = req.exit_code
     job.stdout_log = req.stdout_log
     job.stderr_log = req.stderr_log
     job.test_results = req.test_results
-    job.passed = req.passed
-    job.status = ComputeJobStatus.COMPLETED if req.exit_code == 0 else ComputeJobStatus.FAILED
     job.completed_at = datetime.utcnow()
+
+    # === Recovery Service: Classify Failure ===
+    recovery_service = RecoveryService(session)
+    severity, reason = recovery_service.classify_failure(
+        exit_code=req.exit_code,
+        stderr=req.stderr_log or "",
+        test_results=req.test_results
+    )
+
+    # === Handle Test Results ===
+    if req.passed or req.exit_code == 0:
+        # All tests passed
+        job.passed = True
+        job.status = ComputeJobStatus.COMPLETED
+
+        # Update test counts if available
+        if req.test_results:
+            job.total_tests = req.test_results.get("total", 0)
+            job.passed_tests = req.test_results.get("passed", 0)
+            job.failed_tests = req.test_results.get("failed", 0)
+            job.skipped_tests = req.test_results.get("skipped", 0)
+
+    else:
+        # Tests failed - use recovery service
+        job.passed = False
+
+        # Update test counts
+        if req.test_results:
+            job.total_tests = req.test_results.get("total", 0)
+            job.passed_tests = req.test_results.get("passed", 0)
+            job.failed_tests = req.test_results.get("failed", 0)
+            job.skipped_tests = req.test_results.get("skipped", 0)
+
+            # Check for partial pass
+            if job.total_tests > 0 and job.passed_tests > 0:
+                final_status = recovery_service.update_test_results(
+                    job=job,
+                    total=job.total_tests,
+                    passed=job.passed_tests,
+                    failed=job.failed_tests,
+                    skipped=job.skipped_tests
+                )
+                job.status = final_status
+            else:
+                # No tests ran or all failed - classify failure
+                action, new_status = recovery_service.handle_job_failure(
+                    job=job,
+                    failure_reason=reason,
+                    severity=severity
+                )
+                job.status = new_status
+        else:
+            # No test results - treat as failure
+            action, new_status = recovery_service.handle_job_failure(
+                job=job,
+                failure_reason=reason,
+                severity=severity
+            )
+            job.status = new_status
+
+    # Record original runner for fallback tracking
+    if job.original_runner_id is None:
+        job.original_runner_id = runner.id
+
     session.add(job)
 
     # Update runner stats
-    runner.total_jobs_completed += 1
+    if job.status == ComputeJobStatus.COMPLETED:
+        runner.total_jobs_completed += 1
+    elif job.status == ComputeJobStatus.FAILED:
+        runner.total_jobs_failed += 1
+
     if job.started_at and job.completed_at:
         runner.total_compute_seconds += int((job.completed_at - job.started_at).total_seconds())
+
+    # Free up runner
     runner.status = RunnerStatus.ONLINE
     runner.current_job_id = None
     session.add(runner)
 
     # Check if audit should be triggered
-    audit_triggered = VerificationService.should_trigger_audit(runner)
-    if audit_triggered:
-        audit = VerificationService.create_audit(
-            session=session,
-            job=job,
-            reason="random" if runner.reputation_score >= 50 else "low_reputation"
-        )
-        job.is_audited = True
-        job.audit_job_id = audit.id
-        job.audit_result = "pending"
-        session.add(job)
+    audit_triggered = False
+    if job.status in [ComputeJobStatus.COMPLETED, ComputeJobStatus.PARTIAL_PASS]:
+        audit_triggered = VerificationService.should_trigger_audit(runner)
+        if audit_triggered:
+            audit = VerificationService.create_audit(
+                session=session,
+                job=job,
+                reason="random" if runner.reputation_score >= 50 else "low_reputation"
+            )
+            job.is_audited = True
+            job.audit_job_id = audit.id
+            job.audit_result = "pending"
+            session.add(job)
 
     session.commit()
 
-    return {
+    # Build response with recovery info
+    response = {
         "success": True,
         "job_id": str(job.id),
         "status": job.status,
-        "audit_triggered": audit_triggered
+        "audit_triggered": audit_triggered,
     }
+
+    # Add recovery-specific fields
+    if job.retry_count > 0:
+        response["retry_count"] = job.retry_count
+
+    if job.status == ComputeJobStatus.PENDING:
+        # Job queued for retry
+        response["action"] = "retry_scheduled"
+        response["next_retry_at"] = job.next_retry_at.isoformat() if job.next_retry_at else None
+
+    if job.status == ComputeJobStatus.HUMAN_REVIEW:
+        # Job needs human review
+        response["action"] = "human_review_required"
+        response["reason"] = "Max retries exceeded"
+
+    if job.status == ComputeJobStatus.PARTIAL_PASS:
+        # Partial pass
+        response["action"] = "partial_pass"
+        response["pass_rate"] = f"{job.passed_tests}/{job.total_tests}"
+
+    return response
 
 
 # ============== Service Ready Notification ==============
@@ -656,6 +756,66 @@ async def get_runner_info(
     return RunnerResponse.model_validate(runner)
 
 
+# ============== Job Listing (For Testers) ==============
+# NOTE: This route MUST be defined BEFORE /{runner_id}/jobs to avoid route conflicts
+
+@router.get("/jobs", response_model=List[ComputeJobResponse])
+async def list_compute_jobs(
+    status: Optional[str] = None,
+    limit: int = 50,
+    offset: int = 0,
+    user_id: str = Header(None, alias="X-User-Id", description="Optional user ID for auth"),
+    session: Session = Depends(get_db)
+):
+    """
+    List compute jobs for testing interface.
+
+    Query parameters:
+    - status: Filter by job status (pending, running, completed, failed, etc.)
+    - limit: Max number of results (default 50)
+    - offset: Pagination offset
+
+    Returns jobs sorted by creation time (newest first).
+    """
+    query = select(ComputeJob)
+
+    # Apply status filter if provided
+    if status:
+        try:
+            status_enum = ComputeJobStatus(status)
+            query = query.where(ComputeJob.status == status_enum)
+        except ValueError:
+            pass  # Invalid status, ignore filter
+
+    # Order by creation time, newest first
+    query = query.order_by(ComputeJob.created_at.desc())
+
+    # Apply pagination
+    query = query.offset(offset).limit(limit)
+
+    jobs = session.exec(query).all()
+
+    return [
+        ComputeJobResponse(
+            id=job.id,
+            bounty_id=job.bounty_id,
+            repo_id=job.repo_id,
+            runner_id=job.runner_id,
+            status=job.status,
+            execution_mode=job.execution_mode,
+            test_command=job.test_command,
+            exit_code=job.exit_code,
+            passed=job.passed,
+            is_audited=job.is_audited,
+            audit_result=job.audit_result,
+            created_at=job.created_at,
+            started_at=job.started_at,
+            completed_at=job.completed_at
+        )
+        for job in jobs
+    ]
+
+
 @router.get("/{runner_id}/jobs", response_model=List[ComputeJobResponse])
 async def get_runner_jobs(
     runner_id: UUID,
@@ -962,62 +1122,3 @@ async def get_service_endpoint(
         expires_in_seconds=expires_in,
         health_check_url=f"{job.service_endpoint.rstrip('/')}/health"
     )
-
-
-# ============== Job Listing (For Testers) ==============
-
-@router.get("/jobs", response_model=List[ComputeJobResponse])
-async def list_compute_jobs(
-    status: Optional[str] = None,
-    limit: int = 50,
-    offset: int = 0,
-    user_id: str = Header(None, alias="X-User-Id", description="Optional user ID for auth"),
-    session: Session = Depends(get_db)
-):
-    """
-    List compute jobs for testing interface.
-
-    Query parameters:
-    - status: Filter by job status (pending, running, completed, failed, etc.)
-    - limit: Max number of results (default 50)
-    - offset: Pagination offset
-
-    Returns jobs sorted by creation time (newest first).
-    """
-    query = select(ComputeJob)
-
-    # Apply status filter if provided
-    if status:
-        try:
-            status_enum = ComputeJobStatus(status)
-            query = query.where(ComputeJob.status == status_enum)
-        except ValueError:
-            pass  # Invalid status, ignore filter
-
-    # Order by creation time, newest first
-    query = query.order_by(ComputeJob.created_at.desc())
-
-    # Apply pagination
-    query = query.offset(offset).limit(limit)
-
-    jobs = session.exec(query).all()
-
-    return [
-        ComputeJobResponse(
-            id=job.id,
-            bounty_id=job.bounty_id,
-            repo_id=job.repo_id,
-            runner_id=job.runner_id,
-            status=job.status,
-            execution_mode=job.execution_mode,
-            test_command=job.test_command,
-            exit_code=job.exit_code,
-            passed=job.passed,
-            is_audited=job.is_audited,
-            audit_result=job.audit_result,
-            created_at=job.created_at,
-            started_at=job.started_at,
-            completed_at=job.completed_at
-        )
-        for job in jobs
-    ]

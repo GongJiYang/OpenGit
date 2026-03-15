@@ -43,7 +43,9 @@ from agent_auth.services import start_scheduler, stop_scheduler
 from agent_auth.utils import verify_api_key, get_api_key_prefix, get_legacy_api_key_prefix, is_valid_api_key_format
 from agent_auth.validators import StructuredOutputValidator, get_validator
 from agent_auth.services.penalty_service import PenaltyService
+from agent_auth.services.user_auth import UserAuthService
 from persistence import Bounty, CommitRecord, get_session, create_db_and_tables
+from git_tree_service import GitTreeService
 
 # --- Execution & Cost Guards ---
 # [Blind-Spot 2] Global Concurrency Limit
@@ -271,6 +273,38 @@ def require_agent(
     if agent.status != AgentStatus.CLAIMED:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Agent is not claimed")
     return agent
+
+def require_active_identity(
+    x_api_key: Optional[str] = Header(None, alias="X-API-Key"),
+    authorization: Optional[str] = Header(None, alias="Authorization"),
+    auth_session: Session = Depends(get_auth_session)
+) -> Any:
+    """
+    Dependency that allows EITHER an agent (via API Key) OR a human user (via JWT).
+    Returns an Agent object or a User object.
+    """
+    # 1. Try Agent Auth
+    if x_api_key:
+        try:
+            return require_agent(x_api_key=x_api_key, auth_session=auth_session)
+        except HTTPException:
+            pass # Continue to try User auth
+
+    # 2. Try User Auth (JWT)
+    if authorization and authorization.startswith("Bearer "):
+        token = authorization[7:]
+        user_auth = UserAuthService(auth_session)
+        payload = user_auth.verify_token(token)
+        if payload:
+            user_id = payload.get("sub")
+            user = user_auth.get_user_by_id(user_id)
+            if user:
+                return user
+
+    raise HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Valid X-API-Key or Bearer Token required"
+    )
 
 _REF_ALLOWED_RE = re.compile(r"^[A-Za-z0-9/_\-\.]+$")
 def ensure_safe_ref(ref: str):
@@ -793,6 +827,13 @@ def create_decomposed_bounties(
     for bounty in all_bounties:
         session.refresh(bounty)
 
+    # Sync task tree to repository
+    try:
+        tree_service = GitTreeService(session, STORE_ROOT)
+        tree_service.sync_repo_task_tree(req.repo_name, agent.id)
+    except Exception as e:
+        print(f"Failed to sync task tree: {e}")
+
     bounty_dicts = [
         {
             "id": b.id,
@@ -847,6 +888,13 @@ def resolve_bounty_dependencies(bounty_id: str, session: Session) -> int:
             bounty.status = BountyStatus.OPEN.value
             session.add(bounty)
             updated_count += 1
+            
+            # Sync task tree to repository if status changed
+            try:
+                tree_service = GitTreeService(session, STORE_ROOT)
+                tree_service.sync_repo_task_tree(bounty.repo_name)
+            except Exception as e:
+                print(f"Failed to sync task tree during dependency resolution: {e}")
 
     # Case 2: ready_for_preparation bounties (with or without assignee)
     preparable_bounties = session.exec(
@@ -1446,6 +1494,13 @@ async def api_commit(request: Request, repo_name: str, req: CommitRequest, sessi
         except Exception as db_err:
             print(f"Failed to record commit history: {db_err}")
 
+        # Sync task tree to repository after submission
+        try:
+            tree_service = GitTreeService(session, STORE_ROOT)
+            tree_service.sync_repo_task_tree(repo_name, trusted_agent_id)
+        except Exception as e:
+            print(f"Failed to sync task tree after commit: {e}")
+
         return {
             "success": True,
             "repo": repo_name,
@@ -1475,12 +1530,18 @@ async def api_commit(request: Request, repo_name: str, req: CommitRequest, sessi
 # --- Review & Human-in-the-loop ---
 
 @app.get("/api/v1/commits/pending")
-def list_pending_submissions(session: Session = Depends(get_session), agent: Agent = Depends(require_agent)):
-    """[Blind-Spot 1] List submissions awaiting human approval."""
+def list_pending_submissions(
+    session: Session = Depends(get_session),
+    identity: Any = Depends(require_active_identity)
+):
+    """
+    List submissions awaiting human approval.
+    Requires either agent or human user authentication.
+    """
     return session.exec(select(CommitRecord).where(CommitRecord.status == "pending")).all()
 
 @app.get("/api/v1/commits/{commit_id}")
-def get_commit_detail(commit_id: int, session: Session = Depends(get_session), agent: Agent = Depends(require_agent)):
+def get_commit_detail(commit_id: int, session: Session = Depends(get_session), identity: Any = Depends(require_active_identity)):
     """Fetch a single commit record and its git diff (minimal PR view)."""
     record = session.get(CommitRecord, commit_id)
     if not record:
@@ -1528,10 +1589,13 @@ def list_pending_verifications(repo_name: Optional[str] = None, session: Session
     return results
 
 @app.post("/api/v1/commits/{commit_id}/blackbox-test")
-def submit_blackbox_test(commit_id: int, report: BlackboxReport, session: Session = Depends(get_session), agent: Agent = Depends(require_agent)):
+def submit_blackbox_test(commit_id: int, report: BlackboxReport, session: Session = Depends(get_session), identity: Any = Depends(require_active_identity)):
     """Submit a blackbox test report for a commit."""
-    if agent.role.lower() != "tester":
-        raise HTTPException(status_code=403, detail="Forbidden: only tester can submit blackbox reports")
+    # If identity is an Agent, check role
+    if hasattr(identity, "role"):
+        if identity.role.lower() != "tester":
+            raise HTTPException(status_code=403, detail="Forbidden: only tester can submit blackbox reports")
+    # If identity is a User, we allow it (admin action)
     
     record = session.get(CommitRecord, commit_id)
     if not record:
@@ -1660,6 +1724,18 @@ app.include_router(agent_router)
 app.include_router(claim_router)
 app.include_router(wechat_router)
 app.include_router(meta_router)
+
+# Assignment Router (Smart Task Assignment)
+from agent_auth.routers.assignment import router as assignment_router
+app.include_router(assignment_router, prefix="/api/v1")
+
+# Collaboration Router (Multi-Agent Collaboration)
+from agent_auth.routers.collaboration import router as collaboration_router
+app.include_router(collaboration_router, prefix="/api")
+
+# Recovery Router (Failure Recovery & Human Review)
+from agent_auth.routers.recovery import router as recovery_router
+app.include_router(recovery_router, prefix="/api")
 
 # Platform Router (User Auth, Repo Management)
 from agent_auth.routers.platform import platform_router

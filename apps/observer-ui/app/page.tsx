@@ -2,6 +2,7 @@
 
 import { Activity, GitBranch, HardDrive, ShieldAlert, Wifi, WifiOff, Terminal } from "lucide-react";
 import { useEffect, useState } from "react";
+import RecoveryStatsPanel from "./components/RecoveryStatsPanel";
 
 // Types
 interface Repo {
@@ -119,6 +120,9 @@ export default function Home() {
           trend="Live"
         />
       </div>
+
+      {/* Recovery Status Panel */}
+      <RecoveryStatsPanel />
 
       {/* Main Grid: Active Trace & Recent Repos */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">

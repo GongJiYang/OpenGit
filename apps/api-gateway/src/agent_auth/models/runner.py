@@ -45,6 +45,8 @@ class ComputeJobStatus(str, Enum):
     FAILED = "failed"        # Execution failed
     TIMEOUT = "timeout"      # Runner didn't respond in time
     AUDIT_FAILED = "audit_failed"  # Random audit detected cheating
+    PARTIAL_PASS = "partial_pass"  # Partially passed (some tests failed)
+    HUMAN_REVIEW = "human_review"  # Needs manual review (exceeded retries)
 
 
 class ExecutionMode(str, Enum):
@@ -242,6 +244,35 @@ class ComputeJob(SQLModel, table=True):
                                           description="Parsed test results")
     passed: Optional[bool] = Field(default=None, description="Did tests pass?")
 
+    # --- Retry Policy ---
+    retry_count: int = Field(default=0, description="Number of retry attempts")
+    max_retries: int = Field(default=3, description="Maximum retry attempts")
+    next_retry_at: Optional[datetime] = Field(default=None, description="Scheduled retry time")
+    retry_backoff_factor: float = Field(default=2.0, description="Exponential backoff factor")
+    retry_base_delay_seconds: int = Field(default=60, description="Base delay for backoff (seconds)")
+
+    # --- Partial Success ---
+    total_tests: int = Field(default=0, description="Total number of tests")
+    passed_tests: int = Field(default=0, description="Number of passed tests")
+    failed_tests: int = Field(default=0, description="Number of failed tests")
+    skipped_tests: int = Field(default=0, description="Number of skipped tests")
+    partial_pass_threshold: float = Field(default=0.8, description="Threshold for partial pass (0-1)")
+
+    # --- Failure Classification ---
+    failure_severity: Optional[str] = Field(default=None, max_length=20,
+                                             description="Failure severity: critical, warning, info")
+    failure_reason: Optional[str] = Field(default=None, max_length=500,
+                                           description="Human-readable failure reason")
+    warnings: List[Dict[str, Any]] = Field(default_factory=list, sa_column=Column(JSON),
+                                            description="Non-critical warnings")
+
+    # --- Fallback Execution ---
+    used_fallback: bool = Field(default=False, description="Whether fallback runner was used")
+    original_runner_id: Optional[UUID] = Field(default=None,
+                                                description="Original runner before fallback")
+    requires_manual_review: bool = Field(default=False,
+                                          description="Needs human review")
+
     # Audit (Random verification)
     is_audited: bool = Field(default=False, description="Was this job randomly audited?")
     audit_job_id: Optional[UUID] = Field(default=None,
@@ -436,7 +467,7 @@ class ComputeJobResponse(SQLModel):
     runner_id: Optional[UUID] = None
     status: ComputeJobStatus
     execution_mode: ExecutionMode
-    test_command: str = "pytest"
+    test_command: Optional[str] = "pytest"
     exit_code: Optional[int] = None
     passed: Optional[bool] = None
     is_audited: bool = False
