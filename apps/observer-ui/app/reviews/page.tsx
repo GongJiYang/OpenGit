@@ -5,6 +5,23 @@ import { CheckCircle, XCircle, RefreshCw, FileText } from "lucide-react";
 
 const AGENT_API_KEY = process.env.NEXT_PUBLIC_AGENT_API_KEY || "";
 
+// Helper to get auth headers - supports both agent API key and user JWT
+const getAuthHeaders = (): Record<string, string> => {
+    const headers: Record<string, string> = {};
+    // Agent auth (X-API-Key)
+    if (AGENT_API_KEY) {
+        headers["X-API-Key"] = AGENT_API_KEY;
+    }
+    // User auth (JWT from localStorage)
+    if (typeof window !== "undefined") {
+        const token = localStorage.getItem("token");
+        if (token) {
+            headers["Authorization"] = `Bearer ${token}`;
+        }
+    }
+    return headers;
+};
+
 interface CommitRecord {
     id: number;
     repo_name: string;
@@ -35,7 +52,7 @@ export default function ReviewsPage() {
             setLoading(true);
             setError(null);
             const res = await fetch(`/api/v1/commits/pending`, {
-                headers: AGENT_API_KEY ? { "X-API-Key": AGENT_API_KEY } : undefined
+                headers: getAuthHeaders()
             });
             if (!res.ok) {
                 throw new Error(`Failed to fetch pending commits (${res.status})`);
@@ -50,13 +67,9 @@ export default function ReviewsPage() {
     }
 
     async function fetchDetail(commitId: number) {
-        if (!AGENT_API_KEY) {
-            setError("Missing NEXT_PUBLIC_AGENT_API_KEY");
-            return;
-        }
         try {
             const res = await fetch(`/api/v1/commits/${commitId}`, {
-                headers: { "X-API-Key": AGENT_API_KEY }
+                headers: getAuthHeaders()
             });
             if (!res.ok) {
                 throw new Error(`Failed to fetch commit ${commitId}`);
@@ -69,15 +82,11 @@ export default function ReviewsPage() {
     }
 
     async function handleAction(commitId: number, action: "approve" | "reject") {
-        if (!AGENT_API_KEY) {
-            setError("Missing NEXT_PUBLIC_AGENT_API_KEY");
-            return;
-        }
         try {
             setLoading(true);
             const res = await fetch(`/api/v1/commits/${commitId}/${action}`, {
                 method: "POST",
-                headers: { "X-API-Key": AGENT_API_KEY }
+                headers: getAuthHeaders()
             });
             if (!res.ok) {
                 const body = await res.json().catch(() => ({}));

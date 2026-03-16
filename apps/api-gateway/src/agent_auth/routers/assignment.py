@@ -14,8 +14,9 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, status, Header, Query
 from sqlmodel import Session
 
-from ..models import Agent, AgentStatus
-from ..models.assignment import (
+from ..models import (
+    Agent,
+    AgentStatus,
     AgentProfileUpdateRequest,
     AgentProfileResponse,
     AgentMetricsResponse,
