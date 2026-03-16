@@ -368,7 +368,7 @@ class RecoveryService:
             raise ValueError(f"Job {job_id} not found")
 
         if job.status != ComputeJobStatus.HUMAN_REVIEW:
-            raise ValueError(f"Job is not in human review status")
+            raise ValueError("Job is not in human review status")
 
         # Mark as completed with manual approval
         job.status = ComputeJobStatus.COMPLETED
@@ -407,7 +407,7 @@ class RecoveryService:
             raise ValueError(f"Job {job_id} not found")
 
         if job.status != ComputeJobStatus.HUMAN_REVIEW:
-            raise ValueError(f"Job is not in human review status")
+            raise ValueError("Job is not in human review status")
 
         # Mark as failed with manual rejection
         job.status = ComputeJobStatus.FAILED

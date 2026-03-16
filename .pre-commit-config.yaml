@@ -7,7 +7,7 @@ repos:
     hooks:
       - id: python-syntax-check
         name: Python Syntax Check
-        entry: python -m py_compile
+        entry: python3 -m py_compile
         language: system
         types: [python]
         exclude: ^(.venv|venv|__pycache__)/

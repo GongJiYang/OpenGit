@@ -298,7 +298,7 @@ async def submit_job_result(
     - Partial pass detection (>= 80% tests pass)
     - Human review fallback when retries exhausted
     """
-    from ..services.recovery_service import RecoveryService, FailureSeverity
+    from ..services.recovery_service import RecoveryService
 
     job = session.get(ComputeJob, req.job_id)
     if not job:
@@ -879,7 +879,6 @@ async def get_job_status(
 # ============== Internal Audit Endpoints ==============
 
 from pydantic import BaseModel
-from ..models.runner import AuditResult as AuditResultEnum
 
 
 class SubmitAuditResultRequest(BaseModel):

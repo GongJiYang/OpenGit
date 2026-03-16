@@ -6,8 +6,7 @@ Batch updates are flushed to SQLite periodically by a background task.
 """
 
 import threading
-from collections import defaultdict
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Dict, List, Optional, Set
 from uuid import UUID

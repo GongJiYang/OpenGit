@@ -4,16 +4,13 @@ Meta-Repository API Routes
 API endpoints for managing the self-hosting meta-repository.
 """
 
-import os
 import subprocess
-import asyncio
 import fnmatch
 from datetime import datetime
 from typing import List, Optional
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, HTTPException, status, Request
-from fastapi.responses import JSONResponse
+from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
 from sqlmodel import Session, select
 
@@ -27,8 +24,7 @@ from persistence import (
     UpdateStatus,
     get_session,
 )
-from agent_auth.models import Agent, AgentStatus
-from agent_auth.utils import verify_api_key
+from agent_auth.models import Agent
 from agent_auth.database import get_db as get_auth_session
 
 meta_router = APIRouter(prefix="/api/v1/meta", tags=["Meta-Repository"])
@@ -80,7 +76,6 @@ def require_admin_agent(
 ) -> Agent:
     """Require an agent with admin role."""
     if not x_api_key:
-        from fastapi import Header
         # Re-extract from header properly
         pass
     # This is a placeholder - should integrate with existing require_agent
@@ -400,7 +395,7 @@ async def create_pr(
             [
                 "git", "diff", "--name-only",
                 f"refs/heads/{request.source_branch}",
-                f"refs/heads/main"
+                "refs/heads/main"
             ],
             cwd=str(source_repo_path),
             capture_output=True,
@@ -684,7 +679,7 @@ async def merge_pr(
 
         # 2. Get merge commit
         result = subprocess.run(
-            ["git", "rev-parse", f"FETCH_HEAD"],
+            ["git", "rev-parse", "FETCH_HEAD"],
             cwd=str(target_repo_path),
             capture_output=True,
             text=True

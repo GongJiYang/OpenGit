@@ -13,7 +13,7 @@ Penalty Rules:
 
 from datetime import datetime, timedelta
 from typing import Optional, Tuple
-from sqlmodel import Session, select
+from sqlmodel import Session
 
 from ..models import Agent, AgentStatus
 

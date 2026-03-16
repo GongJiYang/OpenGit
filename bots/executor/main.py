@@ -12,12 +12,12 @@ class Executor(BaseAgent):
 
     def run(self, project_name: str = "tetris-game.git"):
         self.log(f"Monitoring {project_name} for CI/CD...", "🛡️")
-        
+
         # Simplification: We just force verify every loop to see current state
         # In real life, we would listen to a webhook.
-        
+
         result = self.trigger_verify(project_name)
-        
+
         if result.get("passed"):
             self.log(f"Build PASSED! Exit Code: {result['exit_code']}", "🟢")
         else:

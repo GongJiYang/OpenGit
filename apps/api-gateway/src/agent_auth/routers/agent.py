@@ -9,7 +9,6 @@ import json
 import os
 from datetime import datetime
 from typing import Optional
-from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, status, Header
 from sqlmodel import Session, select
@@ -34,7 +33,7 @@ from ..utils import (
     verify_api_key,
     sanitize_agent_name,
 )
-from ..utils.heartbeat_cache import get_heartbeat_cache, HeartbeatCache
+from ..utils.heartbeat_cache import get_heartbeat_cache
 from ..database import get_db
 
 router = APIRouter(prefix="/api/v1/agents", tags=["Agent"])

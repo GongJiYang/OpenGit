@@ -1,6 +1,5 @@
 import sys
 import os
-from pathlib import Path
 import re
 import subprocess
 import tempfile
@@ -41,7 +40,7 @@ from agent_auth.database import get_db as get_auth_session, get_engine as get_au
 from agent_auth.models import Agent, AgentStatus
 from agent_auth.services import start_scheduler, stop_scheduler
 from agent_auth.utils import verify_api_key, get_api_key_prefix, get_legacy_api_key_prefix, is_valid_api_key_format
-from agent_auth.validators import StructuredOutputValidator, get_validator
+from agent_auth.validators import get_validator
 from agent_auth.services.penalty_service import PenaltyService
 from agent_auth.services.user_auth import UserAuthService
 from persistence import Bounty, CommitRecord, get_session, create_db_and_tables
@@ -160,8 +159,8 @@ def get_secure_repo_path(repo_name: str) -> str:
 
 def validate_blob_path(path: str):
     """Simple check to prevent escaping git tree structure via path parameter."""
-    # Since we don't have a 'base' directory for the git tree yet here 
-    # (it's internal to git), we still use the basic check, 
+    # Since we don't have a 'base' directory for the git tree yet here
+    # (it's internal to git), we still use the basic check,
     # but we can also use ensure_safe_path with a dummy base if needed.
     # However, for git blobs, the path is relative to the repo root.
     if ".." in path or path.startswith("/"):
@@ -507,7 +506,7 @@ def create_repo(request: Request, req: CreateRepoRequest, agent: Agent = Depends
 @app.post("/index")
 def index_code(repo_name: str, file_path: str, content: str = Body(..., media_type="text/plain"), agent: Agent = Depends(require_agent)):
     """
-    Manually index code content. 
+    Manually index code content.
     """
     get_secure_repo_path(repo_name)
     chunks = parser.parse(content)
@@ -547,7 +546,7 @@ def verify_repo(request: Request, repo_name: str, cmd: str = "pytest", agent: Ag
     base_cmd = cmd.split()[0] if cmd else ""
     if base_cmd not in ALLOWED_TEST_COMMANDS:
          raise HTTPException(
-             status_code=400, 
+             status_code=400,
              detail=f"Command '{base_cmd}' is not allowed. Supported: {ALLOWED_TEST_COMMANDS}"
          )
 
@@ -566,7 +565,7 @@ def get_repo_tree(repo_name: str):
     repo_path = get_secure_repo_path(repo_name)
     if not os.path.exists(repo_path):
         raise HTTPException(status_code=404, detail="Repo not found")
-        
+
     try:
         # git ls-tree -r --name-only HEAD
         cmd = ["git", "ls-tree", "-r", "--name-only", "HEAD"]
@@ -582,7 +581,7 @@ def get_repo_file(repo_name: str, path: str):
     repo_path = get_secure_repo_path(repo_name)
     if not os.path.exists(repo_path):
         raise HTTPException(status_code=404, detail="Repo not found")
-        
+
     try:
         # git show HEAD:path/to/file
         # Note: path security check should be here in prod
@@ -626,7 +625,7 @@ def create_bounty(request: Request, bounty: Bounty, session: Session = Depends(g
         dangerous_patterns = [';', '--', '/*', '*/', 'xp_', 'DROP', 'DELETE', 'INSERT', 'UPDATE', 'UNION']
         for pattern in dangerous_patterns:
             if pattern.lower() in text.lower():
-                raise HTTPException(status_code=400, detail=f"Invalid input: contains forbidden pattern")
+                raise HTTPException(status_code=400, detail="Invalid input: contains forbidden pattern")
         # Limit length
         return text[:max_length]
 
@@ -657,7 +656,7 @@ def decompose_task(parent_id: str, sub_tasks: List[Bounty], agent_id: str, sessi
     parent = session.get(Bounty, parent_id)
     if not parent:
         raise HTTPException(status_code=404, detail="Parent task not found")
-    
+
     # Verify Architect Role
     agent = auth_session.exec(select(Agent).where(Agent.id == agent_id)).first()
     if not agent or agent.role.lower() != "architect":
@@ -670,7 +669,7 @@ def decompose_task(parent_id: str, sub_tasks: List[Bounty], agent_id: str, sessi
         st.repo_name = parent.repo_name # Inherit repo
         session.add(st)
         created_tasks.append(st)
-    
+
     session.commit()
     for t in created_tasks:
         session.refresh(t)
@@ -888,7 +887,7 @@ def resolve_bounty_dependencies(bounty_id: str, session: Session) -> int:
             bounty.status = BountyStatus.OPEN.value
             session.add(bounty)
             updated_count += 1
-            
+
             # Sync task tree to repository if status changed
             try:
                 tree_service = GitTreeService(session, STORE_ROOT)
@@ -1348,27 +1347,27 @@ async def api_commit(request: Request, repo_name: str, req: CommitRequest, sessi
     bare_repo_path = get_secure_repo_path(repo_name)
     if not os.path.exists(bare_repo_path):
         raise HTTPException(status_code=404, detail="Repo not found")
-    
+
     # Create temp working directory
     work_dir = tempfile.mkdtemp(prefix="agenthub_commit_")
-    
+
     try:
         # Clone bare repo to temp dir
         subprocess.run(
             ["git", "clone", bare_repo_path, work_dir],
             check=True, capture_output=True
         )
-        
+
         # Write files
         for file_path, content in req.files.items():
             full_path = ensure_safe_path(work_dir, file_path, "Invalid file path")
             os.makedirs(full_path.parent, exist_ok=True)
             with open(full_path, "w", encoding="utf-8") as f:
                 f.write(content)
-        
+
         # Stage all changes
         subprocess.run(["git", "add", "-A"], cwd=work_dir, check=True, capture_output=True)
-        
+
         # Determine Branch Name (Level  isolation)
         if req.bounty_id:
             branch_name = f"agent/{trusted_agent_id}/bounty_{req.bounty_id}"
@@ -1376,7 +1375,7 @@ async def api_commit(request: Request, repo_name: str, req: CommitRequest, sessi
             ts = int(time.time())
             branch_name = f"agent/{trusted_agent_id}/dev_{ts}"
         ensure_safe_ref(branch_name)
-            
+
         # Create and switch to the new branch
         subprocess.run(["git", "checkout", "-b", branch_name], cwd=work_dir, check=True, capture_output=True)
 
@@ -1406,7 +1405,7 @@ async def api_commit(request: Request, repo_name: str, req: CommitRequest, sessi
             TraceValidator.validate_commit(trace_commit)
         except ValueError as ve:
             raise HTTPException(status_code=400, detail=str(ve))
-        
+
         # Commit with TraceCommit JSON as message
         commit_msg = json.dumps(trace_commit)
         subprocess.run(
@@ -1415,20 +1414,20 @@ async def api_commit(request: Request, repo_name: str, req: CommitRequest, sessi
             env={**os.environ, "GIT_AUTHOR_NAME": trusted_agent_id, "GIT_AUTHOR_EMAIL": f"{trusted_agent_id}@agenthub.dev",
                  "GIT_COMMITTER_NAME": trusted_agent_id, "GIT_COMMITTER_EMAIL": f"{trusted_agent_id}@agenthub.dev"}
         )
-        
+
         # Push specific branch to bare repo
         result = subprocess.run(
             ["git", "push", "origin", branch_name],
             cwd=work_dir, capture_output=True, text=True
         )
-        
+
         if result.returncode != 0:
             return {"success": False, "error": result.stderr}
-        
+
         # --- Automated Verification (P1 MVP) ---
         v_exit_code = None
         v_stdout = None
-        
+
         if req.bounty_id:
             bounty = session.get(Bounty, req.bounty_id)
             if bounty:
@@ -1441,7 +1440,7 @@ async def api_commit(request: Request, repo_name: str, req: CommitRequest, sessi
                 # [Blind-Spot 2] Cost Control: Max Steps
                 if bounty.current_steps >= bounty.max_steps:
                     raise HTTPException(status_code=403, detail=f"Bounty {req.bounty_id} has exceeded the execution step limit ({bounty.max_steps}).")
-                
+
                 # [Blind-Spot 2] Rough Cost Check
                 est_cost = ExecutionGuard.estimate_cost(is_new_session=True)
                 if not budget_tracker.check_and_record(est_cost):
@@ -1466,13 +1465,13 @@ async def api_commit(request: Request, repo_name: str, req: CommitRequest, sessi
                     v_exit_code, v_stdout = None, "External CI verification required"
                 else:
                     v_exit_code, v_stdout = -1, f"Unknown verification_mode: {verification_mode}"
-        
+
         # Save record to history
         try:
             # Capture SHA
             sha_result = subprocess.run(["git", "rev-parse", "HEAD"], cwd=work_dir, capture_output=True, text=True)
             sha = sha_result.stdout.strip() if sha_result.returncode == 0 else None
-            
+
             # [Blind-Spot 1] Human-in-the-loop: status='pending'
             record = CommitRecord(
                 repo_name=repo_name,
@@ -1485,7 +1484,7 @@ async def api_commit(request: Request, repo_name: str, req: CommitRequest, sessi
                 intent_category=req.intent_category,
                 intent_description=req.intent_description,
                 diff_summary=req.diff_summary,
-                trace_json=trace_commit, 
+                trace_json=trace_commit,
                 verification_exit_code=v_exit_code,
                 verification_stdout=v_stdout[:5000] if v_stdout else None
             )
@@ -1596,14 +1595,14 @@ def submit_blackbox_test(commit_id: int, report: BlackboxReport, session: Sessio
         if identity.role.lower() != "tester":
             raise HTTPException(status_code=403, detail="Forbidden: only tester can submit blackbox reports")
     # If identity is a User, we allow it (admin action)
-    
+
     record = session.get(CommitRecord, commit_id)
     if not record:
         raise HTTPException(status_code=404, detail="Commit record not found")
-        
+
     record.blackbox_report = report.model_dump()
     record.blackbox_status = "passed" if report.overall_verdict.upper() == "PASS" else "failed"
-    
+
     # Auto-merge if blackbox test passed
     if record.blackbox_status == "passed":
         record.status = "approved"
@@ -1629,7 +1628,7 @@ def submit_blackbox_test(commit_id: int, report: BlackboxReport, session: Sessio
                 subprocess.run(["git", "update-ref", "refs/heads/main", sha], cwd=repo_path, check=True)
             except subprocess.CalledProcessError as e:
                 raise HTTPException(status_code=500, detail=f"Failed to update main: {e}")
-        
+
         if record.bounty_id:
             bounty = session.get(Bounty, record.bounty_id)
             if bounty:
@@ -1645,7 +1644,7 @@ def submit_blackbox_test(commit_id: int, report: BlackboxReport, session: Sessio
             if bounty and bounty.assignee == record.agent_id:
                 bounty.status = "in_progress"
                 session.add(bounty)
-                
+
     session.add(record)
     session.commit()
     return {"message": f"Blackbox test submitted. Status: {record.blackbox_status}", "commit_id": commit_id}
@@ -1706,7 +1705,7 @@ def get_leaderboard(session: Session = Depends(get_session)):
         stats[r.agent_id]["total"] += 1
         if r.status == "approved":
             stats[r.agent_id]["success"] += 1
-            
+
     leaderboard = []
     for aid, data in stats.items():
         rate = (data["success"] / data["total"]) * 100
@@ -1716,7 +1715,7 @@ def get_leaderboard(session: Session = Depends(get_session)):
             "total_commits": data["total"],
             "rank": "Gold 🦞" if rate > 90 else "Silver 🦞"
         })
-    
+
     return sorted(leaderboard, key=lambda x: float(x["success_rate"].replace('%','')), reverse=True)
 
 # --- Router Registration ---
@@ -1765,5 +1764,5 @@ if __name__ == "__main__":
     from agent_auth.database import create_db_and_tables as create_auth_tables
     create_db_and_tables()
     create_auth_tables()
-    
+
     uvicorn.run(app, host="0.0.0.0", port=8000)

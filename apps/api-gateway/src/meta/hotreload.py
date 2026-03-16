@@ -6,16 +6,14 @@ Manages service restart and hot-reload operations after code sync.
 
 import subprocess
 import asyncio
-import os
 from datetime import datetime
-from pathlib import Path
-from typing import List, Dict, Optional, Set
+from typing import List, Dict, Optional
 from dataclasses import dataclass
 from enum import Enum
 
 import httpx
 
-from persistence import PlatformUpdate, UpdateStatus
+from persistence import PlatformUpdate
 
 
 class ReloadAction(str, Enum):

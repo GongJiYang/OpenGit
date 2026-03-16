@@ -6,7 +6,7 @@ import os
 import uuid
 import time
 import hashlib
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Optional
 from dataclasses import dataclass, asdict, field
 
 from qdrant_client import QdrantClient
@@ -89,7 +89,8 @@ class SolutionKnowledgeBase:
         提取关键信息，去除行号等变量
         """
         # 取错误消息第一行（去除具体行号等噪音）
-        key_info = f"{error_type}:{error_message.split('\n')[0][:100]}"
+        first_line = error_message.split('\n')[0][:100]
+        key_info = f"{error_type}:{first_line}"
         return hashlib.md5(key_info.encode()).hexdigest()[:12]
 
     def _build_search_text(self, error_type: str, error_message: str, stack_trace: str) -> str:

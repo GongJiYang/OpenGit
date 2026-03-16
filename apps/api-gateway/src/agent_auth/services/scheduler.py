@@ -5,7 +5,7 @@ Background tasks and scheduled jobs for agent management.
 """
 
 from datetime import datetime, timedelta
-from typing import List, Set, Optional
+from typing import Set, Optional
 from uuid import UUID
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -13,8 +13,7 @@ from apscheduler.triggers.interval import IntervalTrigger
 from sqlmodel import Session, select
 
 from ..models import Agent, AgentStatus
-from ..utils.heartbeat_cache import get_heartbeat_cache, HeartbeatCache
-from ..utils import should_update_heartbeat
+from ..utils.heartbeat_cache import get_heartbeat_cache
 from persistence import Bounty
 
 

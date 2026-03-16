@@ -15,14 +15,12 @@ Matching Algorithm:
 """
 
 from typing import List, Optional, Dict, Any, Tuple
-from uuid import UUID
 from sqlmodel import Session, select
 
 from ..models import Agent, AgentStatus
 from .metrics_service import (
     get_or_create_metrics,
     get_agent_workload,
-    get_all_agents_workload,
 )
 
 

@@ -4,13 +4,10 @@ Agent Authentication Utilities
 Core utility functions for API key generation, hashing, and claim code generation.
 """
 
-import hashlib
-import os
 import secrets
 import string
 from datetime import datetime, timedelta
-from typing import Tuple, Optional
-from uuid import UUID
+from typing import Optional
 
 import bcrypt
 

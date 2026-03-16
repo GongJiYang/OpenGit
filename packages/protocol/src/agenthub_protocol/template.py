@@ -2,7 +2,7 @@
 模板数据模型定义
 支持模板继承、参数化、多语言
 """
-from typing import List, Dict, Optional, Any, Literal
+from typing import List, Dict, Optional, Any
 from pydantic import BaseModel, Field, field_validator
 from enum import Enum
 import hashlib

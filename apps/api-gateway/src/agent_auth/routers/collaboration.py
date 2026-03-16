@@ -10,7 +10,7 @@ API endpoints for multi-agent collaboration:
 
 from typing import List, Optional
 from uuid import UUID
-from fastapi import APIRouter, Depends, HTTPException, Header
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlmodel import Session
 
@@ -97,7 +97,7 @@ async def acquire_lock(
                 status_code=423,
                 detail={
                     "error": "file_locked",
-                    "message": f"File is locked by another agent",
+                    "message": "File is locked by another agent",
                     "lock_info": lock_status
                 }
             )

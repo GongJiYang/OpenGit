@@ -9,7 +9,7 @@ both sessions, reducing cognitive load for callers.
 """
 
 from contextlib import contextmanager
-from typing import Generator, Optional
+from typing import Generator
 from sqlmodel import Session
 
 from agent_auth.database import get_engine as get_auth_engine

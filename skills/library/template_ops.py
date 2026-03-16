@@ -5,7 +5,6 @@
 import os
 import sys
 from typing import List, Dict, Optional, Any, Literal
-from pathlib import Path
 
 from pydantic import BaseModel, Field
 
@@ -16,10 +15,10 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../../services/templ
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../../packages/protocol/src"))
 
 from agenthub_template.library_manager import (
-    TemplateLibraryManager, create_default_manager, ManagerConfig, LibraryConfig
+    TemplateLibraryManager, create_default_manager
 )
 from agenthub_template.renderer import (
-    TemplateRenderer, StructuredChangeExecutor, CodeBlockLocator
+    TemplateRenderer, StructuredChangeExecutor
 )
 from agenthub_protocol.template import Template, TemplateParameter, ParameterType, TemplateMetadata
 

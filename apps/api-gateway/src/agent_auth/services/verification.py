@@ -11,16 +11,14 @@ Implements Zero-Trust verification:
 import random
 import re
 from datetime import datetime
-from typing import Optional, Tuple
-from uuid import UUID
+from typing import Tuple
 
-from sqlmodel import Session, select
+from sqlmodel import Session
 
 from ..models.runner import (
     Runner,
     RunnerStatus,
     ComputeJob,
-    ComputeJobStatus,
     AuditLog,
     AuditResult,
 )

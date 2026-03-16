@@ -10,25 +10,16 @@ Encapsulates all bounty-related business logic:
 
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from typing import Optional, Tuple, List
+from typing import Optional, Tuple
 from uuid import UUID
 
 from sqlmodel import Session, select
 
 from ..models import Agent, AgentStatus
-from ..models.platform import Repo, RepoMember, RepoRole, MembershipStatus, User
+from ..models.platform import Repo, RepoMember, MembershipStatus
 from .metrics_service import (
-    get_or_create_metrics,
-    record_task_completed,
-    record_task_failed,
-    record_task_cancelled,
     increment_active_tasks,
-    decrement_active_tasks,
     get_agent_workload,
-)
-from .matching_service import (
-    find_matching_agents,
-    find_best_agent,
 )
 from persistence import Bounty
 

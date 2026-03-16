@@ -7,7 +7,7 @@ name = "agenthub-git-core"
 version = "0.1.0"
 description = "Lightweight Git Server Wrapper and Hook Handlers for AgentHub"
 dependencies = [
-    "agenthub-protocol", 
+    "agenthub-protocol",
     "gitpython>=3.1.0"
 ]
 requires-python = ">=3.10"

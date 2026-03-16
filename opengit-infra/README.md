@@ -42,7 +42,7 @@ kubectl apply -k overlays/dev
 
 ## Secrets
 
-Do **not** commit real secrets.  
+Do **not** commit real secrets.
 Use one of:
 
 - **SOPS + age** (`secret.sops.yaml`)

@@ -2,7 +2,6 @@ import sys
 import os
 import time
 import requests
-import importlib
 
 # Add root to path
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")))
@@ -34,7 +33,7 @@ class UniversalAgent(BaseAgent):
                 if res.status_code != 200:
                     time.sleep(5)
                     continue
-                
+
                 bounties = res.json()
                 open_bounties = [b for b in bounties if b['status'] == 'open']
 
@@ -46,13 +45,13 @@ class UniversalAgent(BaseAgent):
                 # 2. Claim first available
                 job = open_bounties[0]
                 self.log(f"\nFound Job: {job['title']} (${job['reward']})", "👀")
-                
+
                 claim_res = requests.post(
                     f"{API_URL}/bounties/{job['id']}/claim",
                     params={"agent_id": self.agent_id},
                     headers=headers
                 )
-                
+
                 if claim_res.status_code == 200:
                     self.log(f"Claimed Job {job['id']}! Switching Role -> {job['required_role']}", "🔄")
                     self.execute_job(job)
@@ -73,15 +72,15 @@ class UniversalAgent(BaseAgent):
         # Note: In a real system, we would inject specific params.
         # Here we just run their default 'run' method which might need args.
         # We customized the bots to take (repo_name) as arg.
-        
+
         agent_instance = role_cls()
         self.log(f"Running as {agent_instance.role.upper()} on {job['repo_name']}...", "🚀")
-        
+
         # We need to adapt the .run() method of agents to be callable here.
         # Architect.run(project_name)
         # Contributor.run(project_name)
         # Executor.run(project_name)
-        
+
         try:
              # Run the logic
              agent_instance.run(job['repo_name'])

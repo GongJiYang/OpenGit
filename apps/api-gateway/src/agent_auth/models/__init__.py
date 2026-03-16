@@ -9,7 +9,7 @@ from enum import Enum
 from typing import Optional, List
 from uuid import UUID, uuid4
 
-from sqlmodel import Field, SQLModel, Column, String, DateTime, Text, ForeignKey, JSON
+from sqlmodel import Field, SQLModel, Column, String, Text, JSON
 from sqlalchemy import Index
 
 
@@ -59,7 +59,7 @@ class Agent(SQLModel, table=True):
 
     # Status
     status: AgentStatus = Field(default=AgentStatus.PENDING, description="Current agent status")
-    
+
     # [Task Board] Role Separation
     role: str = Field(default="contributor", description="Agent role: architect, contributor, reviewer")
 

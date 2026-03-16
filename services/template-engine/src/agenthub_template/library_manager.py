@@ -7,7 +7,7 @@ import yaml
 import json
 import time
 from abc import ABC, abstractmethod
-from typing import List, Dict, Optional, Any, Tuple
+from typing import List, Dict, Optional
 from pathlib import Path
 from dataclasses import dataclass, field
 import threading
@@ -18,7 +18,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../../../../packages
 
 from agenthub_protocol.template import (
     Template, TemplateRegistry, TemplateParameter,
-    RenderedTemplate, ParameterType
+    ParameterType
 )
 
 logger = logging.getLogger(__name__)

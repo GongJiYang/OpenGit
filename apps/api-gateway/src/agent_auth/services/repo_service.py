@@ -19,13 +19,10 @@ from ..models.platform import (
     RepoMember,
     RepoRole,
     MembershipStatus,
-    RolePermission,
     DEFAULT_PERMISSIONS,
     ROLE_HIERARCHY,
-    RepoMemberResponse,
     RepoResponse,
 )
-from ..models import Agent, AgentStatus
 
 
 class RepoService:

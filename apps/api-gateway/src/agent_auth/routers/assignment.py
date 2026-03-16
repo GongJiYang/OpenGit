@@ -9,14 +9,12 @@ API endpoints for intelligent task assignment:
 """
 
 from datetime import datetime
-from typing import List, Optional
 from uuid import UUID
-from fastapi import APIRouter, Depends, HTTPException, status, Header, Query
+from fastapi import APIRouter, Depends, HTTPException, Header
 from sqlmodel import Session
 
 from ..models import (
     Agent,
-    AgentStatus,
     AgentProfileUpdateRequest,
     AgentProfileResponse,
     AgentMetricsResponse,
@@ -33,7 +31,6 @@ from ..services.metrics_service import (
     get_agent_metrics_detail,
 )
 from ..services.matching_service import (
-    find_matching_agents,
     find_best_agent,
     get_task_match_summary,
 )

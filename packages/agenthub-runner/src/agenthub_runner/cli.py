@@ -110,7 +110,7 @@ def start(
         auth_file.write_text(auth_token)
         auth_file.chmod(0o600)
 
-        console.print(f"[green]Registration successful![/green]")
+        console.print("[green]Registration successful![/green]")
         console.print(f"Runner ID: {result['runner']['id']}")
         console.print(f"Auth token saved to: {auth_file}")
 

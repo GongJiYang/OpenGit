@@ -12,7 +12,7 @@ class Contributor(BaseAgent):
 
     def run(self, project_name: str = "tetris-game.git"):
         self.log(f"Looking for work on {project_name}...", "👀")
-        
+
         # 1. Ask API to create or verify repo existence
         remote_path = self.create_repo(project_name)
         if not remote_path:
@@ -25,7 +25,7 @@ class Contributor(BaseAgent):
 
         # 2. Clone
         local_path = self.clone_repo(remote_path, project_name)
-        
+
         # 3. Check if work is needed
         if os.path.exists(os.path.join(local_path, "game.py")):
             self.log("Code already exists. Nothing to do.", "zzz")
@@ -43,7 +43,7 @@ class Game:
     def __init__(self):
         self.score = 0
         self.grid = []
-    
+
     def clear_lines(self):
         # Mock logic
         lines_cleared = 1
@@ -64,7 +64,7 @@ def test_scoring():
 """
         with open(os.path.join(local_path, "test_game.py"), "w") as f:
             f.write(test_content)
-            
+
         # 5. Push
         trace = self.construct_trace(
             summary="Implemented Core Game Logic",
@@ -75,7 +75,7 @@ def test_scoring():
             ],
             intent_desc="Implement MVP"
         )
-        
+
         self.commit_and_push(local_path, trace)
         self.log("Work submitted! Waiting for QA...", "📨")
 

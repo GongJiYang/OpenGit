@@ -27,13 +27,13 @@ class WeChatClaimStrategy(BaseClaimStrategy):
     async def execute_claim(self, claim_code: str, user_identity: str) -> ClaimResult:
         # 1. Look up agent
         agent = self.repository.get_by_claim_code(claim_code)
-        
+
         if not agent:
             return ClaimResult(success=False, message=f"未找到认领码 [{claim_code}] 对应的 Agent。")
-        
+
         if agent.status == AgentStatus.CLAIMED:
             return ClaimResult(success=False, message="该 Agent 已被成功认领。")
-        
+
         # 2. Update status and bind OpenID
         try:
             self.repository.update_status_and_owner(

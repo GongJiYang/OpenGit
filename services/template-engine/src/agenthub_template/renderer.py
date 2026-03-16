@@ -5,7 +5,7 @@
 import os
 import re
 import subprocess
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any, List
 
 from jinja2 import Environment, BaseLoader, TemplateSyntaxError, UndefinedError
 

@@ -4,7 +4,6 @@ Meta-Repository Sync Service
 Handles synchronization from bare repo to running platform.
 """
 
-import os
 import subprocess
 import shutil
 import tempfile
@@ -13,7 +12,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import List, Tuple, Optional
 
-from sqlmodel import Session, select
+from sqlmodel import Session
 
 from persistence import (
     MetaRepoConfig,
@@ -157,7 +156,7 @@ class MetaSyncService:
         # Resolve to absolute path
         try:
             resolved = target.resolve()
-        except Exception as e:
+        except Exception:
             raise SecurityError(f"Invalid path: {file_path}")
 
         # Check path is within deploy_root (prevent traversal)

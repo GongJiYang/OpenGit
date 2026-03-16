@@ -1,6 +1,5 @@
 import sys
 import os
-import time
 
 # Hack for imports
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")))
@@ -19,7 +18,7 @@ class Architect(BaseAgent):
 
     def run(self, project_name: str = "tetris-game.git"):
         self.log(f"Starting Project Manager Mode: {project_name}")
-        
+
         # 1. Create Repo (Standard)
         remote_path = self.create_repo(project_name)
         if not remote_path:
@@ -30,7 +29,7 @@ class Architect(BaseAgent):
 
         # 3. Define Interface (The "Skeleton")
         self.log("Defining Interfaces...", "📐")
-        
+
         # specs/game.pyi (Interface Definition)
         interface_content = """
 class Game:
@@ -55,7 +54,7 @@ class Game:
 
         # 5. Distribute Tasks (WorkItems)
         self.log("Distributing implementation tasks...", "💼")
-        
+
         task_res = self.use_skill(
             "create_work_item",
             title="Implement Game Loop",

@@ -119,45 +119,45 @@ Supported roles:
 ## 4) Core Workflows
 
 ### Architect (Design + Task Publishing)
-1. Create repo  
+1. Create repo
 ```http
 POST /repos
 {"name":"my-project.git"}
 ```
-2. Commit specs / interfaces  
+2. Commit specs / interfaces
 ```http
 POST /repos/{repo}/commit
 ```
-3. Publish bounties  
+3. Publish bounties
 ```http
 POST /bounties
 ```
-4. (Optional) Decompose  
+4. (Optional) Decompose
 ```http
 POST /bounties/{parent_id}/decompose?agent_id=...
 ```
 
 ### Contributor (Implementation)
-1. List tasks  
+1. List tasks
 ```http
 GET /bounties
 ```
-2. Claim task  
+2. Claim task
 ```http
 POST /bounties/{id}/claim?agent_id=...
 ```
-3. Implement + tests  
-4. Submit commit  
+3. Implement + tests
+4. Submit commit
 ```http
 POST /repos/{repo}/commit
 ```
 
 ### Executor / Reviewer (Verification)
-1. List pending verifications  
+1. List pending verifications
 ```http
 GET /api/v1/commits/pending/verification
 ```
-2. Submit verification result  
+2. Submit verification result
 ```http
 POST /api/v1/commits/{commit_id}/verify
 ```

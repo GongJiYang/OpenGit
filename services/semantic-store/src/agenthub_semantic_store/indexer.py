@@ -1,7 +1,7 @@
 import os
 import uuid
 import time
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Optional
 from qdrant_client import QdrantClient
 from qdrant_client.models import Distance, VectorParams, PointStruct
 from .ast_parser import CodeChunk
@@ -13,16 +13,16 @@ class VectorIndexer:
     """
 
     def __init__(self, collection_name: str = "agenthub_codebase", embedding_dim: int = 1024):
-        # Note: Zhipu 'embedding-2' is 1024 dim usually, whereas OpenAI is 1536. 
+        # Note: Zhipu 'embedding-2' is 1024 dim usually, whereas OpenAI is 1536.
         # We default to 1024 now.
         self.collection_name = collection_name
         self.embedding_dim = embedding_dim
-        
+
         # Connect to Qdrant
         # If QDRANT_URL is not set, tries local memory.
         url = os.getenv("QDRANT_URL", ":memory:")
         api_key = os.getenv("QDRANT_API_KEY")
-        
+
         try:
             if url == ":memory:":
                 self.client = QdrantClient(location=":memory:")
@@ -43,7 +43,7 @@ class VectorIndexer:
     def _ensure_collection(self):
         collections = self.client.get_collections().collections
         exists = any(c.name == self.collection_name for c in collections)
-        
+
         if not exists:
             print(f"📦 Creating collection '{self.collection_name}'...")
             self.client.create_collection(
@@ -65,17 +65,17 @@ class VectorIndexer:
                 print("⚠️ Qdrant client unavailable; semantic indexing disabled.")
                 self._warned_client = True
             return
-            
+
         try:
             # Generate ID
             point_id = str(uuid.uuid5(
                 uuid.NAMESPACE_DNS,
                 f"{repo_id}:{file_path}:{chunk.name}:{chunk.start_line}:{chunk.end_line}"
             ))
-            
+
             # Embed
             vector = self.embedder.get_embedding(chunk.code)
-            
+
             payload = {
                 "repo_id": repo_id,
                 "file_path": file_path,
@@ -85,7 +85,7 @@ class VectorIndexer:
                 "docstring": chunk.docstring,
                 "timestamp": time.time()
             }
-            
+
             self.client.upsert(
                 collection_name=self.collection_name,
                 points=[
@@ -97,7 +97,7 @@ class VectorIndexer:
                 ]
             )
             print(f"💽 Indexed: {chunk.name} ({chunk.type})")
-            
+
         except Exception as e:
             print(f"❌ Failed to index {chunk.name}: {e}")
 
@@ -115,10 +115,10 @@ class VectorIndexer:
                 print("⚠️ Qdrant client unavailable; semantic search disabled.")
                 self._warned_client = True
             return []
-            
+
         try:
             vector = self.embedder.get_embedding(query)
-            
+
             # Filter by repo_id if provided
             query_filter = None
             if repo_id:
@@ -139,7 +139,7 @@ class VectorIndexer:
                 query_filter=query_filter,
                 limit=limit
             ).points
-            
+
             start_results = []
             for hit in results:
                 start_results.append({
@@ -147,7 +147,7 @@ class VectorIndexer:
                     "payload": hit.payload
                 })
             return start_results
-            
+
         except Exception as e:
             print(f"❌ Search failed: {e}")
             return []

@@ -8,21 +8,6 @@ import os
 from sqlmodel import SQLModel, create_engine, Session, StaticPool
 from sqlalchemy import event
 
-from .models import Agent, EmailVerification
-from .models.platform import (
-    User,
-    UserAgentBinding,
-    Repo,
-    RepoMember,
-    RolePermission,
-)
-from .models.runner import (
-    Runner,
-    RunnerToken,
-    ComputeJob,
-    RepoExecutionConfig,
-    AuditLog,
-)
 
 # Singleton Engine
 _engine = None
@@ -40,7 +25,7 @@ def get_engine():
         if db_url.startswith("sqlite:///"):
             # [Blind-Spot 4] SQLite WAL mode and StaticPool for FastAPI concurrency
             _engine = create_engine(
-                db_url, 
+                db_url,
                 echo=False,
                 connect_args={"check_same_thread": False},
                 poolclass=StaticPool
@@ -70,7 +55,7 @@ def create_db_and_tables(engine=None):
             os.makedirs(os.path.dirname(db_path), exist_ok=True)
 
     SQLModel.metadata.create_all(engine)
-    print(f"[DB] Tables created successfully")
+    print("[DB] Tables created successfully")
     return engine
 
 

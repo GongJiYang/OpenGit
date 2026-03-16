@@ -1,4 +1,4 @@
-from typing import Dict, Optional
+from typing import Dict
 from .sandbox import Sandbox
 
 class SessionManager:
@@ -17,7 +17,7 @@ class SessionManager:
         if key in self._sessions:
              # In a real system, we'd check if the session is still active
              return self._sessions[key]
-        
+
         print(f"🏗️ [Executor] Creating isolated drafting sandbox for {agent_id} on task {task_id}")
         session_id = self.sandbox.create_session(repo_path)
         self._sessions[key] = session_id
@@ -28,7 +28,7 @@ class SessionManager:
         key = f"{agent_id}:{task_id}"
         if key not in self._sessions:
             return "❌ No active session found for this task. Initialize it first."
-        
+
         session_id = self._sessions[key]
         exit_code, output = self.sandbox.run_command(session_id, command)
         return output

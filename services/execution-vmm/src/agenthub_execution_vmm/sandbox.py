@@ -2,14 +2,13 @@ from abc import ABC, abstractmethod
 from typing import Tuple, Optional
 import subprocess
 import os
-import shlex
 
 class Sandbox(ABC):
     """
     Abstract Interface for Code Execution Environments.
     Implementations could be Local, Docker, or Firecracker.
     """
-    
+
     @abstractmethod
     def run_tests(self, repo_path: str, test_command: str) -> Tuple[int, str]:
         """Runs tests in the sandbox."""
@@ -35,20 +34,20 @@ from .guard import ExecutionGuard
 class SubprocessSandbox(Sandbox):
     """
     MVP Sandbox that runs commands locally in a subprocess.
-    ⚠️ SECURITY WARNING: This provides NO ISOLATION. 
+    ⚠️ SECURITY WARNING: This provides NO ISOLATION.
     Malicious agents can harm the host system. Use only for trusted demos.
     """
-    
+
     def run_tests(self, repo_path: str, test_command: str, timeout: int = 30) -> Tuple[int, str]:
         if not os.path.exists(repo_path):
             return -1, f"❌ Repo path does not exist: {repo_path}"
-            
+
         try:
             # [Blind-Spot 2] Security Guard
             tokens = ExecutionGuard.verify_command(test_command)
-            
+
             print(f"⚡ [Sandbox] Executing in {repo_path}: {tokens}")
-            
+
             result = subprocess.run(
                 tokens,
                 cwd=repo_path,
@@ -57,7 +56,7 @@ class SubprocessSandbox(Sandbox):
                 text=True,
                 timeout=timeout
             )
-            
+
             output = f"STDOUT:\n{result.stdout}\n\nSTDERR:\n{result.stderr}"
             sanitized_out = ExecutionGuard.sanitize_output(output)
             return result.returncode, sanitized_out

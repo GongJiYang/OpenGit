@@ -43,22 +43,22 @@ async def wechat_callback(request: Request, db: Session = Depends(get_db)):
         msg_type = root.find("MsgType").text
         from_user = root.find("FromUserName").text
         to_user = root.find("ToUserName").text
-        
+
         # We only care about text messages for claiming
         if msg_type == "text":
             content = root.find("Content").text.strip()
-            
+
             # Match: "认领 ABCD-1234"
             if content.startswith("认领"):
                 claim_code = content.replace("认领", "").strip()
-                
+
                 # 2. Dependency Injection / Strategy Execution
                 repo = AgentRepository(db)
                 strategy = WeChatClaimStrategy(repo)
-                
+
                 # Run claim logic
                 result = await strategy.execute_claim(claim_code, from_user)
-                
+
                 # 3. Build Response XML
                 return build_xml_response(from_user, to_user, result.message)
 

@@ -1,5 +1,4 @@
 import os
-import time
 import json
 import requests
 import subprocess
@@ -30,11 +29,11 @@ class BaseAgent:
         self.agent_id = agent_id
         self.role = role
         self.model_name = "gpt-4-turbo"
-        
+
         # Skills System
         self.skills = SkillRegistry()
         self.load_default_skills()
-        
+
         if not os.path.exists(WORKSPACE_DIR):
             os.makedirs(WORKSPACE_DIR)
 
@@ -117,7 +116,7 @@ class BaseAgent:
         local_path = os.path.join(WORKSPACE_DIR, repo_name.replace(".git", ""))
         if os.path.exists(local_path):
             shutil.rmtree(local_path)
-        
+
         self.log(f"Cloning {repo_name}...", "⬇️")
         subprocess.check_call(["git", "clone", remote_path, local_path], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         return local_path
@@ -125,20 +124,20 @@ class BaseAgent:
     def commit_and_push(self, repo_dir: str, message_data: Dict):
         # 1. Add
         subprocess.run(["git", "add", "."], cwd=repo_dir, check=True)
-        
+
         # 2. Trace Commit
         trace_json = json.dumps(message_data)
         subprocess.run(["git", "commit", "-m", trace_json], cwd=repo_dir, check=True, stdout=subprocess.DEVNULL)
-        
+
         # 3. Push
         self.log("Pushing changes...", "🚀")
         try:
             # Use run to capture stderr
             result = subprocess.run(
-                ["git", "push", "origin", "HEAD"], 
-                cwd=repo_dir, 
-                capture_output=True, 
-                text=True, 
+                ["git", "push", "origin", "HEAD"],
+                cwd=repo_dir,
+                capture_output=True,
+                text=True,
                 check=True
             )
             self.log("Push Accepted.", "✅")

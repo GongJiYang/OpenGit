@@ -16,12 +16,12 @@ Trust Model:
 - Mismatch = permanent ban + reputation penalty
 """
 
-from datetime import datetime, timedelta
+from datetime import datetime
 from enum import Enum
 from typing import Optional, List, Dict, Any
 from uuid import UUID, uuid4
 
-from sqlmodel import Field, SQLModel, Column, String, DateTime, Text, Integer, Boolean, JSON
+from sqlmodel import Field, SQLModel, Column, Text, JSON
 from sqlalchemy import Index
 
 

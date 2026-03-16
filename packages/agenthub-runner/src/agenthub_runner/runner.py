@@ -4,11 +4,9 @@ AgentHub Runner API Client
 Handles all HTTP communication with the AgentHub platform.
 """
 
-import asyncio
 from typing import Any, Dict, List, Optional
 
 import httpx
-from pydantic import BaseModel
 
 
 class RunnerClient:

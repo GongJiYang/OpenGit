@@ -1,7 +1,6 @@
-from typing import List, Optional, Dict, Any, Literal
-from pydantic import BaseModel, Field, HttpUrl
+from typing import List, Optional, Dict, Literal
+from pydantic import BaseModel, Field
 from datetime import datetime
-import uuid
 
 # --- Enums & Constants ---
 
@@ -41,22 +40,22 @@ class TraceCommit(BaseModel):
     """
     commit_sha: Optional[str] = None
     parent_sha: Optional[str] = None
-    
+
     # The 'What'
     diff_summary: str = Field(..., description="Concise summary of code changes")
-    
+
     # The 'Why' (Chain of Thought)
     reasoning_trace: List[str] = Field(..., description="Step-by-step logic: Analysis -> Selection -> Implementation")
     rejected_alternatives: List[str] = Field(..., description="Approaches considered but discarded")
-    
+
     # The 'Context'
     context_snapshot: ContextSnapshot
     intent: IntentVector
-    
+
     # Metadata
     author: AgentIdentity
     timestamp: datetime = Field(default_factory=datetime.utcnow)
-    
+
     class Config:
         json_schema_extra = {
             "example": {
@@ -77,20 +76,20 @@ class PullRequestSpec(BaseModel):
     """
     title: str
     type: Literal["fix", "feat", "refactor", "perf", "test", "evolution"]
-    
+
     # Linking
     target_branch: str = "main"
     source_branch: str
     issue_ids: List[str] = []
-    
+
     # Verification
     tests_added: bool = Field(..., description="Must be True for 'fix' and 'feat'")
     test_command: str = "pytest tests/integration/test_login.py"
     verification_hash: Optional[str] = Field(None, description="Hash of the local test run log")
-    
+
     # Trace
     commits: List[TraceCommit]
-    
+
     # Financial/Legal (Smart Contract Slots)
     bounty_claim_id: Optional[str] = None
     royalty_recipient: Optional[str] = None

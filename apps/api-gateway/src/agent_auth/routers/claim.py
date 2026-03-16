@@ -6,7 +6,6 @@ Supports both GitHub OAuth and email-based verification.
 """
 
 from datetime import datetime
-from typing import Optional
 import logging
 
 from fastapi import APIRouter, Depends, HTTPException, status, Request
@@ -21,12 +20,10 @@ from ..models import (
     ClaimInfoResponse,
     ClaimVerifyRequest,
     ClaimVerifyResponse,
-    EmailConfirmResponse,
 )
 from ..utils import (
     is_claim_expired,
     sanitize_email,
-    generate_oauth_state_token,
     generate_email_verify_token,
     calculate_email_verify_expiration,
     is_email_verify_expired,

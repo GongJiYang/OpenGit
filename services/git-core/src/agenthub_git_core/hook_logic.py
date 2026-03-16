@@ -2,7 +2,6 @@ import sys
 import os
 import json
 import subprocess
-from typing import List, Tuple
 
 # Ensure we can import the protocol package
 # In a real deployment, this would be installed in the environment
@@ -23,24 +22,24 @@ def validate_push() -> None:
     Reads (old_sha, new_sha, ref_name) from stdin.
     """
     print("🤖 AgentHub Guard: Inspecting incoming commits...", file=sys.stderr)
-    
+
     # Read lines from stdin
     input_lines = sys.stdin.read().strip().splitlines()
     if not input_lines:
         print("❌ REJECTED: Empty pre-receive input.", file=sys.stderr)
         sys.exit(1)
-    
+
     for line in input_lines:
         old_sha, new_sha, ref = line.split()
         if not ref.startswith("refs/heads/"):
             print(f"❌ REJECTED: Unsupported ref '{ref}'. Only refs/heads/* allowed.", file=sys.stderr)
             sys.exit(1)
-        
+
         # Skip creating a new branch or deleting one for MVP simplicity
         # (Real logic would check the whole range)
         if new_sha == "0000000000000000000000000000000000000000":
              continue # Delete branch
-        
+
         # Validate all commits in the push range
         if old_sha == "0000000000000000000000000000000000000000":
             rev_range = new_sha

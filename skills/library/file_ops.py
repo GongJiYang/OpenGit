@@ -35,7 +35,7 @@ class ReadFileSkill(Skill):
                 full_path = target_path.resolve()
                 if not target_path.is_absolute():
                     return "Error: Path must be absolute when no root_dir is configured."
-            
+
             if not full_path.exists():
                 return f"Error: File not found at {full_path}"
 

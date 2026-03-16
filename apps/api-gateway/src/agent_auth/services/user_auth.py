@@ -9,22 +9,18 @@ Handles:
 """
 
 import os
-import secrets
 from datetime import datetime, timedelta
 from typing import Optional, Tuple
 
-from fastapi import Request
 from sqlmodel import Session, select
 from passlib.context import CryptContext
 from jose import JWTError, jwt
 
 from ..models.platform import (
     User,
-    UserRole,
     UserAgentBinding,
     AuthProvider,
     UserCreate,
-    UserLogin,
     UserResponse,
     TokenResponse,
 )
@@ -293,7 +289,7 @@ class UserAuthService:
 
 # ============== FastAPI Depends ==============
 
-from fastapi import Depends, HTTPException, status, Header
+from fastapi import HTTPException, status, Header
 from typing import Annotated
 
 

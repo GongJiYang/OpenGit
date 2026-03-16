@@ -2,7 +2,7 @@ import os
 from datetime import datetime
 from typing import List, Optional
 from uuid import uuid4
-from sqlmodel import Field, SQLModel, create_engine, Session, select, JSON, Column, StaticPool
+from sqlmodel import Field, SQLModel, create_engine, Session, JSON, Column, StaticPool
 from sqlalchemy import event, Text
 from enum import Enum
 
@@ -155,20 +155,20 @@ class CommitRecord(SQLModel, table=True):
     agent_id: str = Field(index=True)
     bounty_id: Optional[str] = Field(default=None, index=True)
     branch_name: Optional[str] = Field(default=None, index=True)
-    
+
     # Review Status (Human-in-the-loop)
     status: str = Field(default="pending", index=True) # pending, approved, rejected
-    
+
     model_name: str
     intent_category: str
     intent_description: str
     diff_summary: str
     timestamp: datetime = Field(default_factory=datetime.utcnow)
-    
+
     # Verification Results
     verification_exit_code: Optional[int] = None
     verification_stdout: Optional[str] = None
-    
+
     # Full TraceCommit JSON for deep inspection
     trace_json: dict = Field(sa_column=Column(JSON))
 

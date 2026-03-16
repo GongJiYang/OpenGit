@@ -12,14 +12,12 @@ Key Features:
 """
 
 import json
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import List, Optional, Dict, Any
 from uuid import UUID
-from statistics import median
 from sqlmodel import Session, select
 
 from ..models import Agent, AgentStatus, AgentMetrics
-from persistence import Bounty
 
 
 # ============== Reliability Tier Thresholds ==============

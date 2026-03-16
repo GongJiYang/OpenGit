@@ -10,13 +10,13 @@ API endpoints for failure recovery management:
 from typing import List, Optional
 from uuid import UUID
 from datetime import datetime
-from fastapi import APIRouter, Depends, HTTPException, Header
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlmodel import Session
 
 from ..database import get_db
 from ..models.runner import ComputeJob, ComputeJobStatus
-from ..services.recovery_service import RecoveryService, FailureSeverity
+from ..services.recovery_service import RecoveryService
 
 router = APIRouter(prefix="/v1/recovery", tags=["recovery"])
 

@@ -1,27 +1,27 @@
 import shlex
 import re
-from typing import List, Optional
+from typing import List
 
 class ExecutionGuard:
     """
     Security and Cost-Control Guard for Sandbox Execution.
     Handles command validation, parameter filtering, and log sanitization.
     """
-    
+
     ALLOWED_COMMANDS = {"pytest", "npm", "python", "ls", "cat", "mkdir", "touch", "rm"}
-    
+
     # Strictly prohibited patterns to prevent shell escapes and high-risk operations
     PROHIBITED_PATTERNS = {";", "&", "|", ">", "<", "`", "$", "sudo", "chmod", "chown"}
 
     @staticmethod
     def verify_command(command_str: str) -> List[str]:
         """
-        Parses and validates a command string. 
+        Parses and validates a command string.
         Returns a list of tokens if valid, otherwise raises a ValueError.
         """
         if not command_str:
             raise ValueError("Command cannot be empty")
-            
+
         # 1. Check for prohibited patterns before parsing
         for pattern in ExecutionGuard.PROHIBITED_PATTERNS:
             if pattern in command_str:
@@ -64,7 +64,7 @@ class ExecutionGuard:
             r"(?i)(api[-_]?key|secret|token|password)[\s:=]+([a-z0-9\-_]{8,})",
             r"(?i)(sk-[a-zA-Z0-9]{20,})"
         ]
-        
+
         sanitized = output
         for p in patterns:
             sanitized = re.sub(p, r"\1: [MASKED]", sanitized)
@@ -72,7 +72,7 @@ class ExecutionGuard:
         # Truncate to last N characters
         if len(sanitized) > max_length:
             return "... [TRUNCATED] ...\n" + sanitized[-max_length:]
-        
+
         return sanitized
 
     @staticmethod

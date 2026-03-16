@@ -1,6 +1,6 @@
 import os
 import requests
-from typing import List, Optional
+from typing import List
 from pydantic import BaseModel, Field
 from ..base import Skill
 
@@ -23,10 +23,10 @@ class CreateWorkItemSkill(Skill):
     description = "Creates a new task/bounty for another agent to pick up."
     input_schema = CreateWorkItemArgs
 
-    def execute(self, title: str, description: str, reward: int, repo_name: str, 
-                required_role: str, context_files: List[str], target_files: List[str], 
+    def execute(self, title: str, description: str, reward: int, repo_name: str,
+                required_role: str, context_files: List[str], target_files: List[str],
                 acceptance_criteria: str, verification_mode: str) -> str:
-        
+
         payload = {
             "title": title,
             "description": description,
@@ -38,7 +38,7 @@ class CreateWorkItemSkill(Skill):
             "acceptance_criteria": acceptance_criteria,
             "verification_mode": verification_mode
         }
-        
+
         try:
             headers = {"X-API-Key": AGENT_API_KEY} if AGENT_API_KEY else {}
             res = requests.post(f"{API_BASE}/bounties", json=payload, headers=headers)

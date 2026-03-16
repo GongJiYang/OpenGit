@@ -14,11 +14,10 @@ Features:
 """
 
 from datetime import datetime, timedelta
-from typing import List, Optional, Dict, Set, Any
+from typing import List, Optional, Dict, Any
 from uuid import UUID
 from sqlmodel import Session
 
-from ..models import Agent
 from .metrics_service import get_agent_workload
 
 

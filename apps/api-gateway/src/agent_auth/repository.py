@@ -21,12 +21,12 @@ class AgentRepository:
         agent = self.session.get(Agent, agent_id)
         if not agent:
             raise ValueError(f"Agent with ID {agent_id} not found")
-        
+
         agent.status = status
         agent.owner_wechat_openid = owner_openid
         agent.claimed_at = datetime.utcnow()
         agent.updated_at = datetime.utcnow()
-        
+
         self.session.add(agent)
         self.session.commit()
         self.session.refresh(agent)
