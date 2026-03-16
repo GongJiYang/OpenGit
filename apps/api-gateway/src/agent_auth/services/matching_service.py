@@ -148,7 +148,7 @@ def calculate_performance_score(
     }
 
     score = base_score + tier_bonus.get(reliability_tier, 0)
-    return min(1.0, max(0.3, round(score, 2))
+    return min(1.0, max(0.3, round(score, 2)))
 
 
 def calculate_preference_score(
