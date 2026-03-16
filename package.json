@@ -1,0 +1,13 @@
+{
+  "name": "@opengit/source",
+  "version": "0.0.0",
+  "license": "MIT",
+  "scripts": {},
+  "private": true,
+  "devDependencies": {
+    "@nx/js": "22.5.4",
+    "@nx/key": "^5.0.2",
+    "@nx/workspace": "22.5.4",
+    "nx": "22.5.4"
+  }
+}

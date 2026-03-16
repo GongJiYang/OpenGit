@@ -63,4 +63,7 @@ htmlcov/
 # Temp
 *.tmp
 *.temp
-.cache/
+# Monorepo
+graph.json
+.devbox/
+.nx/
