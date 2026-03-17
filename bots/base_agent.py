@@ -1,4 +1,5 @@
 import os
+import sys
 import json
 import requests
 import subprocess
@@ -11,18 +12,20 @@ AGENT_API_KEY = os.getenv("AGENT_API_KEY")
 GIT_REMOTE_BASE = os.getenv("AGENTHUB_GIT_REMOTE_BASE")
 WORKSPACE_DIR = os.path.abspath("./agent_workspace")
 
-import sys
 # Add root to path so we can import 'skills'
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+skills_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+if skills_root not in sys.path:
+    sys.path.append(skills_root)
 
-from skills.registry import SkillRegistry
-from skills.library.file_ops import ReadFileSkill, WriteFileSkill
-from skills.library.solution_ops import SearchSolutionSkill, StoreSolutionSkill
-from skills.library.template_ops import (
+from skills.registry import SkillRegistry  # noqa: E402
+from skills.library.file_ops import ReadFileSkill, WriteFileSkill  # noqa: E402
+from skills.library.solution_ops import SearchSolutionSkill, StoreSolutionSkill  # noqa: E402
+from skills.library.template_ops import (  # noqa: E402
     ListTemplatesSkill, GetTemplateSkill, RenderTemplateSkill,
     ReplaceBlockSkill, InsertBlockSkill, WrapBlockSkill,
     RegisterTemplateSkill, SearchTemplatesSkill
 )
+from skills.library.memory_ops import PersistentMemorySkill  # noqa: E402
 
 class BaseAgent:
     def __init__(self, agent_id: str, role: str):
@@ -52,6 +55,8 @@ class BaseAgent:
         self.skills.register(WrapBlockSkill())
         self.skills.register(RegisterTemplateSkill())
         self.skills.register(SearchTemplatesSkill())
+        # 持久化记忆技能
+        self.skills.register(PersistentMemorySkill())
 
     def use_skill(self, skill_name: str, **kwargs):
         skill = self.skills.get(skill_name)
@@ -87,7 +92,7 @@ class BaseAgent:
         try:
             res = requests.get(f"{API_URL}/search", params={"query": query})
             return res.json()
-        except:
+        except Exception:
             return []
 
     def list_repos(self) -> List[str]:
@@ -133,7 +138,7 @@ class BaseAgent:
         self.log("Pushing changes...", "🚀")
         try:
             # Use run to capture stderr
-            result = subprocess.run(
+            _ = subprocess.run(
                 ["git", "push", "origin", "HEAD"],
                 cwd=repo_dir,
                 capture_output=True,
