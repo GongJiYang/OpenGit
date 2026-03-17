@@ -1700,40 +1700,9 @@ def submit_blackbox_test(commit_id: int, report: BlackboxReport, session: Sessio
         except Exception as e:
             print(f"⚠️ Failed to store memory from report: {e}")
 
-    # Auto-merge if blackbox test passed
+    # Do NOT auto-approve or merge on blackbox PASS; require reviewer approval
     if record.blackbox_status == "passed":
-        record.status = "approved"
-        # Fast-forward logic (moved from approve_commit)
-        if record.branch_name:
-            repo_path = get_secure_repo_path(record.repo_name)
-            ref_name = f"refs/heads/{record.branch_name}"
-            try:
-                main_ref = "refs/heads/main"
-                main_exists = subprocess.run(["git", "show-ref", "--verify", "--quiet", main_ref], cwd=repo_path).returncode == 0
-                if main_exists:
-                    ff_check = subprocess.run(
-                        ["git", "merge-base", "--is-ancestor", main_ref, ref_name],
-                        cwd=repo_path
-                    )
-                    if ff_check.returncode != 0:
-                        record.status = "conflict"
-                        session.add(record)
-                        session.commit()
-                        raise HTTPException(status_code=409, detail="Non-fast-forward merge detected; manual review required.")
-
-                sha = subprocess.check_output(["git", "rev-parse", ref_name], cwd=repo_path).decode().strip()
-                subprocess.run(["git", "update-ref", "refs/heads/main", sha], cwd=repo_path, check=True)
-            except subprocess.CalledProcessError as e:
-                raise HTTPException(status_code=500, detail=f"Failed to update main: {e}")
-
-        if record.bounty_id:
-            bounty = session.get(Bounty, record.bounty_id)
-            if bounty:
-                from persistence import BountyStatus
-                bounty.status = BountyStatus.COMPLETED.value
-                session.add(bounty)
-                # Trigger dependency resolution - unlock dependent tasks
-                resolve_bounty_dependencies(bounty.id, session)
+        record.status = "pending"
     else:
         record.status = "rejected"
         if record.bounty_id:
