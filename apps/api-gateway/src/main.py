@@ -12,7 +12,7 @@ from fastapi import FastAPI, HTTPException, Body, Depends, Request, Header, stat
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ConfigDict
 from pydantic import BaseModel as _BaseModel  # noqa: F401
 from sqlmodel import Session, select
 from slowapi import Limiter, _rate_limit_exceeded_handler
@@ -224,6 +224,21 @@ class AgentIdentity(BaseModel):
 
 class CreateRepoRequest(BaseModel):
     name: str
+
+class CreateBountyRequest(BaseModel):
+    # Strict: forbid unknown fields
+    model_config = ConfigDict(extra="forbid")
+
+    title: str
+    description: str = ""
+    reward: int
+    repo_name: str
+    repo_id: Optional[str] = None
+    required_role: str  # architect | contributor | executor
+    estimated_hours: Optional[int] = None
+    track: Optional[str] = None
+    test_command: Optional[str] = "pytest"
+    verification_mode: Optional[str] = "auto"
 
 class SearchResponse(BaseModel):
     chunk_name: str
@@ -683,8 +698,12 @@ def list_bounties(request: Request, session: Session = Depends(get_session)):
 @app.post("/api/v1/bounties")
 @app.post("/bounties")
 @limiter.limit("20/minute")
-def create_bounty(request: Request, bounty: Bounty, session: Session = Depends(get_session), agent: Agent = Depends(require_agent)):
-    """Post a new job."""
+def create_bounty(request: Request, bounty: CreateBountyRequest, session: Session = Depends(get_session), agent: Agent = Depends(require_agent)):
+    """Post a new job (strict DTO)."""
+    # Only Architect can create
+    if agent.role.lower() != "architect":
+        raise HTTPException(status_code=403, detail="Forbidden: Only Architect agents can create bounties.")
+
     # Input validation
     if not bounty.title or not bounty.title.strip():
         raise HTTPException(status_code=400, detail="Title is required")
@@ -695,39 +714,67 @@ def create_bounty(request: Request, bounty: Bounty, session: Session = Depends(g
     if bounty.reward is not None and bounty.reward <= 0:
         raise HTTPException(status_code=400, detail="Reward must be a positive number")
 
-    # XSS/Injection sanitization for    import html
+    # Sanitization
     def sanitize_text(text: str, max_length: int = 1000) -> str:
         """Remove potentially dangerous characters from text."""
         if not text:
             return ""
-        # Remove HTML tags
         text = html.escape(text)
-        # Remove SQL injection patterns
         dangerous_patterns = [';', '--', '/*', '*/', 'xp_', 'DROP', 'DELETE', 'INSERT', 'UPDATE', 'UNION']
         for pattern in dangerous_patterns:
             if pattern.lower() in text.lower():
                 raise HTTPException(status_code=400, detail="Invalid input: contains forbidden pattern")
-        # Limit length
         return text[:max_length]
 
-    # Sanitize inputs
-    bounty.title = sanitize_text(bounty.title, 200)
-    bounty.description = sanitize_text(bounty.description or "", 2000)
-    bounty.repo_name = sanitize_text(bounty.repo_name, 100)
+    title = sanitize_text(bounty.title, 200)
+    description = sanitize_text(bounty.description or "", 2000)
+    repo_name = sanitize_text(bounty.repo_name, 100)
 
     # Validate required_role
     VALID_ROLES = ["architect", "contributor", "executor", "tester", "librarian"]
     if bounty.required_role and bounty.required_role.lower() not in VALID_ROLES:
         raise HTTPException(status_code=400, detail=f"Invalid role: {bounty.required_role}")
 
-    if not bounty.verification_mode:
-        bounty.verification_mode = os.getenv("DEFAULT_VERIFICATION_MODE", "auto")
-    if bounty.verification_mode and bounty.verification_mode.lower() not in ["auto", "human", "external"]:
+    # verification_mode validation
+    verification_mode = (bounty.verification_mode or os.getenv("DEFAULT_VERIFICATION_MODE", "auto")).lower()
+    if verification_mode not in ["auto", "human", "external"]:
         raise HTTPException(status_code=400, detail="Invalid verification_mode")
-    session.add(bounty)
+
+    # test_command whitelist (base command only)
+    base_cmd = (bounty.test_command or "pytest").split()[0]
+    if base_cmd not in ALLOWED_TEST_COMMANDS:
+        raise HTTPException(status_code=400, detail=f"Command '{base_cmd}' is not allowed. Supported: {ALLOWED_TEST_COMMANDS}")
+
+    # Construct server-side Bounty with safe defaults
+    new_bounty = Bounty(
+        title=title,
+        description=description,
+        reward=bounty.reward,
+        status="open",
+        repo_name=repo_name,
+        repo_id=bounty.repo_id,
+        required_role=bounty.required_role,
+        assignee=None,
+        parent_id=None,
+        dependencies=[],
+        estimated_hours=bounty.estimated_hours,
+        track=bounty.track,
+        is_temporary_claim=False,
+        claim_expires_at=None,
+        claimed_by_user_id=None,
+        max_steps=15,
+        current_steps=0,
+        context_files=[],
+        target_files=[],
+        acceptance_criteria=None,
+        test_command=base_cmd,
+        verification_mode=verification_mode,
+    )
+
+    session.add(new_bounty)
     session.commit()
-    session.refresh(bounty)
-    return bounty
+    session.refresh(new_bounty)
+    return new_bounty
 
 @app.post("/api/v1/bounties/{parent_id}/decompose")
 @app.post("/bounties/{parent_id}/decompose")
