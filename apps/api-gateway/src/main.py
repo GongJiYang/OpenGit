@@ -55,6 +55,8 @@ execution_semaphore = asyncio.Semaphore(MAX_CONCURRENT_RUNS)
 
 from datetime import date, datetime
 import time
+import logging
+logger = logging.getLogger(__name__)
 
 class DailyBudgetTracker:
     """Simple JSON-based daily budget tracker."""
@@ -96,7 +98,8 @@ class DailyBudgetTracker:
                 json.dump(data, f)
             return True
         except Exception:
-            return True
+            # Fail-closed: if budget file ops fail, deny execution to preserve cost guard
+            return False
         finally:
             if lockf:
                 try:
@@ -547,7 +550,9 @@ def create_repo(request: Request, req: CreateRepoRequest, agent: Agent = Depends
         path = request.app.state.repo_manager.create_repo(req.name)
         return {"id": req.name, "path": path, "status": "created"}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        # Avoid leaking internal error details to clients
+        logger.error("[create_repo] error: %s: %s", type(e).__name__, e)
+        raise HTTPException(status_code=500, detail="Failed to create repository")
 
 @app.post("/index")
 def index_code(request: Request, repo_name: str, file_path: str, content: str = Body(..., media_type="text/plain"), agent: Agent = Depends(require_agent)):
@@ -603,11 +608,19 @@ def verify_repo(request: Request, repo_name: str, cmd: str = "pytest", agent: Ag
              detail=f"Command '{base_cmd}' is not allowed. Supported: {ALLOWED_TEST_COMMANDS}"
          )
 
-    repo_path = get_secure_repo_path(repo_name)
+    bare_repo_path = get_secure_repo_path(repo_name)
     sb = get_sandbox(request)
     if not sb:
         raise HTTPException(status_code=503, detail="Sandbox is disabled")
-    exit_code, output = sb.run_tests(repo_path, cmd)
+
+    # Clone bare repo to a temporary working directory so tests have a worktree
+    work_dir = tempfile.mkdtemp(prefix="agenthub_verify_")
+    try:
+        subprocess.run(["git", "clone", bare_repo_path, work_dir], check=True, capture_output=True)
+        exit_code, output = sb.run_tests(work_dir, cmd)
+    finally:
+        shutil.rmtree(work_dir, ignore_errors=True)
+
     return {
         "repo": repo_name,
         "exit_code": exit_code,
@@ -887,7 +900,7 @@ def create_decomposed_bounties(
         tree_service = GitTreeService(session, STORE_ROOT)
         tree_service.sync_repo_task_tree(req.repo_name, agent.id)
     except Exception as e:
-        print(f"Failed to sync task tree: {e}")
+        logger.warning("Failed to sync task tree: %s", e)
 
     bounty_dicts = [
         {
@@ -949,7 +962,7 @@ def resolve_bounty_dependencies(bounty_id: str, session: Session) -> int:
                 tree_service = GitTreeService(session, STORE_ROOT)
                 tree_service.sync_repo_task_tree(bounty.repo_name)
             except Exception as e:
-                print(f"Failed to sync task tree during dependency resolution: {e}")
+                logger.warning("Failed to sync task tree during dependency resolution: %s", e)
 
     # Case 2: ready_for_preparation bounties (with or without assignee)
     preparable_bounties = session.exec(
@@ -1478,7 +1491,9 @@ async def api_commit(request: Request, repo_name: str, req: CommitRequest, sessi
         )
 
         if result.returncode != 0:
-            return {"success": False, "error": result.stderr}
+            # Avoid leaking git stderr to clients
+            logger.error("[commit] git push failed: %s", (result.stderr[:2000] if result.stderr else ''))
+            return {"success": False, "error": "Git push failed"}
 
         # --- Automated Verification (P1 MVP) ---
         v_exit_code = None
@@ -1512,10 +1527,16 @@ async def api_commit(request: Request, repo_name: str, req: CommitRequest, sessi
                     sb = get_sandbox(request)
                     if sb is None:
                         raise HTTPException(status_code=503, detail="Sandbox is disabled")
-                    print(f"🛠️ [Automation] Running validation for Bounty {bounty.id}: {test_cmd}")
+                    logger.info("[automation] Running validation for Bounty %s: %s", bounty.id, test_cmd)
                     try:
                         async with execution_semaphore:
-                             v_exit_code, v_stdout = sb.run_tests(bare_repo_path, test_cmd)
+                             # Use a temporary worktree cloned from the bare repo for running tests
+                             work_dir = tempfile.mkdtemp(prefix="agenthub_auto_verify_")
+                             try:
+                                 subprocess.run(["git", "clone", bare_repo_path, work_dir], check=True, capture_output=True)
+                                 v_exit_code, v_stdout = sb.run_tests(work_dir, test_cmd)
+                             finally:
+                                 shutil.rmtree(work_dir, ignore_errors=True)
                     except Exception as e:
                         v_exit_code, v_stdout = -1, f"Execution failed under semaphore: {str(e)}"
                 elif verification_mode == "human":
@@ -1550,14 +1571,14 @@ async def api_commit(request: Request, repo_name: str, req: CommitRequest, sessi
             session.add(record)
             session.commit()
         except Exception as db_err:
-            print(f"Failed to record commit history: {db_err}")
+            logger.error("Failed to record commit history: %s", db_err)
 
         # Sync task tree to repository after submission
         try:
             tree_service = GitTreeService(session, STORE_ROOT)
             tree_service.sync_repo_task_tree(repo_name, trusted_agent_id)
         except Exception as e:
-            print(f"Failed to sync task tree after commit: {e}")
+            logger.warning("Failed to sync task tree after commit: %s", e)
 
         return {
             "success": True,
@@ -1572,13 +1593,14 @@ async def api_commit(request: Request, repo_name: str, req: CommitRequest, sessi
         }
 
     except subprocess.CalledProcessError as e:
-        return {"success": False, "error": f"Git operation failed: {e.stderr.decode() if e.stderr else str(e)}"}
+        # Avoid leaking raw stderr to clients
+        err_msg = e.stderr.decode(errors="replace")[:2000] if getattr(e, "stderr", None) else str(e)
+        logger.error("[commit] git operation failed: %s", err_msg)
+        return {"success": False, "error": "Git operation failed"}
     except HTTPException:
         raise  # Re-raise HTTP exceptions (403, 404, etc.)
     except Exception as e:
-        print(f"[ERROR] Unexpected error in commit endpoint: {type(e).__name__}: {e}")
-        import traceback
-        traceback.print_exc()
+        logger.exception("[commit] unexpected error: %s: %s", type(e).__name__, e)
         raise HTTPException(status_code=500, detail=f"Internal error: {str(e)}")
     finally:
         # Cleanup
@@ -1684,42 +1706,11 @@ def submit_blackbox_test(commit_id: int, report: BlackboxReport, session: Sessio
                 "role": "tester"
             })
         except Exception as e:
-            print(f"⚠️ Failed to store memory from report: {e}")
+            logger.warning("Failed to store memory from report: %s", e)
 
-    # Auto-merge if blackbox test passed
+    # Do NOT auto-approve or merge on blackbox PASS; require reviewer approval
     if record.blackbox_status == "passed":
-        record.status = "approved"
-        # Fast-forward logic (moved from approve_commit)
-        if record.branch_name:
-            repo_path = get_secure_repo_path(record.repo_name)
-            ref_name = f"refs/heads/{record.branch_name}"
-            try:
-                main_ref = "refs/heads/main"
-                main_exists = subprocess.run(["git", "show-ref", "--verify", "--quiet", main_ref], cwd=repo_path).returncode == 0
-                if main_exists:
-                    ff_check = subprocess.run(
-                        ["git", "merge-base", "--is-ancestor", main_ref, ref_name],
-                        cwd=repo_path
-                    )
-                    if ff_check.returncode != 0:
-                        record.status = "conflict"
-                        session.add(record)
-                        session.commit()
-                        raise HTTPException(status_code=409, detail="Non-fast-forward merge detected; manual review required.")
-
-                sha = subprocess.check_output(["git", "rev-parse", ref_name], cwd=repo_path).decode().strip()
-                subprocess.run(["git", "update-ref", "refs/heads/main", sha], cwd=repo_path, check=True)
-            except subprocess.CalledProcessError as e:
-                raise HTTPException(status_code=500, detail=f"Failed to update main: {e}")
-
-        if record.bounty_id:
-            bounty = session.get(Bounty, record.bounty_id)
-            if bounty:
-                from persistence import BountyStatus
-                bounty.status = BountyStatus.COMPLETED.value
-                session.add(bounty)
-                # Trigger dependency resolution - unlock dependent tasks
-                resolve_bounty_dependencies(bounty.id, session)
+        record.status = "pending"
     else:
         record.status = "rejected"
         if record.bounty_id:
