@@ -55,6 +55,8 @@ execution_semaphore = asyncio.Semaphore(MAX_CONCURRENT_RUNS)
 
 from datetime import date, datetime
 import time
+import logging
+logger = logging.getLogger(__name__)
 
 class DailyBudgetTracker:
     """Simple JSON-based daily budget tracker."""
@@ -549,7 +551,7 @@ def create_repo(request: Request, req: CreateRepoRequest, agent: Agent = Depends
         return {"id": req.name, "path": path, "status": "created"}
     except Exception as e:
         # Avoid leaking internal error details to clients
-        print(f"[create_repo] error: {type(e).__name__}: {e}")
+        logger.error("[create_repo] error: %s: %s", type(e).__name__, e)
         raise HTTPException(status_code=500, detail="Failed to create repository")
 
 @app.post("/index")
@@ -898,7 +900,7 @@ def create_decomposed_bounties(
         tree_service = GitTreeService(session, STORE_ROOT)
         tree_service.sync_repo_task_tree(req.repo_name, agent.id)
     except Exception as e:
-        print(f"Failed to sync task tree: {e}")
+        logger.warning("Failed to sync task tree: %s", e)
 
     bounty_dicts = [
         {
@@ -960,7 +962,7 @@ def resolve_bounty_dependencies(bounty_id: str, session: Session) -> int:
                 tree_service = GitTreeService(session, STORE_ROOT)
                 tree_service.sync_repo_task_tree(bounty.repo_name)
             except Exception as e:
-                print(f"Failed to sync task tree during dependency resolution: {e}")
+                logger.warning("Failed to sync task tree during dependency resolution: %s", e)
 
     # Case 2: ready_for_preparation bounties (with or without assignee)
     preparable_bounties = session.exec(
@@ -1490,7 +1492,7 @@ async def api_commit(request: Request, repo_name: str, req: CommitRequest, sessi
 
         if result.returncode != 0:
             # Avoid leaking git stderr to clients
-            print(f"[commit] git push failed: {result.stderr[:2000] if result.stderr else ''}")
+            logger.error("[commit] git push failed: %s", (result.stderr[:2000] if result.stderr else ''))
             return {"success": False, "error": "Git push failed"}
 
         # --- Automated Verification (P1 MVP) ---
@@ -1525,7 +1527,7 @@ async def api_commit(request: Request, repo_name: str, req: CommitRequest, sessi
                     sb = get_sandbox(request)
                     if sb is None:
                         raise HTTPException(status_code=503, detail="Sandbox is disabled")
-                    print(f"🛠️ [Automation] Running validation for Bounty {bounty.id}: {test_cmd}")
+                    logger.info("[automation] Running validation for Bounty %s: %s", bounty.id, test_cmd)
                     try:
                         async with execution_semaphore:
                              # Use a temporary worktree cloned from the bare repo for running tests
@@ -1569,14 +1571,14 @@ async def api_commit(request: Request, repo_name: str, req: CommitRequest, sessi
             session.add(record)
             session.commit()
         except Exception as db_err:
-            print(f"Failed to record commit history: {db_err}")
+            logger.error("Failed to record commit history: %s", db_err)
 
         # Sync task tree to repository after submission
         try:
             tree_service = GitTreeService(session, STORE_ROOT)
             tree_service.sync_repo_task_tree(repo_name, trusted_agent_id)
         except Exception as e:
-            print(f"Failed to sync task tree after commit: {e}")
+            logger.warning("Failed to sync task tree after commit: %s", e)
 
         return {
             "success": True,
@@ -1593,14 +1595,12 @@ async def api_commit(request: Request, repo_name: str, req: CommitRequest, sessi
     except subprocess.CalledProcessError as e:
         # Avoid leaking raw stderr to clients
         err_msg = e.stderr.decode(errors="replace")[:2000] if getattr(e, "stderr", None) else str(e)
-        print(f"[commit] git operation failed: {err_msg}")
+        logger.error("[commit] git operation failed: %s", err_msg)
         return {"success": False, "error": "Git operation failed"}
     except HTTPException:
         raise  # Re-raise HTTP exceptions (403, 404, etc.)
     except Exception as e:
-        print(f"[ERROR] Unexpected error in commit endpoint: {type(e).__name__}: {e}")
-        import traceback
-        traceback.print_exc()
+        logger.exception("[commit] unexpected error: %s: %s", type(e).__name__, e)
         raise HTTPException(status_code=500, detail=f"Internal error: {str(e)}")
     finally:
         # Cleanup
@@ -1706,7 +1706,7 @@ def submit_blackbox_test(commit_id: int, report: BlackboxReport, session: Sessio
                 "role": "tester"
             })
         except Exception as e:
-            print(f"⚠️ Failed to store memory from report: {e}")
+            logger.warning("Failed to store memory from report: %s", e)
 
     # Do NOT auto-approve or merge on blackbox PASS; require reviewer approval
     if record.blackbox_status == "passed":
