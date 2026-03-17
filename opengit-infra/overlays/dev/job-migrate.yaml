@@ -1,0 +1,32 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: api-gateway-migrate
+  annotations:
+    argocd.argoproj.io/hook: PreSync
+    argocd.argoproj.io/hook-delete-policy: HookSucceeded
+spec:
+  backoffLimit: 3
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: migrate
+          image: ghcr.io/opengit-dev/opengit-api-gateway:REPLACED_BY_KUSTOMIZE
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: api-gateway-secrets
+                  key: DATABASE_URL
+            - name: ALEMBIC_CONFIG
+              value: /app/apps/api-gateway/alembic.ini
+          command: ["sh","-c"]
+          args:
+            - |
+              if [ -f "$ALEMBIC_CONFIG" ]; then
+                alembic -c "$ALEMBIC_CONFIG" upgrade head
+              else
+                echo "ALEMBIC_CONFIG not found at $ALEMBIC_CONFIG"; exit 1
+              fi

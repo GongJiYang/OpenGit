@@ -5,8 +5,8 @@ resources:
   - ../../base
 
 images:
-  - name: ghcr.io/GongJiYang/opengit-api-gateway
-    newTag: staging
+  - name: ghcr.io/opengit-dev/opengit-api-gateway
+    newTag: REPLACED_BY_CI
   - name: ghcr.io/GongJiYang/opengit-observer-ui
     newTag: staging
 
