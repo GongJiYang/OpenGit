@@ -18,7 +18,7 @@ from ..database import get_db
 from ..models.runner import ComputeJob, ComputeJobStatus
 from ..services.recovery_service import RecoveryService
 
-router = APIRouter(prefix="/v1/recovery", tags=["recovery"])
+router = APIRouter(prefix="/recovery", tags=["recovery"])
 
 
 # ==================== Request Models ====================

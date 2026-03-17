@@ -202,12 +202,12 @@ async def list_repos(
     # If user wants their repos, filter by created_by_user_id
     if mine and user:
         statement = select(Repo).where(
-            Repo.is_active == True,
+            Repo.is_active.is_(True),
             Repo.created_by_user_id == user.id
         )
         repos = session.exec(statement).all()
     else:
-        statement = select(Repo).where(Repo.is_active == True)
+        statement = select(Repo).where(Repo.is_active.is_(True))
         repos = session.exec(statement).all()
 
     # Get agent context for membership check
@@ -459,6 +459,6 @@ async def get_repo_jobs(
 
 
 # Combine routers
-platform_router = APIRouter()
+platform_router = APIRouter(tags=["Platform"])
 platform_router.include_router(auth_router)
 platform_router.include_router(repo_router)

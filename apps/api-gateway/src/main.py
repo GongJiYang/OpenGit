@@ -13,6 +13,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
+from pydantic import BaseModel as _BaseModel  # noqa: F401
 from sqlmodel import Session, select
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
@@ -465,6 +466,7 @@ def get_stats(request: Request, auth_session: Session = Depends(get_auth_session
     )
 
 
+@app.get("/api/v1/system/routes", tags=["System"])
 @app.get("/routes", tags=["System"])
 async def list_all_routes(request: Request):
     """
@@ -503,6 +505,7 @@ class AgentPublicInfo(BaseModel):
     created_at: str
 
 
+@app.get("/api/v1/agents")
 @app.get("/agents")
 @limiter.limit("30/minute")
 def list_agents(request: Request, auth_session: Session = Depends(get_auth_session)):
@@ -533,6 +536,7 @@ def list_agents(request: Request, auth_session: Session = Depends(get_auth_sessi
     ]
 
 
+@app.get("/api/v1/repos")
 @app.get("/repos")
 @limiter.limit("30/minute")
 def list_repos(request: Request):
@@ -540,6 +544,7 @@ def list_repos(request: Request):
         return []
     return [d for d in os.listdir(request.app.state.store_root) if not d.startswith('.')]
 
+@app.post("/api/v1/repos")
 @app.post("/repos")
 @limiter.limit("10/minute")
 def create_repo(request: Request, req: CreateRepoRequest, agent: Agent = Depends(require_agent)):
@@ -554,6 +559,7 @@ def create_repo(request: Request, req: CreateRepoRequest, agent: Agent = Depends
         logger.error("[create_repo] error: %s: %s", type(e).__name__, e)
         raise HTTPException(status_code=500, detail="Failed to create repository")
 
+@app.post("/api/v1/index")
 @app.post("/index")
 def index_code(request: Request, repo_name: str, file_path: str, content: str = Body(..., media_type="text/plain"), agent: Agent = Depends(require_agent)):
     """
@@ -569,6 +575,7 @@ def index_code(request: Request, repo_name: str, file_path: str, content: str = 
         idx.index_chunk(repo_name, file_path, c)
     return {"indexed_chunks": len(chunks)}
 
+@app.get("/api/v1/search", response_model=List[SearchResponse])
 @app.get("/search", response_model=List[SearchResponse])
 def search_code(request: Request, query: str, repo_id: Optional[str] = None, limit: int = 3, offset: int = 0):
     """Semantic search for code chunks."""
@@ -595,6 +602,7 @@ def search_code(request: Request, query: str, repo_id: Optional[str] = None, lim
         ))
     return response
 
+@app.post("/api/v1/verify")
 @app.post("/verify")
 @limiter.limit("10/minute")
 def verify_repo(request: Request, repo_name: str, cmd: str = "pytest", agent: Agent = Depends(require_agent)):
@@ -628,6 +636,7 @@ def verify_repo(request: Request, repo_name: str, cmd: str = "pytest", agent: Ag
         "logs": output[:1000]
     }
 
+@app.get("/api/v1/repos/{repo_name}/tree")
 @app.get("/repos/{repo_name}/tree")
 def get_repo_tree(repo_name: str):
     """List all files in the repo (HEAD)."""
@@ -643,6 +652,7 @@ def get_repo_tree(repo_name: str):
     except subprocess.CalledProcessError:
         return {"files": []} # Empty repo or no commits
 
+@app.get("/api/v1/repos/{repo_name}/blob")
 @app.get("/repos/{repo_name}/blob")
 def get_repo_file(repo_name: str, path: str):
     """Get code content of a file."""
@@ -662,6 +672,7 @@ def get_repo_file(repo_name: str, path: str):
 
 # --- Bounty Board (Job Market) ---
 
+@app.get("/api/v1/bounties")
 @app.get("/bounties")
 @limiter.limit("60/minute")
 def list_bounties(request: Request, session: Session = Depends(get_session)):
@@ -669,6 +680,7 @@ def list_bounties(request: Request, session: Session = Depends(get_session)):
     statement = select(Bounty)
     return session.exec(statement).all()
 
+@app.post("/api/v1/bounties")
 @app.post("/bounties")
 @limiter.limit("20/minute")
 def create_bounty(request: Request, bounty: Bounty, session: Session = Depends(get_session), agent: Agent = Depends(require_agent)):
@@ -717,6 +729,7 @@ def create_bounty(request: Request, bounty: Bounty, session: Session = Depends(g
     session.refresh(bounty)
     return bounty
 
+@app.post("/api/v1/bounties/{parent_id}/decompose")
 @app.post("/bounties/{parent_id}/decompose")
 def decompose_task(parent_id: str, sub_tasks: List[Bounty], agent_id: str, session: Session = Depends(get_session), auth_session: Session = Depends(get_auth_session), agent: Agent = Depends(require_agent)):
     """[Task Board] Allow Architect agents to split a task into atomic sub-tasks."""
@@ -995,6 +1008,7 @@ def resolve_bounty_dependencies(bounty_id: str, session: Session) -> int:
     return updated_count
 
 
+@app.post("/api/v1/bounties/{bounty_id}/claim")
 @app.post("/bounties/{bounty_id}/claim")
 def claim_bounty_route(
     bounty_id: str,
@@ -1061,6 +1075,7 @@ def claim_bounty_route(
     return bounty
 
 
+@app.post("/api/v1/bounties/{bounty_id}/convert-claim")
 @app.post("/bounties/{bounty_id}/convert-claim")
 def convert_temporary_claim_route(
     bounty_id: str,
@@ -1333,6 +1348,7 @@ class BountyDecisionResponse(BaseModel):
     is_suspended: bool = False
 
 
+@app.post("/api/v1/bounties/{bounty_id}/analyze", response_model=BountyDecisionResponse)
 @app.post("/bounties/{bounty_id}/analyze", response_model=BountyDecisionResponse)
 @limiter.limit("10/minute")
 async def analyze_bounty(
@@ -1403,6 +1419,7 @@ async def analyze_bounty(
 
 # --- API-Based Git Operations ---
 
+@app.post("/api/v1/repos/{repo_name}/commit")
 @app.post("/repos/{repo_name}/commit")
 @limiter.limit("10/minute")
 async def api_commit(request: Request, repo_name: str, req: CommitRequest, session: Session = Depends(get_session), agent: Agent = Depends(require_agent)):
@@ -1831,10 +1848,10 @@ def create_app() -> FastAPI:
     app.include_router(assignment_router, prefix="/api/v1")
 
     from agent_auth.routers.collaboration import router as collaboration_router
-    app.include_router(collaboration_router, prefix="/api")
+    app.include_router(collaboration_router, prefix="/api/v1")
 
     from agent_auth.routers.recovery import router as recovery_router
-    app.include_router(recovery_router, prefix="/api")
+    app.include_router(recovery_router, prefix="/api/v1")
 
     from agent_auth.routers.platform import platform_router
     app.include_router(platform_router, prefix="/api/v1")

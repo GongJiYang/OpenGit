@@ -17,7 +17,7 @@ from sqlmodel import Session
 from ..database import get_db
 from ..services.collaboration_service import CollaborationService
 
-router = APIRouter(prefix="/v1/collaboration", tags=["collaboration"])
+router = APIRouter(prefix="/collaboration", tags=["collaboration"])
 
 # Global collaboration service instance (per-session would be better for production)
 _collaboration_services: dict = {}
