@@ -1,3 +1,4 @@
+# ruff: noqa: E402
 import sys
 import os
 import re
@@ -43,15 +44,17 @@ from agent_auth.utils import verify_api_key, get_api_key_prefix, get_legacy_api_
 from agent_auth.validators import get_validator
 from agent_auth.services.penalty_service import PenaltyService
 from agent_auth.services.user_auth import UserAuthService
-from persistence import Bounty, CommitRecord, get_session, create_db_and_tables
+from persistence import Bounty, CommitRecord, get_session
 from git_tree_service import GitTreeService
-
+from agent_auth.services.memory_service import memory_service
+from contextlib import asynccontextmanager
 # --- Execution & Cost Guards ---
 # [Blind-Spot 2] Global Concurrency Limit
 MAX_CONCURRENT_RUNS = int(os.getenv("MAX_CONCURRENT_RUNS", "3"))
 execution_semaphore = asyncio.Semaphore(MAX_CONCURRENT_RUNS)
 
-from datetime import date
+from datetime import date, datetime
+import time
 
 class DailyBudgetTracker:
     """Simple JSON-based daily budget tracker."""
@@ -111,15 +114,12 @@ budget_tracker = DailyBudgetTracker(limit=10.0)
 
 # --- Rate Limiting ---
 limiter = Limiter(key_func=get_remote_address)
-app = FastAPI(title="AgentHub API", version="0.1.0")
-app.state.limiter = limiter
-app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 # --- Request Size Limit (20MB) ---
 MAX_REQUEST_SIZE = 20 * 1024 * 1024  # 20MB
 
-@app.middleware("http")
-async def limit_request_size(request: Request, call_next):
+# Define middleware function; bind to app after creation
+async def limit_request_size_mw(request: Request, call_next):
     content_length = request.headers.get("content-length")
     if content_length and int(content_length) > MAX_REQUEST_SIZE:
         return JSONResponse(
@@ -128,27 +128,26 @@ async def limit_request_size(request: Request, call_next):
         )
     return await call_next(request)
 
-# Serve static files
+# Static/CORS paths
 STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
 PROMPT_DIR = os.path.join(os.path.dirname(__file__), "prompts")
-if os.path.exists(STATIC_DIR):
-    app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
-# --- CORS ---
-# In production, set this to your actual frontend domain
-FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:3000")
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=[FRONTEND_URL],
-    allow_origin_regex=r"http://localhost:.*",  # Support any localhost port for development
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# Defer app creation until after lifespan is defined below
 
 # --- Services Singleton ---
 STORE_ROOT = os.path.abspath("./agenthub_data/repos")
+
+def get_repo_manager(request: Request) -> RepoManager:
+    mgr = getattr(request.app.state, "repo_manager", None)
+    if not mgr:
+        raise HTTPException(status_code=500, detail="RepoManager not initialized")
+    return mgr
+
+def get_indexer(request: Request) -> Optional[VectorIndexer]:
+    return getattr(request.app.state, "indexer", None)
+
+def get_sandbox(request: Request) -> Optional[SubprocessSandbox]:
+    return getattr(request.app.state, "sandbox", None)
 
 def get_secure_repo_path(repo_name: str) -> str:
     """Ensures repo_name stays within STORE_ROOT."""
@@ -168,32 +167,48 @@ def validate_blob_path(path: str):
     if any(ch in path for ch in [":", "\\", "\x00"]) or path.startswith("-"):
         raise HTTPException(status_code=400, detail="Invalid file path")
 
-# Ensure dirs exist
-if not os.path.exists(STORE_ROOT):
-    os.makedirs(STORE_ROOT)
 
-# Initialize Databases
-from agent_auth.database import create_db_and_tables as init_auth_db
-create_db_and_tables() # Persistence DB
-init_auth_db()         # Agent Auth DB
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # 读取开关（默认关闭，测试安全）
+    enable_indexer = os.getenv("APP_ENABLE_INDEXER", "0") == "1"
+    enable_sandbox = os.getenv("APP_ENABLE_SANDBOX", "0") == "1"
 
-repo_manager = RepoManager(STORE_ROOT)
-# [AI-Note] Decoupled: Indexer will self-disable if ZHIPU_API_KEY is missing.
-indexer = VectorIndexer(collection_name="agenthub_prod", embedding_dim=1024)
-if not indexer.embedder.client:
-    print("ℹ️  [Core] Semantic Indexing is DISABLED (Missing ZHIPUAI_API_KEY). Running in Pure Git Mode.")
-else:
-    print("🧠 [Core] Semantic Indexing is ENABLED (Using Zhipu AI).")
-parser = PythonASTParser()
+    # 统一初始化到 app.state
+    app.state.store_root = os.path.abspath("./agenthub_data/repos")
+    os.makedirs(app.state.store_root, exist_ok=True)
 
-# Memory Store removed, using SQLite via SQLModel
+    app.state.repo_manager = RepoManager(app.state.store_root)
 
-# --- Security Configuration & Sandbox Selection ---
-# [AI-Note] E2B Cloud Sandbox has been removed. Using local SubprocessSandbox.
-# ⚠️ [Security] SubprocessSandbox is for local development and demonstration only.
-print("⚠️ [Core] INITIALIZING LOCAL SUBPROCESS SANDBOX.")
-print("⚠️ [Security] This mode provides NO isolation and should only be used with trusted code.")
-sandbox = SubprocessSandbox()
+    app.state.indexer = None
+    if enable_indexer:
+        idx = VectorIndexer(collection_name="agenthub_prod", embedding_dim=1024)
+        if not getattr(idx.embedder, "client", None):
+            # 缺密钥时不启
+            idx = None
+        app.state.indexer = idx
+
+    app.state.parser = PythonASTParser()
+
+    app.state.sandbox = SubprocessSandbox() if enable_sandbox else None
+
+    # 可选：按需启动 scheduler（多 pod 场景建议加开关 RUN_SCHEDULER=1）
+    if os.getenv("RUN_SCHEDULER") == "1":
+        from sqlmodel import Session as AuthSession
+        def session_factory():
+            return AuthSession(get_auth_engine())
+        start_scheduler(session_factory)
+
+    try:
+        yield
+    finally:
+        # 关闭 sandbox / scheduler
+        if os.getenv("RUN_SCHEDULER") == "1":
+            stop_scheduler()
+        # 如 indexer/sandbox 有 close()，在此清理
+
+# Create app early so route decorators can bind
+app = FastAPI(title="AgentHub API", version="0.1.0", lifespan=lifespan)
 
 # --- Models ---
 
@@ -216,6 +231,16 @@ class SystemStats(BaseModel):
     total_repos: int
     total_vectors: int
     system_load: str
+
+
+class MemoryStatusResponse(BaseModel):
+    enabled: bool
+    disabled_reason: Optional[str] = None
+    provider: str
+    collection_name: str
+    qdrant_mode: str
+    history_db_path: str
+    qdrant_path: Optional[str] = None
 
 class CommitRequest(BaseModel):
     """API-based commit payload."""
@@ -359,8 +384,8 @@ async def get_rules_guide():
     return {"error": "Rules guide not found"}
 
 @app.get("/roles/{role_name}/prompt")
-async def get_role_prompt(role_name: str, raw: bool = False):
-    """Return the system prompt for a given role."""
+async def get_role_prompt(role_name: str, agent_id: Optional[str] = None, query: Optional[str] = None, raw: bool = False):
+    """Return the system prompt for a given role, optionally injecting agent memories."""
     role = role_name.lower().strip()
     prompt_map = {
         "architect": "architect.md",
@@ -369,6 +394,7 @@ async def get_role_prompt(role_name: str, raw: bool = False):
         "executor": "executor.md",
         "librarian": "librarian.md",
         "observer": "librarian.md",
+        "tester": "tester.md",
     }
     filename = prompt_map.get(role)
     if not filename:
@@ -376,11 +402,30 @@ async def get_role_prompt(role_name: str, raw: bool = False):
     prompt_path = os.path.join(PROMPT_DIR, filename)
     if not os.path.exists(prompt_path):
         raise HTTPException(status_code=404, detail="Role prompt not found")
+
     if raw:
         return FileResponse(prompt_path, media_type="text/markdown")
+
     with open(prompt_path, "r", encoding="utf-8") as f:
         prompt = f.read()
+
+    # Inject Historical Memories if agent_id is provided
+    if agent_id:
+        memories = memory_service.get_memories(agent_id, query or f"{role} skills and preferences")
+        if memories:
+            memory_context = "\n\n### 🧠 RELEVANT HISTORICAL EXPERIENCE\n"
+            for i, mem in enumerate(memories):
+                content = mem.get("content", mem.get("text", ""))
+                memory_context += f"{i+1}. {content}\n"
+            prompt += memory_context
+
     return {"role": role, "prompt": prompt}
+
+
+@app.get("/api/v1/memory/status", response_model=MemoryStatusResponse)
+def get_memory_status():
+    """Expose whether persistent memory is configured and usable."""
+    return MemoryStatusResponse(**memory_service.status())
 
 @app.get("/stats", response_model=SystemStats)
 @limiter.limit("30/minute")
@@ -393,10 +438,11 @@ def get_stats(request: Request, auth_session: Session = Depends(get_auth_session
     ).all()
 
     total_vectors = 0
-    if indexer.client:
+    idx = get_indexer(request)
+    if idx and getattr(idx, "client", None):
         try:
-            total_vectors = indexer.client.count(
-                collection_name=indexer.collection_name,
+            total_vectors = idx.client.count(
+                collection_name=idx.collection_name,
                 exact=True
             ).count
         except Exception:
@@ -487,9 +533,9 @@ def list_agents(request: Request, auth_session: Session = Depends(get_auth_sessi
 @app.get("/repos")
 @limiter.limit("30/minute")
 def list_repos(request: Request):
-    if not os.path.exists(STORE_ROOT):
+    if not os.path.exists(request.app.state.store_root):
         return []
-    return [d for d in os.listdir(STORE_ROOT) if not d.startswith('.')]
+    return [d for d in os.listdir(request.app.state.store_root) if not d.startswith('.')]
 
 @app.post("/repos")
 @limiter.limit("10/minute")
@@ -498,24 +544,28 @@ def create_repo(request: Request, req: CreateRepoRequest, agent: Agent = Depends
     # Security validation
     get_secure_repo_path(req.name)
     try:
-        path = repo_manager.create_repo(req.name)
+        path = request.app.state.repo_manager.create_repo(req.name)
         return {"id": req.name, "path": path, "status": "created"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/index")
-def index_code(repo_name: str, file_path: str, content: str = Body(..., media_type="text/plain"), agent: Agent = Depends(require_agent)):
+def index_code(request: Request, repo_name: str, file_path: str, content: str = Body(..., media_type="text/plain"), agent: Agent = Depends(require_agent)):
     """
     Manually index code content.
     """
     get_secure_repo_path(repo_name)
+    parser = getattr(request.app.state, "parser", None)
+    idx = get_indexer(request)
+    if not parser or not idx:
+        return {"indexed_chunks": 0}
     chunks = parser.parse(content)
     for c in chunks:
-        indexer.index_chunk(repo_name, file_path, c)
+        idx.index_chunk(repo_name, file_path, c)
     return {"indexed_chunks": len(chunks)}
 
 @app.get("/search", response_model=List[SearchResponse])
-def search_code(query: str, repo_id: Optional[str] = None, limit: int = 3, offset: int = 0):
+def search_code(request: Request, query: str, repo_id: Optional[str] = None, limit: int = 3, offset: int = 0):
     """Semantic search for code chunks."""
     if limit < 1:
         raise HTTPException(status_code=400, detail="limit must be >= 1")
@@ -525,7 +575,10 @@ def search_code(query: str, repo_id: Optional[str] = None, limit: int = 3, offse
         raise HTTPException(status_code=400, detail="offset must be >= 0")
 
     fetch_limit = min(limit + offset, 50)
-    results = indexer.search(query, limit=fetch_limit, repo_id=repo_id)
+    idx = get_indexer(request)
+    if not idx:
+        return []
+    results = idx.search(query, limit=fetch_limit, repo_id=repo_id)
     results = results[offset:offset + limit] if offset else results[:limit]
     response = []
     for r in results:
@@ -551,7 +604,10 @@ def verify_repo(request: Request, repo_name: str, cmd: str = "pytest", agent: Ag
          )
 
     repo_path = get_secure_repo_path(repo_name)
-    exit_code, output = sandbox.run_tests(repo_path, cmd)
+    sb = get_sandbox(request)
+    if not sb:
+        raise HTTPException(status_code=503, detail="Sandbox is disabled")
+    exit_code, output = sb.run_tests(repo_path, cmd)
     return {
         "repo": repo_name,
         "exit_code": exit_code,
@@ -1453,10 +1509,13 @@ async def api_commit(request: Request, repo_name: str, req: CommitRequest, sessi
                 verification_mode = (bounty.verification_mode or "auto").lower()
                 test_cmd = bounty.test_command or "pytest"
                 if verification_mode == "auto":
+                    sb = get_sandbox(request)
+                    if sb is None:
+                        raise HTTPException(status_code=503, detail="Sandbox is disabled")
                     print(f"🛠️ [Automation] Running validation for Bounty {bounty.id}: {test_cmd}")
                     try:
                         async with execution_semaphore:
-                             v_exit_code, v_stdout = sandbox.run_tests(bare_repo_path, test_cmd)
+                             v_exit_code, v_stdout = sb.run_tests(bare_repo_path, test_cmd)
                     except Exception as e:
                         v_exit_code, v_stdout = -1, f"Execution failed under semaphore: {str(e)}"
                 elif verification_mode == "human":
@@ -1603,6 +1662,30 @@ def submit_blackbox_test(commit_id: int, report: BlackboxReport, session: Sessio
     record.blackbox_report = report.model_dump()
     record.blackbox_status = "passed" if report.overall_verdict.upper() == "PASS" else "failed"
 
+    # Auto-extract memory from test report for the agent
+    agent_id = getattr(identity, "agent_id", None)
+    if not agent_id and hasattr(identity, "id"): # Fallback to database ID if agent_id string is missing
+        agent_id = f"agent-{identity.id}"
+
+    if agent_id:
+        passed_count = sum(1 for r in report.results if r.passed)
+        memory_content = (
+            f"Blackbox test performed on {record.repo_name} (Verdict: {record.blackbox_status.upper()}). "
+            f"Tested endpoint: {report.endpoint}. Success: {passed_count}/{len(report.results)}. "
+        )
+        failed_tests = [f"{r.method} {r.api_path}" for r in report.results if not r.passed]
+        if failed_tests:
+            memory_content += f"Failed patterns: {', '.join(failed_tests)}."
+
+        try:
+            memory_service.add_memory(agent_id, memory_content, metadata={
+                "commit_id": commit_id,
+                "repo": record.repo_name,
+                "role": "tester"
+            })
+        except Exception as e:
+            print(f"⚠️ Failed to store memory from report: {e}")
+
     # Auto-merge if blackbox test passed
     if record.blackbox_status == "passed":
         record.status = "approved"
@@ -1673,7 +1756,8 @@ async def verify_commit_external(commit_id: int, request: Request, req: Verifica
     expected_secret = os.getenv("EXTERNAL_CI_SECRET")
     if expected_secret:
         body_bytes = await request.body()
-        import hmac, hashlib
+        import hmac
+        import hashlib
         computed = hmac.new(expected_secret.encode("utf-8"), body_bytes, hashlib.sha256).hexdigest()
         if not x_ci_signature or not hmac.compare_digest(x_ci_signature, computed):
             raise HTTPException(status_code=401, detail="Invalid CI signature")
@@ -1718,51 +1802,60 @@ def get_leaderboard(session: Session = Depends(get_session)):
 
     return sorted(leaderboard, key=lambda x: float(x["success_rate"].replace('%','')), reverse=True)
 
-# --- Router Registration ---
-app.include_router(agent_router)
-app.include_router(claim_router)
-app.include_router(wechat_router)
-app.include_router(meta_router)
+# --- App Factory ---
 
-# Assignment Router (Smart Task Assignment)
-from agent_auth.routers.assignment import router as assignment_router
-app.include_router(assignment_router, prefix="/api/v1")
+def create_app() -> FastAPI:
+    # Use the already-created global app (routes are bound via decorators above)
+    global app
 
-# Collaboration Router (Multi-Agent Collaboration)
-from agent_auth.routers.collaboration import router as collaboration_router
-app.include_router(collaboration_router, prefix="/api")
+    # rate limit
+    app.state.limiter = limiter
+    app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
-# Recovery Router (Failure Recovery & Human Review)
-from agent_auth.routers.recovery import router as recovery_router
-app.include_router(recovery_router, prefix="/api")
+    # middleware
+    app.middleware("http")(limit_request_size_mw)
 
-# Platform Router (User Auth, Repo Management)
-from agent_auth.routers.platform import platform_router
-app.include_router(platform_router, prefix="/api/v1")
+    # static
+    if os.path.exists(STATIC_DIR):
+        app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
-# Runner Router (Self-Hosted Compute Network)
-from agent_auth.routers.runner import router as runner_router
-app.include_router(runner_router, prefix="/api/v1")
+    # CORS
+    frontend_url = os.getenv("FRONTEND_URL", "http://localhost:3000")
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=[frontend_url],
+        allow_origin_regex=r"http://localhost:.*",
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
 
-@app.on_event("startup")
-def start_background_jobs():
-    from sqlmodel import Session as AuthSession
-    def session_factory():
-        return AuthSession(get_auth_engine())
-    start_scheduler(session_factory)
+    # routers
+    app.include_router(agent_router)
+    app.include_router(claim_router)
+    app.include_router(wechat_router)
+    app.include_router(meta_router)
 
-@app.on_event("shutdown")
-def stop_background_jobs():
-    stop_scheduler()
+    from agent_auth.routers.assignment import router as assignment_router
+    app.include_router(assignment_router, prefix="/api/v1")
+
+    from agent_auth.routers.collaboration import router as collaboration_router
+    app.include_router(collaboration_router, prefix="/api")
+
+    from agent_auth.routers.recovery import router as recovery_router
+    app.include_router(recovery_router, prefix="/api")
+
+    from agent_auth.routers.platform import platform_router
+    app.include_router(platform_router, prefix="/api/v1")
+
+    from agent_auth.routers.runner import router as runner_router
+    app.include_router(runner_router, prefix="/api/v1")
+
+    return app
+
+# Backward-compatible module-level app
+app = create_app()
 
 if __name__ == "__main__":
     import uvicorn
-    # Create DB tables on startup
-    print("🚀 Initializing databases with WAL mode...")
-    from persistence import create_db_and_tables
-    # Since agent_auth.database has the same function name, import it locally
-    from agent_auth.database import create_db_and_tables as create_auth_tables
-    create_db_and_tables()
-    create_auth_tables()
-
     uvicorn.run(app, host="0.0.0.0", port=8000)
