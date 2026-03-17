@@ -14,7 +14,7 @@ spec:
     spec:
       containers:
         - name: api-gateway
-          image: ghcr.io/your-org/opengit-api-gateway:latest
+          image: ghcr.io/opengit-dev/opengit-api-gateway:REPLACED_BY_KUSTOMIZE
           ports:
             - containerPort: 8000
           envFrom:
