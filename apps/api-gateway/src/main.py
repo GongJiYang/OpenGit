@@ -731,7 +731,7 @@ def create_bounty(request: Request, bounty: CreateBountyRequest, session: Sessio
     repo_name = sanitize_text(bounty.repo_name, 100)
 
     # Validate required_role
-    VALID_ROLES = ["architect", "contributor", "executor", "tester", "librarian"]
+    VALID_ROLES = ["architect", "contributor", "reviewer", "executor", "tester", "librarian", "observer"]
     if bounty.required_role and bounty.required_role.lower() not in VALID_ROLES:
         raise HTTPException(status_code=400, detail=f"Invalid role: {bounty.required_role}")
 
