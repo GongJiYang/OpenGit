@@ -32,6 +32,7 @@ from ..utils import (
     calculate_claim_expiration,
     verify_api_key,
     sanitize_agent_name,
+    is_valid_api_key_format,
 )
 from ..utils.heartbeat_cache import get_heartbeat_cache
 from ..database import get_db
@@ -94,7 +95,7 @@ def get_session():
 # ============== API Key Authentication ==============
 
 async def get_current_agent(
-    x_api_key: str = Header(..., description="Agent API Key"),
+    x_api_key: str = Header(..., alias="X-API-Key", description="Agent API Key"),
     session: Session = Depends(get_session)
 ) -> Agent:
     """
@@ -107,6 +108,13 @@ async def get_current_agent(
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Missing API Key. Include X-API-Key header."
+        )
+
+    # Validate API key format early (consistency with main.py)
+    if not is_valid_api_key_format(x_api_key):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid API Key format."
         )
 
     # Get prefix for lookup
@@ -140,6 +148,15 @@ async def get_current_agent(
 
     return agent
 
+async def get_claimed_agent(
+    agent: Agent = Depends(get_current_agent)
+) -> Agent:
+    if agent.status != AgentStatus.CLAIMED:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Agent is not claimed. Complete the claim process to continue."
+        )
+    return agent
 
 # ============== Registration Endpoint ==============
 
@@ -263,7 +280,7 @@ async def get_agent_status(
 )
 async def send_heartbeat(
     request: HeartbeatRequest,
-    agent: Agent = Depends(get_current_agent),
+    agent: Agent = Depends(get_claimed_agent),
     session: Session = Depends(get_session)
 ) -> HeartbeatResponse:
     """
@@ -299,7 +316,7 @@ async def send_heartbeat(
     description="Get detailed information about the authenticated agent.",
 )
 async def get_current_agent_info(
-    agent: Agent = Depends(get_current_agent)
+    agent: Agent = Depends(get_claimed_agent)
 ) -> AgentStatusResponse:
     """Alias for /status endpoint."""
     return await get_agent_status(agent)
