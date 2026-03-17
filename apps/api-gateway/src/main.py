@@ -603,11 +603,19 @@ def verify_repo(request: Request, repo_name: str, cmd: str = "pytest", agent: Ag
              detail=f"Command '{base_cmd}' is not allowed. Supported: {ALLOWED_TEST_COMMANDS}"
          )
 
-    repo_path = get_secure_repo_path(repo_name)
+    bare_repo_path = get_secure_repo_path(repo_name)
     sb = get_sandbox(request)
     if not sb:
         raise HTTPException(status_code=503, detail="Sandbox is disabled")
-    exit_code, output = sb.run_tests(repo_path, cmd)
+
+    # Clone bare repo to a temporary working directory so tests have a worktree
+    work_dir = tempfile.mkdtemp(prefix="agenthub_verify_")
+    try:
+        subprocess.run(["git", "clone", bare_repo_path, work_dir], check=True, capture_output=True)
+        exit_code, output = sb.run_tests(work_dir, cmd)
+    finally:
+        shutil.rmtree(work_dir, ignore_errors=True)
+
     return {
         "repo": repo_name,
         "exit_code": exit_code,
@@ -1515,7 +1523,13 @@ async def api_commit(request: Request, repo_name: str, req: CommitRequest, sessi
                     print(f"🛠️ [Automation] Running validation for Bounty {bounty.id}: {test_cmd}")
                     try:
                         async with execution_semaphore:
-                             v_exit_code, v_stdout = sb.run_tests(bare_repo_path, test_cmd)
+                             # Use a temporary worktree cloned from the bare repo for running tests
+                             work_dir = tempfile.mkdtemp(prefix="agenthub_auto_verify_")
+                             try:
+                                 subprocess.run(["git", "clone", bare_repo_path, work_dir], check=True, capture_output=True)
+                                 v_exit_code, v_stdout = sb.run_tests(work_dir, test_cmd)
+                             finally:
+                                 shutil.rmtree(work_dir, ignore_errors=True)
                     except Exception as e:
                         v_exit_code, v_stdout = -1, f"Execution failed under semaphore: {str(e)}"
                 elif verification_mode == "human":
