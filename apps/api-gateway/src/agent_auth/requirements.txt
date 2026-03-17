@@ -9,6 +9,9 @@ sqlmodel>=0.0.14
 bcrypt>=4.1.0              # API key hashing
 httpx>=0.25.0              # GitHub OAuth HTTP client
 apscheduler>=3.10.0        # Background task scheduling
+mem0ai>=1.0.5              # Agent persistent memory
+qdrant-client>=1.9.0       # Vector store backend
+zhipuai>=2.0.0             # ZhipuAI LLM + embeddings for mem0
 
 # User Authentication (JWT + Password)
 python-jose[cryptography]>=3.3.0   # JWT token generation

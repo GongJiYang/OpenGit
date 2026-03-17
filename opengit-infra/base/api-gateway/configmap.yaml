@@ -5,3 +5,6 @@ metadata:
 data:
   APP_ENV: "production"
   QDRANT_URL: ":memory:"
+  APP_ENABLE_INDEXER: "0"
+  APP_ENABLE_SANDBOX: "0"
+  RUN_SCHEDULER: "0"
