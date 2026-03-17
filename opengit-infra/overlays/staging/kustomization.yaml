@@ -3,6 +3,7 @@ kind: Kustomization
 
 resources:
   - ../../base
+  - job-migrate.yaml
 
 images:
   - name: ghcr.io/opengit-dev/opengit-api-gateway
