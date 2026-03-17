@@ -89,6 +89,45 @@ jobs:
           git commit -m "deploy: ${GITHUB_SHA}.${{ github.run_number }}" || exit 0
           git push
 
+      - name: Sync GitOps repo (jobs/config)
+        env:
+          GITOPS_TOKEN: ${{ secrets.INFRA_REPO_TOKEN }}
+        run: |
+          # Ensure gitops clone from previous step exists
+          if [ ! -d gitops ]; then
+            git clone https://$GITOPS_TOKEN@github.com/$INFRA_REPO.git gitops
+          fi
+          # Sync Job manifests and ConfigMap from app repo to infra repo
+          cp -f opengit-infra/overlays/dev/job-migrate.yaml gitops/overlays/dev/job-migrate.yaml || true
+          cp -f opengit-infra/overlays/staging/job-migrate.yaml gitops/overlays/staging/job-migrate.yaml || true
+          cp -f opengit-infra/overlays/prod/job-migrate.yaml gitops/overlays/prod/job-migrate.yaml || true
+          cp -f opengit-infra/base/api-gateway/configmap.yaml gitops/base/api-gateway/configmap.yaml || true
+          cd gitops
+          git config user.name "gitops-bot"
+          git config user.email "gitops-bot@users.noreply.github.com"
+          git add overlays/dev/job-migrate.yaml overlays/staging/job-migrate.yaml overlays/prod/job-migrate.yaml base/api-gateway/configmap.yaml
+          git commit -m "infra: sync job-migrate + configmap from app repo" || exit 0
+          git push
+
+      - name: Update GitOps repo (staging)
+        env:
+          GITOPS_TOKEN: ${{ secrets.INFRA_REPO_TOKEN }}
+        run: |
+          if [ -z "$INFRA_REPO" ]; then
+            echo "INFRA_REPO secret is not set (e.g., your-org/opengit-infra)"
+            exit 1
+          fi
+          IMAGE_TAG="${GITHUB_SHA}.${{ github.run_number }}"
+          cd gitops/overlays/staging
+          kustomize edit set image ghcr.io/opengit-dev/opengit-api-gateway=ghcr.io/opengit-dev/opengit-api-gateway:$IMAGE_TAG
+          kustomize edit set image ghcr.io/opengit-dev/opengit-observer-ui=ghcr.io/opengit-dev/opengit-observer-ui:$IMAGE_TAG
+          cd ../..
+          git config user.name "gitops-bot"
+          git config user.email "gitops-bot@users.noreply.github.com"
+          git add overlays/staging/kustomization.yaml
+          git commit -m "deploy: ${GITHUB_SHA}.${{ github.run_number }} (staging)" || exit 0
+          git push
+
       - name: Update GitOps repo (prod)
         env:
           GITOPS_TOKEN: ${{ secrets.INFRA_REPO_TOKEN }}
