@@ -8,8 +8,8 @@ resources:
 images:
   - name: ghcr.io/opengit-dev/opengit-api-gateway
     newTag: REPLACED_BY_CI
-  - name: ghcr.io/GongJiYang/opengit-observer-ui
-    newTag: staging
+  - name: ghcr.io/opengit-dev/opengit-observer-ui
+    newTag: REPLACED_BY_CI
 
 patches:
   - path: patches.yaml
