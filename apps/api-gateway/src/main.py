@@ -96,7 +96,8 @@ class DailyBudgetTracker:
                 json.dump(data, f)
             return True
         except Exception:
-            return True
+            # Fail-closed: if budget file ops fail, deny execution to preserve cost guard
+            return False
         finally:
             if lockf:
                 try:
