@@ -27,7 +27,7 @@ COPY apps/api-gateway/alembic /app/apps/api-gateway/alembic
 EXPOSE 8000
 
 # Copy entrypoint and set permissions
-COPY entrypoint.sh /app/entrypoint.sh
+COPY apps/api-gateway/entrypoint.sh /app/entrypoint.sh
 RUN chmod +x /app/entrypoint.sh
 
 # Set Working Directory back to repo root (factory import uses PYTHONPATH=/app)
