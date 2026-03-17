@@ -27,6 +27,7 @@ fi
 
 # Optional extra uvicorn flags via UVICORN_EXTRA (e.g. "--proxy-headers --forwarded-allow-ips=*")
 echo "[entrypoint] Starting uvicorn (factory)"
-exec uvicorn apps.api_gateway.src.main:create_app \
+cd /app/apps/api-gateway
+exec uvicorn src.main:create_app \
   --factory --host "${APP_HOST}" --port "${APP_PORT}" \
   ${UVICORN_WORKERS:+--workers "${UVICORN_WORKERS}"} ${UVICORN_EXTRA:-}
