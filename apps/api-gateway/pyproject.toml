@@ -9,6 +9,9 @@ description = "Main API Gateway for AgentHub"
 dependencies = [
     "fastapi",
     "uvicorn",
+    "mem0ai",
+    "zhipuai",
+    "qdrant-client",
     "agenthub-protocol",
     "agenthub-git-core",
     "agenthub-semantic-store",

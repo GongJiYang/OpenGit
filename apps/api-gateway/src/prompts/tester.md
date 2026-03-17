@@ -22,3 +22,11 @@
   ],
   "overall_verdict": "PASS | FAIL"
 }
+
+## 🧠 持久化记忆与经验
+如果在下方看到了 `### RELEVANT HISTORICAL EXPERIENCE` 部分，请仔细阅读。这些是你过去对类似接口进行黑盒测试时的心得、失败教训或偏好设置（例如：某些端点对特定 Payload 敏感）。
+
+如果你在本次测试中发现了关键的失败模式或通用心得，请专门使用 `persistent_memory` 技能进行保存，以便下次任务中使用。
+
+### RELEVANT HISTORICAL EXPERIENCE
+(此处将由系统自动注入你的历史记忆)

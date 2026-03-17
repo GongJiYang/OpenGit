@@ -11,7 +11,7 @@ COPY services /app/services
 COPY apps/api-gateway /app/apps/api-gateway
 
 # Install dependencies
-RUN pip install fastapi uvicorn pydantic python-multipart gitpython requests httpx numpy zhipuai qdrant-client slowapi sqlmodel 'bcrypt>=4.0.1,<5.0.0' passlib python-jose[cryptography] apscheduler sniffio psycopg2-binary aiohttp
+RUN pip install fastapi uvicorn pydantic python-multipart gitpython requests httpx numpy zhipuai qdrant-client mem0ai slowapi sqlmodel 'bcrypt>=4.0.1,<5.0.0' passlib python-jose[cryptography] apscheduler sniffio psycopg2-binary aiohttp
 
 # Install Protocol Package
 RUN pip install /app/packages/protocol
@@ -22,5 +22,15 @@ WORKDIR /app/apps/api-gateway
 # Expose Port
 EXPOSE 8000
 
-# Run Uvicorn
-CMD ["uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", "8000"]
+# Copy entrypoint and set permissions
+COPY entrypoint.sh /app/entrypoint.sh
+RUN chmod +x /app/entrypoint.sh
+
+# Set Working Directory back to repo root (factory import uses PYTHONPATH=/app)
+WORKDIR /app
+
+# Expose Port
+EXPOSE 8000
+
+# Use entrypoint (with placeholders)
+ENTRYPOINT ["/app/entrypoint.sh"]
