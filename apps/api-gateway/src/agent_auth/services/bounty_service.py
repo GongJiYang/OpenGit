@@ -163,7 +163,6 @@ class BountyService:
             )
 
         # Step 6: Repository membership (if repo_id exists)
-        repo_member = None
         repo = None
         if bounty.repo_id:
             repo = self.auth_session.get(Repo, bounty.repo_id)
@@ -175,7 +174,6 @@ class BountyService:
                         error_code="MEMBERSHIP_REQUIRED",
                         error_message=f"Must join repository '{repo.full_name}' before claiming"
                     )
-                repo_member = membership
 
         # All checks passed
         return ClaimEligibility(
@@ -333,7 +331,10 @@ class BountyService:
         """
         Convert a temporary claim to permanent (user logged in).
 
-        This validates the agent can claim the bounty and removes the temporary flag.
+        Notes:
+        - Temporary claims set bounty.status to 'in_progress'.
+        - We MUST NOT require 'open' status during conversion.
+        - We still validate agent existence/status/role and optional repo membership.
 
         Returns: (bounty, error_message)
         """
@@ -347,16 +348,35 @@ class BountyService:
         if str(bounty.assignee) != str(agent_id):
             return None, "Agent ID mismatch - this claim belongs to another agent"
 
-        # Validate full claim eligibility (with agent validation)
-        eligibility = self.validate_claim_eligibility(bounty_id, agent_id)
-        if not eligibility.is_eligible:
-            return None, eligibility.error_message
+        # Check expiration
+        now = datetime.utcnow()
+        if bounty.claim_expires_at and bounty.claim_expires_at <= now:
+            return None, "Temporary claim has expired"
 
-        # Convert to permanent claim
+        # Validate agent
+        agent = self._resolve_agent(agent_id)
+        if not agent:
+            return None, "Agent not found in registry"
+        if agent.status == AgentStatus.SUSPENDED:
+            return None, "Agent is suspended"
+
+        # Role match
+        if bounty.required_role and agent.role.lower() != bounty.required_role.lower():
+            return None, f"This task requires role '{bounty.required_role}', agent has '{agent.role}'"
+
+        # Optional: repository membership if repo_id present
+        if bounty.repo_id:
+            repo = self.auth_session.get(Repo, bounty.repo_id)
+            if repo:
+                membership = self._check_repo_membership(repo.id, agent.id)
+                if not membership:
+                    return None, f"Must join repository '{repo.full_name}' before claiming"
+
+        # Convert to permanent claim (keep status as-is, typically 'in_progress')
         bounty.is_temporary_claim = False
         bounty.claim_expires_at = None
         bounty.claimed_by_user_id = str(user_id)
-        bounty.updated_at = datetime.utcnow()
+        bounty.updated_at = now
 
         self.bounty_session.add(bounty)
         self.bounty_session.commit()
@@ -377,7 +397,7 @@ class BountyService:
 
         # Find expired temporary claims
         statement = select(Bounty).where(
-            Bounty.is_temporary_claim == True,
+            Bounty.is_temporary_claim.is_(True),
             Bounty.claim_expires_at < now,
             Bounty.status == "in_progress"
         )
