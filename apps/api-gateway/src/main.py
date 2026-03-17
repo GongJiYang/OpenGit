@@ -548,7 +548,9 @@ def create_repo(request: Request, req: CreateRepoRequest, agent: Agent = Depends
         path = request.app.state.repo_manager.create_repo(req.name)
         return {"id": req.name, "path": path, "status": "created"}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        # Avoid leaking internal error details to clients
+        print(f"[create_repo] error: {type(e).__name__}: {e}")
+        raise HTTPException(status_code=500, detail="Failed to create repository")
 
 @app.post("/index")
 def index_code(request: Request, repo_name: str, file_path: str, content: str = Body(..., media_type="text/plain"), agent: Agent = Depends(require_agent)):
@@ -1487,7 +1489,9 @@ async def api_commit(request: Request, repo_name: str, req: CommitRequest, sessi
         )
 
         if result.returncode != 0:
-            return {"success": False, "error": result.stderr}
+            # Avoid leaking git stderr to clients
+            print(f"[commit] git push failed: {result.stderr[:2000] if result.stderr else ''}")
+            return {"success": False, "error": "Git push failed"}
 
         # --- Automated Verification (P1 MVP) ---
         v_exit_code = None
@@ -1587,7 +1591,10 @@ async def api_commit(request: Request, repo_name: str, req: CommitRequest, sessi
         }
 
     except subprocess.CalledProcessError as e:
-        return {"success": False, "error": f"Git operation failed: {e.stderr.decode() if e.stderr else str(e)}"}
+        # Avoid leaking raw stderr to clients
+        err_msg = e.stderr.decode(errors="replace")[:2000] if getattr(e, "stderr", None) else str(e)
+        print(f"[commit] git operation failed: {err_msg}")
+        return {"success": False, "error": "Git operation failed"}
     except HTTPException:
         raise  # Re-raise HTTP exceptions (403, 404, etc.)
     except Exception as e:
