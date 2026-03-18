@@ -1018,12 +1018,16 @@ def resolve_bounty_dependencies(bounty_id: str, session: Session) -> int:
     # Case 1: pending bounties
     pending_bounties = session.exec(
         select(Bounty).where(
-            Bounty.status == BountyStatus.PENDING.value,
-            Bounty.dependencies.contains([bounty_id])
+            Bounty.status == BountyStatus.PENDING.value
         )
     ).all()
 
     for bounty in pending_bounties:
+        # Skip if this bounty does not depend on the completed bounty_id
+        if bounty.dependencies and bounty_id not in bounty.dependencies:
+            continue
+
+        # Check all dependencies are completed
         all_deps_completed = True
         for dep_id in bounty.dependencies:
             dep_bounty = session.get(Bounty, dep_id)
@@ -1046,12 +1050,15 @@ def resolve_bounty_dependencies(bounty_id: str, session: Session) -> int:
     # Case 2: ready_for_preparation bounties (with or without assignee)
     preparable_bounties = session.exec(
         select(Bounty).where(
-            Bounty.status == BountyStatus.READY_FOR_PREPARATION.value,
-            Bounty.dependencies.contains([bounty_id])
+            Bounty.status == BountyStatus.READY_FOR_PREPARATION.value
         )
     ).all()
 
     for bounty in preparable_bounties:
+        # Skip if this bounty does not depend on the completed bounty_id
+        if bounty.dependencies and bounty_id not in bounty.dependencies:
+            continue
+
         all_deps_completed = True
         for dep_id in bounty.dependencies:
             dep_bounty = session.get(Bounty, dep_id)
