@@ -136,11 +136,12 @@ async def get_task_recommendations(
         raise HTTPException(status_code=404, detail="Bounty not found")
 
     # Get match summary
+    req_role = bounty.required_role.value if hasattr(bounty.required_role, "value") else bounty.required_role
     summary = get_task_match_summary(
         session=session,
         bounty_id=bounty_id,
         bounty_title=bounty.title,
-        required_role=bounty.required_role,
+        required_role=req_role,
         track=bounty.track,
     )
 
@@ -176,9 +177,10 @@ async def auto_assign_task(
         )
 
     # Find best agent
+    role_str = bounty.required_role.value if hasattr(bounty.required_role, "value") else bounty.required_role
     best_match = find_best_agent(
         session=session,
-        required_role=bounty.required_role,
+        required_role=role_str,
         track=bounty.track,
     )
 

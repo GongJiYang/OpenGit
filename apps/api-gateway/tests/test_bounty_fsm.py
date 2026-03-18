@@ -30,7 +30,7 @@ def create_bounty(s: Session, title: str = "T", status: str = BountyStatus.OPEN.
         description="",
         reward=1,
         repo_name="owner/repo",
-        required_role="contributor",
+        required_role="contributor",  # stored as string in model; DB CHECK enforces allowed set
         status=status,
         dependencies=kwargs.pop("dependencies", []),
         assignee=kwargs.pop("assignee", None),

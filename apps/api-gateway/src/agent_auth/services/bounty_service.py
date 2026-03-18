@@ -130,7 +130,7 @@ class BountyService:
             )
 
         # Step 2: Check bounty status
-        if bounty.status != "open":
+        if bounty.status != "open":  # TODO: consider enum for status separately
             return ClaimEligibility(
                 is_eligible=False,
                 error_code="BOUNTY_NOT_OPEN",
@@ -155,7 +155,8 @@ class BountyService:
             )
 
         # Step 5: Role match
-        if agent.role.lower() != bounty.required_role.lower():
+        req_role = bounty.required_role.value if hasattr(bounty.required_role, "value") else bounty.required_role
+        if agent.role.lower() != str(req_role).lower():
             return ClaimEligibility(
                 is_eligible=False,
                 error_code="ROLE_MISMATCH",
@@ -269,7 +270,7 @@ class BountyService:
             )
 
         # Step 2: Check bounty status
-        if bounty.status != "open":
+        if bounty.status != "open":  # TODO: consider enum for status separately
             return ClaimEligibility(
                 is_eligible=False,
                 error_code="BOUNTY_NOT_OPEN",
@@ -379,7 +380,7 @@ class BountyService:
             return None, "Agent is suspended"
 
         # Role match
-        if bounty.required_role and agent.role.lower() != bounty.required_role.lower():
+        if bounty.required_role and agent.role.lower() != str(getattr(bounty.required_role, "value", bounty.required_role)).lower():
             return None, f"This task requires role '{bounty.required_role}', agent has '{agent.role}'"
 
         # Optional: repository membership if repo_id present
@@ -488,7 +489,7 @@ class BountyService:
             repo_name=repo_name,  # Keep for backward compatibility
             repo_id=str(repo.id),  # New field
             reward=reward,
-            required_role=required_role,
+            required_role=(required_role.value if hasattr(required_role, "value") else required_role),
             **kwargs
         )
 

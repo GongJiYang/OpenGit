@@ -13,6 +13,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, ConfigDict
+from agent_auth.models.platform import RepoRole
 from pydantic import BaseModel as _BaseModel  # noqa: F401
 from sqlmodel import Session, select
 from slowapi import Limiter, _rate_limit_exceeded_handler
@@ -234,7 +235,7 @@ class CreateBountyRequest(BaseModel):
     reward: int
     repo_name: str
     repo_id: Optional[str] = None
-    required_role: str  # architect | contributor | executor
+    required_role: RepoRole  # enum
     estimated_hours: Optional[int] = None
     track: Optional[str] = None
     test_command: Optional[str] = "pytest"
@@ -690,7 +691,7 @@ def get_repo_file(repo_name: str, path: str):
 @app.get("/api/v1/bounties")
 @app.get("/bounties")
 @limiter.limit("60/minute")
-def list_bounties(request: Request, status: Optional[str] = None, repo_name: Optional[str] = None, required_role: Optional[str] = None, session: Session = Depends(get_session)):
+def list_bounties(request: Request, status: Optional[str] = None, repo_name: Optional[str] = None, required_role: Optional[RepoRole] = None, session: Session = Depends(get_session)):
     """List bounties. Defaults to open if no status specified.
 
     Query params:
@@ -706,7 +707,7 @@ def list_bounties(request: Request, status: Optional[str] = None, repo_name: Opt
     if repo_name:
         stmt = stmt.where(Bounty.repo_name == repo_name)
     if required_role:
-        stmt = stmt.where(Bounty.required_role == required_role)
+        stmt = stmt.where(Bounty.required_role == required_role.value if hasattr(required_role, "value") else required_role)
     return session.exec(stmt).all()
 
 @app.post("/api/v1/bounties")
@@ -744,10 +745,12 @@ def create_bounty(request: Request, bounty: CreateBountyRequest, session: Sessio
     description = sanitize_text(bounty.description or "", 2000)
     repo_name = sanitize_text(bounty.repo_name, 100)
 
-    # Validate required_role
-    VALID_ROLES = ["architect", "contributor", "reviewer", "executor", "tester", "librarian", "observer"]
-    if bounty.required_role and bounty.required_role.lower() not in VALID_ROLES:
-        raise HTTPException(status_code=400, detail=f"Invalid role: {bounty.required_role}")
+    # Validate required_role (enum coerces from string)
+    if not isinstance(bounty.required_role, RepoRole):
+        try:
+            bounty.required_role = RepoRole(str(bounty.required_role).lower())
+        except Exception:
+            raise HTTPException(status_code=400, detail=f"Invalid role: {bounty.required_role}")
 
     # Repo membership/ownership check (must be repo member or owner)
     from agent_auth.models.platform import Repo, RepoMember, MembershipStatus
@@ -783,7 +786,7 @@ def create_bounty(request: Request, bounty: CreateBountyRequest, session: Sessio
         status="open",
         repo_name=repo_name,
         repo_id=bounty.repo_id,
-        required_role=bounty.required_role,
+        required_role=bounty.required_role.value if isinstance(bounty.required_role, RepoRole) else bounty.required_role,
         assignee=None,
         parent_id=None,
         dependencies=[],
@@ -813,7 +816,7 @@ class SubTaskDTO(BaseModel):
     title: str
     description: str = ""
     reward: int = 0
-    required_role: str = "contributor"
+    required_role: RepoRole = RepoRole.CONTRIBUTOR
     estimated_hours: Optional[int] = None
     track: Optional[str] = None
     test_command: str = "pytest"
@@ -849,13 +852,16 @@ def decompose_task(parent_id: str, sub_tasks: List[SubTaskDTO], agent_id: str, s
     if not membership:
         raise HTTPException(status_code=403, detail="Forbidden: Not a member of this repository")
 
-    # Validate roles
-    VALID_ROLES = ["architect", "contributor", "reviewer", "executor", "tester", "librarian", "observer"]
+    # Validate roles via RepoRole enum
 
     created_tasks = []
     for dto in sub_tasks:
-        if dto.required_role and dto.required_role.lower() not in VALID_ROLES:
-            raise HTTPException(status_code=400, detail=f"Invalid role: {dto.required_role}")
+        # Normalize required_role to enum
+        if not isinstance(dto.required_role, RepoRole):
+            try:
+                dto.required_role = RepoRole(str(dto.required_role).lower())
+            except Exception:
+                raise HTTPException(status_code=400, detail=f"Invalid role: {dto.required_role}")
         base_cmd = (dto.test_command or "pytest").split()[0]
         if base_cmd not in ALLOWED_TEST_COMMANDS:
             raise HTTPException(status_code=400, detail=f"Command '{base_cmd}' is not allowed. Supported: {ALLOWED_TEST_COMMANDS}")
@@ -868,7 +874,7 @@ def decompose_task(parent_id: str, sub_tasks: List[SubTaskDTO], agent_id: str, s
             status="open",
             repo_name=parent.repo_name,
             repo_id=parent.repo_id,
-            required_role=dto.required_role,
+            required_role=dto.required_role.value if isinstance(dto.required_role, RepoRole) else dto.required_role,
             assignee=None,
             parent_id=parent_id,
             dependencies=[],
@@ -902,7 +908,7 @@ class TaskNode(BaseModel):
     title: str
     description: str = ""
     reward: int = 0
-    required_role: str = "contributor"
+    required_role: RepoRole = RepoRole.CONTRIBUTOR
     estimated_hours: Optional[int] = None
     track: Optional[str] = None
     dependencies: List[str] = Field(default_factory=list, description="List of client_ids this depends on")
@@ -942,7 +948,7 @@ def _flatten_task_tree(
         reward=node.reward,
         repo_name=repo_name,
         repo_id=repo_id,
-        required_role=node.required_role,
+        required_role=(node.required_role.value if hasattr(node.required_role, "value") else node.required_role),
         parent_id=parent_id,
         estimated_hours=node.estimated_hours,
         track=node.track,
@@ -1412,7 +1418,8 @@ def claim_bounty_for_preparation(
         )
 
     # Check role match
-    if agent.role.lower() != bounty.required_role.lower():
+    req_role = bounty.required_role.value if hasattr(bounty.required_role, "value") else bounty.required_role
+    if agent.role.lower() != str(req_role).lower():
         raise HTTPException(
             status_code=403,
             detail=f"This task requires role '{bounty.required_role}', agent has '{agent.role}'"

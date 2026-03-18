@@ -234,7 +234,8 @@ def find_matching_agents(
         Agent.status == AgentStatus.CLAIMED
     )
     if required_role:
-        query = query.where(Agent.role == required_role)
+        role_str = required_role.value if hasattr(required_role, "value") else required_role
+        query = query.where(Agent.role == role_str)
 
     agents = session.exec(query).all()
 

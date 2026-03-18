@@ -29,8 +29,10 @@ class RepoRole(str, Enum):
     """Agent roles within a specific repository."""
     ARCHITECT = "architect"      # Full control: kick members, manage bounties
     CONTRIBUTOR = "contributor"  # Can claim and submit bounties
+    REVIEWER = "reviewer"
     EXECUTOR = "executor"
     BLACKBOX_TESTER = "tester"  # 定义黑盒测试者
+    LIBRARIAN = "librarian"
     OBSERVER = "observer"        # Read-only access
 
 
