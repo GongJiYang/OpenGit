@@ -5,7 +5,7 @@ from uuid import uuid4
 from sqlmodel import Field, SQLModel, create_engine, Session, JSON, Column, StaticPool
 from sqlalchemy import event, Text, Enum as SAEnum
 from enum import Enum
-from agent_auth.models.platform import RepoRole
+from agenthub_protocol.roles import RepoRole
 
 # --- Constants ---
 DB_PATH = os.path.abspath("./agenthub_data/agenthub.db")
@@ -116,8 +116,7 @@ class Bounty(SQLModel, table=True):
     # open: ready to claim
     repo_name: str = Field(index=True)
     repo_id: Optional[str] = Field(default=None, index=True, description="Linked Repo ID for membership check")
-    from agent_auth.models.platform import RepoRole
-    required_role: "RepoRole" = Field(sa_column=Column(SAEnum("architect", "contributor", "reviewer", "executor", "tester", "librarian", "observer", name="repo_role", native_enum=False, validate_strings=True)))
+    required_role: RepoRole = Field(sa_column=Column(SAEnum(*[r.value for r in RepoRole], name="repo_role", native_enum=False, validate_strings=True)))
     assignee: Optional[str] = Field(default=None, index=True)
     parent_id: Optional[str] = Field(default=None, index=True, description="Parent bounty ID for decomposition")
 

@@ -3,9 +3,13 @@
 
 # Folders that contain Python source code for module discovery
 source_roots = [
-  "apps",
-  "packages",
-  "services",
+  "apps/api-gateway/src",
+  "packages/protocol/src",
+  "packages/agenthub-runner/src",
+  "services/git-core/src",
+  "services/execution-vmm/src",
+  "services/semantic-store/src",
+  "services/template-engine/src",
 ]
 
 # Common excludes
@@ -22,9 +26,60 @@ exclude = [
 
 # Keep everything as a single module initially to avoid false positives.
 # Refine with `tach mod` later.
+# Explicit module boundaries (strong constraints)
+
+# Apps/api-gateway modules
 [[modules]]
-path = "*"
+path = "agent_auth"
+depends_on = ["persistence", "agenthub_protocol"]
+
+[[modules]]
+path = "meta"
+depends_on = ["persistence", "agent_auth", "agenthub_protocol"]
+
+[[modules]]
+path = "git_tree_service"
+depends_on = ["persistence"]
+
+[[modules]]
+path = "persistence"
+depends_on = ["agenthub_protocol"]
+
+[[modules]]
+path = "main"
+depends_on = [
+  "agent_auth",
+  "meta",
+  "git_tree_service",
+  "persistence",
+  "agenthub_protocol",
+  "agenthub_git_core",
+  "agenthub_execution_vmm",
+  "agenthub_semantic_store",
+  "agenthub_template",
+]
+
+# packages/protocol
+[[modules]]
+path = "agenthub_protocol"
 depends_on = []
+
+# services/*
+[[modules]]
+path = "agenthub_git_core"
+depends_on = ["agenthub_protocol"]
+
+[[modules]]
+path = "agenthub_execution_vmm"
+depends_on = []
+
+[[modules]]
+path = "agenthub_semantic_store"
+depends_on = []
+
+[[modules]]
+path = "agenthub_template"
+depends_on = ["agenthub_protocol"]
 
 [cache]
 backend = "disk"
@@ -34,3 +89,30 @@ env_dependencies = []
 [external]
 # You can add renames/excludes later if needed
 exclude = []
+
+# Restrict what agent_auth exposes to other modules
+[[interfaces]]
+from = ["agent_auth"]
+# Only routers and a small set of service facades are public (relative paths)
+expose = [
+  "routers.*",
+  "services.user_auth.UserAuthService",
+  "services.bounty_service.BountyService",
+  "services.penalty_service.PenaltyService",
+  "services.bounty_fsm.transition",
+  "services.workitem_service.WorkItemService",
+  "deps.get_auth_session",
+  "services.authz.verify_api_key",
+  "services.authz.authenticate_api_key",
+  "services.authz.require_repo_member",
+  "services.authz.start_scheduler",
+  "services.authz.stop_scheduler",
+]
+# Only the following modules may use these public symbols
+visibility = ["main", "meta", "git_tree_service"]
+
+# Provide WorkItemService explicitly from its module
+[[interfaces]]
+from = ["agent_auth.services.workitem_service"]
+expose = ["WorkItemService"]
+visibility = ["meta", "main"]

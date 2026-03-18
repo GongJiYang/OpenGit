@@ -6,7 +6,7 @@ API endpoints for managing the self-hosting meta-repository.
 
 import subprocess
 import fnmatch
-from typing import List, Optional
+from typing import List, Optional, Any
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -23,8 +23,9 @@ from persistence import (
     get_session,
 )
 from agent_auth.services.workitem_service import WorkItemService
-from agent_auth.models import Agent
-from agent_auth.database import get_db as get_auth_session
+# Avoid importing internal agent_auth models/db directly; use public facades only
+# from agent_auth.models import Agent
+# from agent_auth.database import get_db as get_auth_session
 
 meta_router = APIRouter(prefix="/api/v1/meta", tags=["Meta-Repository"])
 
@@ -69,17 +70,16 @@ def get_meta_config(session: Session = Depends(get_session)) -> MetaRepoConfig:
     return config
 
 
+
+
 def require_admin_agent(
     x_api_key: str = Depends(lambda: None),
-    auth_session: Session = Depends(get_auth_session)
-) -> Agent:
-    """Require an agent with admin role."""
-    if not x_api_key:
-        # Re-extract from header properly
-        pass
-    # This is a placeholder - should integrate with existing require_agent
-    # and check for admin role
-    return None  # Will be implemented with proper auth
+) -> Any:
+    """Require an agent with admin role.
+    Placeholder for future integration; avoids importing agent_auth internals here.
+    """
+    # TODO: integrate with require_agent and admin check via public facades
+    return None
 
 
 # === Status Endpoints ===
