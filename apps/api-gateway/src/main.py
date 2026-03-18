@@ -1311,24 +1311,31 @@ def claim_bounty_for_preparation(
             detail=f"This task requires role '{bounty.required_role}', agent has '{agent.role}'"
         )
 
-    # Check if already claimed for preparation
-    if bounty.assignee:
-        raise HTTPException(
-            status_code=409,
-            detail=f"Bounty already claimed for preparation by agent {bounty.assignee}"
+    # Atomic claim for preparation: ready_for_preparation + unassigned -> assignee
+    from sqlmodel import update
+    now = datetime.utcnow()
+    stmt = (
+        update(Bounty)
+        .where(
+            Bounty.id == bounty_id,
+            Bounty.status == BountyStatus.READY_FOR_PREPARATION.value,
+            Bounty.assignee.is_(None),
         )
+        .values(assignee=str(agent.id), updated_at=now)
+        .execution_options(synchronize_session=False)
+    )
+    result = session.exec(stmt)
+    if getattr(result, "rowcount", 0) == 0:
+        raise HTTPException(status_code=409, detail="Bounty already claimed for preparation")
 
-    # Claim for preparation
-    bounty.assignee = str(agent.id)
-    bounty.updated_at = datetime.utcnow()
-
-    # Store preparation notes in description or a new field if available
+    # Optional: append preparation notes after successful claim
     if req.preparation_notes:
+        bounty = session.get(Bounty, bounty_id)
         bounty.description = f"{bounty.description}\n\n[Preparation Notes]: {req.preparation_notes}"
+        session.add(bounty)
 
-    session.add(bounty)
     session.commit()
-    session.refresh(bounty)
+    bounty = session.get(Bounty, bounty_id)
 
     return {
         "id": bounty.id,

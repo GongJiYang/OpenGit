@@ -228,19 +228,30 @@ class BountyService:
         if workload["availability"] <= 0:
             return None, f"Agent at full capacity ({workload['current_active_tasks']}/{workload['max_concurrent_tasks']} tasks)"
 
-        # Perform claim
-        eligibility.bounty.status = "in_progress"
-        eligibility.bounty.assignee = str(agent_id)
-        eligibility.bounty.updated_at = datetime.utcnow()
+        # Perform atomic claim: open + unassigned -> in_progress + assignee
+        from sqlmodel import update
+        now = datetime.utcnow()
+        stmt = (
+            update(Bounty)
+            .where(
+                Bounty.id == bounty_id,
+                Bounty.status == "open",
+                Bounty.assignee.is_(None),
+            )
+            .values(status="in_progress", assignee=str(agent_id), updated_at=now)
+            .execution_options(synchronize_session=False)
+        )
+        result = self.bounty_session.exec(stmt)
+        if getattr(result, "rowcount", 0) == 0:
+            return None, "Race detected: bounty already claimed"
 
-        self.bounty_session.add(eligibility.bounty)
         self.bounty_session.commit()
-        self.bounty_session.refresh(eligibility.bounty)
+        bounty = self.bounty_session.get(Bounty, bounty_id)
 
         # Update agent metrics - increment active tasks
         increment_active_tasks(self.auth_session, eligibility.agent.id)
 
-        return eligibility.bounty, None
+        return bounty, None
 
     # ============== Temporary Claim (Unauthenticated User) ==============
 
