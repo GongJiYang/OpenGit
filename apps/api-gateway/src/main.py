@@ -1125,9 +1125,10 @@ def resolve_bounty_dependencies(bounty_id: str, session: Session) -> int:
                 break
 
         if all_deps_completed:
-            bounty.status = BountyStatus.OPEN.value
-            session.add(bounty)
-            updated_count += 1
+            from agent_auth.services.bounty_fsm import transition
+            updated, err = transition(session, bounty.id, BountyStatus.OPEN.value, ctx={"actor_type": "system"})
+            if not err:
+                updated_count += 1
 
             # Sync task tree to repository if status changed
             try:
@@ -1156,13 +1157,13 @@ def resolve_bounty_dependencies(bounty_id: str, session: Session) -> int:
                 break
 
         if all_deps_completed:
-            # If someone claimed for preparation, they get auto-promoted to in_progress
+            from agent_auth.services.bounty_fsm import transition
             if bounty.assignee:
-                bounty.status = BountyStatus.IN_PROGRESS.value
+                updated, err = transition(session, bounty.id, BountyStatus.IN_PROGRESS.value, ctx={"actor_type": "system"})
             else:
-                bounty.status = BountyStatus.OPEN.value
-            session.add(bounty)
-            updated_count += 1
+                updated, err = transition(session, bounty.id, BountyStatus.OPEN.value, ctx={"actor_type": "system"})
+            if not err:
+                updated_count += 1
 
     if updated_count > 0:
         session.commit()
@@ -1532,23 +1533,20 @@ def activate_from_preparation(
             detail="Not all dependencies are completed yet"
         )
 
-    # Activate the bounty
-    bounty.status = BountyStatus.OPEN.value
-    bounty.updated_at = datetime.utcnow()
-
-    # If there's a preparer, they get auto-promoted to in_progress
+    # Activate via FSM
+    from agent_auth.services.bounty_fsm import transition
     if bounty.assignee:
-        bounty.status = BountyStatus.IN_PROGRESS.value
-
-    session.add(bounty)
-    session.commit()
-    session.refresh(bounty)
+        updated, err = transition(session, bounty.id, BountyStatus.IN_PROGRESS.value, ctx={"actor_type": "system"})
+    else:
+        updated, err = transition(session, bounty.id, BountyStatus.OPEN.value, ctx={"actor_type": "system"})
+    if err:
+        raise HTTPException(status_code=400, detail=err)
 
     return {
-        "id": bounty.id,
-        "title": bounty.title,
-        "status": bounty.status,
-        "assignee": bounty.assignee,
+        "id": updated.id,
+        "title": updated.title,
+        "status": updated.status,
+        "assignee": updated.assignee,
         "message": "Bounty activated. Preparer can now submit code."
     }
 

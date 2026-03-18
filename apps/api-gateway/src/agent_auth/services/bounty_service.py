@@ -228,25 +228,16 @@ class BountyService:
         if workload["availability"] <= 0:
             return None, f"Agent at full capacity ({workload['current_active_tasks']}/{workload['max_concurrent_tasks']} tasks)"
 
-        # Perform atomic claim: open + unassigned -> in_progress + assignee
-        from sqlmodel import update
-        now = datetime.utcnow()
-        stmt = (
-            update(Bounty)
-            .where(
-                Bounty.id == bounty_id,
-                Bounty.status == "open",
-                Bounty.assignee.is_(None),
-            )
-            .values(status="in_progress", assignee=str(agent_id), updated_at=now)
-            .execution_options(synchronize_session=False)
+        # Perform claim via FSM
+        from .bounty_fsm import transition
+        bounty, err = transition(
+            self.bounty_session,
+            bounty_id,
+            to_status="in_progress",
+            ctx={"actor_id": str(eligibility.agent.id), "actor_type": "agent", "agent_id": str(agent_id)},
         )
-        result = self.bounty_session.exec(stmt)
-        if getattr(result, "rowcount", 0) == 0:
-            return None, "Race detected: bounty already claimed"
-
-        self.bounty_session.commit()
-        bounty = self.bounty_session.get(Bounty, bounty_id)
+        if err:
+            return None, err
 
         # Update agent metrics - increment active tasks
         increment_active_tasks(self.auth_session, eligibility.agent.id)
