@@ -11,6 +11,12 @@ repos:
         language: system
         types: [python]
         exclude: ^(.venv|venv|__pycache__)/
+      - id: tach-check
+        name: tach check
+        language: python
+        additional_dependencies: [tach==0.34.0]
+        entry: tach check
+        pass_filenames: false
 
   # Ruff - fast Python linter
   - repo: https://github.com/astral-sh/ruff-pre-commit

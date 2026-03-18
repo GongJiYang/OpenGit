@@ -1,0 +1,36 @@
+# Minimal Tach configuration for OpenGit monorepo
+# You can refine modules and dependencies later with `tach mod` and `tach sync`.
+
+# Folders that contain Python source code for module discovery
+source_roots = [
+  "apps",
+  "packages",
+  "services",
+]
+
+# Common excludes
+exclude = [
+  "**/tests",
+  "**/docs",
+  "**/__pycache__",
+  "**/*.egg-info",
+  "**/venv",
+  "node_modules",
+  ".git",
+  "apps/observer-ui",
+]
+
+# Keep everything as a single module initially to avoid false positives.
+# Refine with `tach mod` later.
+[[modules]]
+path = "*"
+depends_on = []
+
+[cache]
+backend = "disk"
+file_dependencies = []
+env_dependencies = []
+
+[external]
+# You can add renames/excludes later if needed
+exclude = []
