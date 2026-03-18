@@ -146,7 +146,7 @@ def cleanup_expired_temporary_claims(session: Session) -> dict:
 
     # Find expired temporary claims
     statement = select(Bounty).where(
-        Bounty.is_temporary_claim == True,
+        Bounty.is_temporary_claim.is_(True),
         Bounty.claim_expires_at < now,
         Bounty.status == "in_progress"
     )
@@ -188,7 +188,7 @@ def check_heartbeat_timeouts(session: Session) -> dict:
     # Find agents with stale heartbeats
     statement = select(Agent).where(
         Agent.status == AgentStatus.CLAIMED,
-        (Agent.last_heartbeat_at == None) | (Agent.last_heartbeat_at < timeout_threshold)
+        (Agent.last_heartbeat_at.is_(None)) | (Agent.last_heartbeat_at < timeout_threshold)
     )
     stale_agents = session.exec(statement).all()
 
@@ -244,7 +244,7 @@ def check_runner_health(session: Session) -> dict:
         # Check if heartbeat is stale
         if runner.last_heartbeat_at is None or runner.last_heartbeat_at < offline_threshold:
             # Mark runner as offline
-            old_status = runner.status
+            _old_status = runner.status  # kept for potential auditing/logging
             runner.status = RunnerStatus.OFFLINE
             session.add(runner)
             marked_offline += 1

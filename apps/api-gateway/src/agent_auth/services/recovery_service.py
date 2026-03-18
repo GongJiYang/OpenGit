@@ -278,7 +278,7 @@ class RecoveryService:
             select(Runner).where(
                 Runner.status == RunnerStatus.ONLINE,
                 Runner.runner_type == "dedicated",
-                Runner.current_job_id == None,
+                Runner.current_job_id.is_(None),
                 Runner.id != job.runner_id if job.runner_id else True
             )
         ).first()
@@ -292,7 +292,7 @@ class RecoveryService:
             select(Runner).where(
                 Runner.status == RunnerStatus.ONLINE,
                 Runner.runner_type == "shared_local",
-                Runner.current_job_id == None
+                Runner.current_job_id.is_(None)
             )
         ).first()
 
