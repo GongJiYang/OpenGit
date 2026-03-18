@@ -1877,14 +1877,17 @@ async def api_commit(request: Request, repo_name: str, req: CommitRequest, sessi
                 if not budget_tracker.check_and_record(est_cost):
                     raise HTTPException(status_code=402, detail="Daily platform budget exceeded. Try again tomorrow.")
 
-                # Step increment tracked separately; transition status via FSM
-                bounty.current_steps += 1
-                session.add(bounty)
+                # 先进行状态流转（成功后再计步）
                 from agent_auth.services.bounty_fsm import transition
                 from persistence import BountyStatus
                 updated, err = transition(session, bounty.id, BountyStatus.SUBMITTED.value, ctx={"actor_type": "agent", "actor_id": trusted_agent_id, "agent_id": trusted_agent_id})
                 if err:
                     raise HTTPException(status_code=409, detail=err)
+                # 成功提交后再递增步骤（防止无效重试占用配额）
+                bounty.current_steps = max(0, (bounty.current_steps or 0) + 1)
+                session.add(bounty)
+                session.commit()
+                session.refresh(bounty)
 
                 verification_mode = (bounty.verification_mode or "auto").lower()
                 test_cmd = bounty.test_command or "pytest"
@@ -2086,6 +2089,15 @@ def submit_blackbox_test(commit_id: int, report: BlackboxReport, session: Sessio
                 updated, err = transition(session, bounty.id, BountyStatus.IN_PROGRESS.value, ctx={"actor_type": "system"})
                 if err:
                     logger.warning("FSM revert failed: %s", err)
+                else:
+                    # 黑盒失败/拒绝：回退一次步骤计数，避免无效重试长期锁死
+                    try:
+                        fresh = session.get(Bounty, record.bounty_id)
+                        if fresh:
+                            fresh.current_steps = max(0, (fresh.current_steps or 0) - 1)
+                            session.add(fresh)
+                    except Exception as _e:
+                        logger.warning("Failed to decrement current_steps on reject: %s", _e)
 
     session.add(record)
     session.commit()
