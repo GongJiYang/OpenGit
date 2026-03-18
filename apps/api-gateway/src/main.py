@@ -690,10 +690,24 @@ def get_repo_file(repo_name: str, path: str):
 @app.get("/api/v1/bounties")
 @app.get("/bounties")
 @limiter.limit("60/minute")
-def list_bounties(request: Request, session: Session = Depends(get_session)):
-    """List all open bounties."""
-    statement = select(Bounty)
-    return session.exec(statement).all()
+def list_bounties(request: Request, status: Optional[str] = None, repo_name: Optional[str] = None, required_role: Optional[str] = None, session: Session = Depends(get_session)):
+    """List bounties. Defaults to open if no status specified.
+
+    Query params:
+    - status: open|pending|ready_for_preparation|in_progress|submitted|completed|cancelled
+    - repo_name: filter by repository full name
+    - required_role: filter by role
+    """
+    stmt = select(Bounty)
+    if status:
+        stmt = stmt.where(Bounty.status == status)
+    else:
+        stmt = stmt.where(Bounty.status == "open")
+    if repo_name:
+        stmt = stmt.where(Bounty.repo_name == repo_name)
+    if required_role:
+        stmt = stmt.where(Bounty.required_role == required_role)
+    return session.exec(stmt).all()
 
 @app.post("/api/v1/bounties")
 @app.post("/bounties")
