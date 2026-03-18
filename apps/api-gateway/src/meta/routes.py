@@ -24,6 +24,7 @@ from persistence import (
     UpdateStatus,
     get_session,
 )
+from agent_auth.services.workitem_service import WorkItemService
 from agent_auth.models import Agent
 from agent_auth.database import get_db as get_auth_session
 
@@ -387,7 +388,7 @@ async def create_pr(
     # Get changed files
     repos_dir = Path("./agenthub_data/repos").resolve()
     source_repo_path = repos_dir / request.source_repo
-    target_repo_path = repos_dir / meta_config.repo_name
+    # target_repo_path no longer needed here; integration via WorkItemService
 
     try:
         # Get diff between branches
@@ -502,6 +503,10 @@ async def get_pr(
     session: Session = Depends(get_session)
 ):
     """Get PR details including approvals and changed files."""
+    # 通过 WorkItemService 获取统一视图（保留原有字段）
+    wis = WorkItemService(session)
+    item = wis.get("meta_pr", pr_number)
+
     pr = session.exec(
         select(PlatformPR).where(PlatformPR.pr_number == pr_number)
     ).first()
@@ -513,6 +518,12 @@ async def get_pr(
         )
 
     return {
+        "workitem": {
+            "kind": item.kind if item else "meta_pr",
+            "ref": item.ref if item else pr_number,
+            "title": (item.title if item else pr.title),
+            "status": (item.status if item else pr.status),
+        },
         "pr_number": pr.pr_number,
         "title": pr.title,
         "description": pr.description,
@@ -565,64 +576,18 @@ async def approve_pr(
     reviewer_type = "agent"
     reviewer_id = "test-reviewer"
 
-    # Check if already approved by this reviewer
-    existing = [a for a in pr.approvals if a["reviewer_id"] == reviewer_id]
-    if existing:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Already approved by this reviewer"
+    # 交由 WorkItemService 适配层执行（逻辑与旧实现等价）
+    wis = WorkItemService(session)
+    try:
+        pr = wis.approve_meta_pr(
+            pr_number,
+            reviewer_type=reviewer_type,
+            reviewer_id=reviewer_id,
+            comment=request.comment,
+            meta_config=meta_config,
         )
-
-    # For protected paths, check reviewer diversity
-    if pr.touches_protected_paths and meta_config.require_human_approval:
-        has_human = any(a["reviewer_type"] == "human" for a in pr.approvals)
-        has_agent = any(a["reviewer_type"] == "agent" for a in pr.approvals)
-
-        # If this is an agent approval and no human yet
-        if reviewer_type == "agent" and not has_human:
-            # Still allow, but note that human approval is needed
-            pass
-        elif reviewer_type == "human" and not has_agent:
-            # Still allow, but note that agent approval is needed
-            pass
-
-    # Add approval
-    approval = {
-        "reviewer_id": reviewer_id,
-        "reviewer_type": reviewer_type,
-        "approved_at": datetime.utcnow().isoformat(),
-        "comment": request.comment,
-    }
-    pr.approvals.append(approval)
-    pr.approval_count = len(pr.approvals)
-
-    # Check if ready to merge
-    if pr.approval_count >= pr.required_approval_count:
-        # For protected paths, also check reviewer diversity
-        if pr.touches_protected_paths and meta_config.require_human_approval:
-            has_human = any(a["reviewer_type"] == "human" for a in pr.approvals)
-            has_agent = any(a["reviewer_type"] == "agent" for a in pr.approvals)
-            if has_human and has_agent:
-                pr.status = PRStatus.APPROVED.value
-        else:
-            pr.status = PRStatus.APPROVED.value
-
-    session.add(pr)
-
-    # Audit log
-    audit = PlatformAuditLog(
-        event_type="pr_approved",
-        actor_type=reviewer_type,
-        actor_id=reviewer_id,
-        target_type="pr",
-        target_id=str(pr.pr_number),
-        details={
-            "approval_count": pr.approval_count,
-            "new_status": pr.status,
-        }
-    )
-    session.add(audit)
-    session.commit()
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
 
     return {
         "success": True,
@@ -663,94 +628,18 @@ async def merge_pr(
     merger_type = "agent"
     merger_id = "test-merger"
 
-    repos_dir = Path("./agenthub_data/repos").resolve()
-    source_repo_path = repos_dir / pr.source_repo
-    target_repo_path = repos_dir / meta_config.repo_name
-
+    wis = WorkItemService(session)
     try:
-        # Perform merge
-        # 1. Fetch source branch
-        subprocess.run(
-            ["git", "fetch", str(source_repo_path), f"refs/heads/{pr.source_branch}"],
-            cwd=str(target_repo_path),
-            check=True,
-            capture_output=True
-        )
-
-        # 2. Get merge commit
-        result = subprocess.run(
-            ["git", "rev-parse", "FETCH_HEAD"],
-            cwd=str(target_repo_path),
-            capture_output=True,
-            text=True
-        )
-        merge_sha = result.stdout.strip()
-
-        # 3. Fast-forward merge
-        subprocess.run(
-            ["git", "update-ref", "refs/heads/main", merge_sha],
-            cwd=str(target_repo_path),
-            check=True,
-            capture_output=True
-        )
-
-        # Update PR
-        pr.status = PRStatus.MERGED.value
-        pr.merged_at = datetime.utcnow()
-        pr.merge_commit_sha = merge_sha
-
-        # Create PlatformUpdate
-        update = PlatformUpdate(
-            source_pr_id=pr.id,
-            source_pr_number=pr.pr_number,
-            source_commit_sha=merge_sha,
-            source_branch=pr.source_branch,
-            status=UpdateStatus.PENDING.value,
-            previous_commit_sha=meta_config.current_commit,
-            rollback_available=True,
-            triggered_by=f"{merger_type}:{merger_id}",
-        )
-        session.add(update)
-
-        # Link PR to update
-        pr.update_id = update.id
-
-        session.add(pr)
-        session.commit()
-        session.refresh(update)
-
-        # Trigger async sync (in background)
-        # TODO: Implement proper async task
-        # asyncio.create_task(execute_sync(update.id, meta_config.id))
-
-        # Audit log
-        audit = PlatformAuditLog(
-            event_type="pr_merged",
-            actor_type=merger_type,
-            actor_id=merger_id,
-            target_type="pr",
-            target_id=str(pr.pr_number),
-            details={
-                "merge_commit_sha": merge_sha,
-                "update_id": update.id,
-            }
-        )
-        session.add(audit)
-        session.commit()
-
+        pr, update = wis.merge_meta_pr(pr_number, meta_config, merger_type=merger_type, merger_id=merger_id)
         return {
             "success": True,
             "pr_number": pr.pr_number,
-            "merge_commit_sha": merge_sha,
+            "merge_commit_sha": pr.merge_commit_sha,
             "update_id": update.id,
             "message": "PR merged successfully. Deployment pending.",
         }
-
-    except subprocess.CalledProcessError as e:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Merge failed: {e.stderr.decode() if e.stderr else str(e)}"
-        )
+    except Exception as e:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
 
 
 # === Deployment Management ===
