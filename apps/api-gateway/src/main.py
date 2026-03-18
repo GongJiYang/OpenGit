@@ -14,6 +14,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, ConfigDict
 from agent_auth.models.platform import RepoRole
+from agent_auth.services.workitem_service import WorkItemService
 from pydantic import BaseModel as _BaseModel  # noqa: F401
 from sqlmodel import Session, select
 from slowapi import Limiter, _rate_limit_exceeded_handler
@@ -46,7 +47,7 @@ from agent_auth.utils import verify_api_key, get_api_key_prefix, get_legacy_api_
 from agent_auth.validators import get_validator
 from agent_auth.services.penalty_service import PenaltyService
 from agent_auth.services.user_auth import UserAuthService
-from persistence import Bounty, CommitRecord, get_session
+from persistence import Bounty, CommitRecord, PlatformPR, get_session
 from git_tree_service import GitTreeService
 from agent_auth.services.memory_service import memory_service
 from contextlib import asynccontextmanager
@@ -2119,6 +2120,63 @@ def verify_commit(commit_id: int, req: VerificationRequest, session: Session = D
     session.add(record)
     session.commit()
     return {"message": "Verification recorded", "commit_id": commit_id}
+
+class WorkItemListResponse(BaseModel):
+    items: list
+
+@app.get("/api/v1/workitems")
+@limiter.limit("60/minute")
+def list_workitems(kind: Optional[str] = None, status: Optional[str] = None, limit: int = 50, session: Session = Depends(get_session)):
+    """聚合工作项：bounty + meta_pr（后续可扩展 update）。
+
+    Query:
+    - kind: bounty|meta_pr（为空则两者都返回）
+    - status: 过滤状态（各自枚举的原始值）
+    - limit: 数量上限
+    """
+    wis = WorkItemService(session)
+    items = []
+
+    def push_bounty(b: Bounty):
+        items.append({
+            "kind": "bounty",
+            "id": b.id,
+            "title": b.title,
+            "status": b.status,
+            "repo_name": b.repo_name,
+            "assignee": b.assignee,
+        })
+
+    def push_pr(pr: PlatformPR):
+        items.append({
+            "kind": "meta_pr",
+            "id": pr.pr_number,
+            "title": pr.title,
+            "status": pr.status,
+            "author_type": pr.author_type,
+            "author_id": pr.author_id,
+        })
+
+    # bounty
+    if not kind or kind == "bounty":
+        stmt = select(Bounty).order_by(Bounty.created_at.desc()).limit(limit)
+        if status:
+            stmt = stmt.where(Bounty.status == status)
+        for b in session.exec(stmt).all():
+            push_bounty(b)
+
+    # meta_pr
+    if not kind or kind == "meta_pr":
+        prs = wis.meta.list_prs(status_filter=status, limit=limit)
+        for pr in prs:
+            push_pr(pr)
+
+    # 截断合并后的数量
+    if len(items) > limit:
+        items = items[:limit]
+
+    return WorkItemListResponse(items=items)
+
 
 @app.post("/api/v1/commits/{commit_id}/verify/external")
 async def verify_commit_external(commit_id: int, request: Request, req: VerificationRequest, x_ci_token: str = Header(None, alias="X-CI-Token"), x_ci_signature: str = Header(None, alias="X-CI-Signature"), session: Session = Depends(get_session)):
