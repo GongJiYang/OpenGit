@@ -1346,10 +1346,16 @@ def claim_bounty_for_preparation(
 def activate_from_preparation(
     request: Request,
     bounty_id: str,
-    session: Session = Depends(get_session)
+    session: Session = Depends(get_session),
+    identity: Any = Depends(require_active_identity),
+    x_internal_token: Optional[str] = Header(None, alias="X-Internal-Token"),
 ):
     """
     Internal endpoint to activate a prepared bounty when dependencies complete.
+
+    AuthN/AuthZ:
+    - Preferred: X-Internal-Token must match env INTERNAL_API_TOKEN
+    - Otherwise: Only ADMIN user or ARCHITECT agent can invoke
 
     Called automatically by resolve_bounty_dependencies when all dependencies
     are marked as completed. Transitions status from ready_for_preparation to open.
@@ -1357,6 +1363,33 @@ def activate_from_preparation(
     The agent who claimed for preparation gets first priority.
     """
     from persistence import BountyStatus
+    from agent_auth.models.platform import UserRole
+
+    # Authorization gate
+    allowed = False
+    expected_token = os.getenv("INTERNAL_API_TOKEN")
+    if expected_token and x_internal_token and x_internal_token == expected_token:
+        allowed = True
+    else:
+        # Distinguish User vs Agent by type of role field
+        user_role = getattr(identity, "role", None)
+        is_user = False
+        try:
+            is_user = isinstance(user_role, UserRole)
+        except Exception:
+            is_user = False
+
+        if is_user:
+            # Human user: require ADMIN
+            if user_role == UserRole.ADMIN:
+                allowed = True
+        else:
+            # Agent: require architect
+            if isinstance(user_role, str) and user_role.lower() == "architect":
+                allowed = True
+
+    if not allowed:
+        raise HTTPException(status_code=403, detail="Forbidden: internal token or admin/architect required")
 
     bounty = session.get(Bounty, bounty_id)
     if not bounty:
