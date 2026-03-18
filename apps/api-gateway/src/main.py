@@ -906,9 +906,20 @@ def create_decomposed_bounties(
 
     all_bounties: List[Bounty] = []
     title_to_id: dict = {}
+    title_counts: dict = {}
 
     def process_node(node: TaskNode, parent_id: Optional[str] = None):
-        """Recursively process a task node."""
+        """Recursively process a task node with duplicate-title detection."""
+        # Detect duplicate titles along the entire tree build
+        norm_title = (node.title or "").strip()
+        if not norm_title:
+            raise HTTPException(status_code=400, detail="Task title cannot be empty")
+        count = title_counts.get(norm_title, 0)
+        if count > 0:
+            # Duplicate detected: reject to prevent ambiguous dependency resolution
+            raise HTTPException(status_code=400, detail=f"Duplicate task title detected: '{norm_title}'. Titles must be unique within the tree.")
+        title_counts[norm_title] = count + 1
+
         bounty = _flatten_task_tree(
             node=node,
             parent_id=parent_id,
@@ -919,7 +930,7 @@ def create_decomposed_bounties(
         )
         session.add(bounty)
         session.flush()
-        title_to_id[node.title] = bounty.id
+        title_to_id[norm_title] = bounty.id
 
         for child in node.children:
             process_node(child, bounty.id)
@@ -928,6 +939,7 @@ def create_decomposed_bounties(
 
     # Resolve dependencies (title -> bounty_id)
     def find_node_deps(node: TaskNode, target_title: str) -> Optional[List[str]]:
+        # Titles are enforced unique in process_node; this function assumes uniqueness
         if node.title == target_title:
             return node.dependencies
         for child in node.children:
