@@ -698,7 +698,7 @@ def list_bounties(request: Request, session: Session = Depends(get_session)):
 @app.post("/api/v1/bounties")
 @app.post("/bounties")
 @limiter.limit("20/minute")
-def create_bounty(request: Request, bounty: CreateBountyRequest, session: Session = Depends(get_session), agent: Agent = Depends(require_agent)):
+def create_bounty(request: Request, bounty: CreateBountyRequest, session: Session = Depends(get_session), auth_session: Session = Depends(get_auth_session), agent: Agent = Depends(require_agent)):
     """Post a new job (strict DTO)."""
     # Only Architect can create
     if agent.role.lower() != "architect":
@@ -734,6 +734,22 @@ def create_bounty(request: Request, bounty: CreateBountyRequest, session: Sessio
     VALID_ROLES = ["architect", "contributor", "reviewer", "executor", "tester", "librarian", "observer"]
     if bounty.required_role and bounty.required_role.lower() not in VALID_ROLES:
         raise HTTPException(status_code=400, detail=f"Invalid role: {bounty.required_role}")
+
+    # Repo membership/ownership check (must be repo member or owner)
+    from agent_auth.models.platform import Repo, RepoMember, MembershipStatus
+    repo = auth_session.exec(select(Repo).where(Repo.full_name == repo_name)).first()
+    if not repo:
+        raise HTTPException(status_code=404, detail=f"Repository '{repo_name}' not registered on platform")
+    # Require membership for architect creating tasks in this repo
+    membership = auth_session.exec(
+        select(RepoMember).where(
+            RepoMember.repo_id == repo.id,
+            RepoMember.agent_id == agent.id,
+            RepoMember.status == MembershipStatus.ACTIVE,
+        )
+    ).first()
+    if not membership:
+        raise HTTPException(status_code=403, detail="Forbidden: Not a member of this repository")
 
     # verification_mode validation
     verification_mode = (bounty.verification_mode or os.getenv("DEFAULT_VERIFICATION_MODE", "auto")).lower()
@@ -803,6 +819,21 @@ def decompose_task(parent_id: str, sub_tasks: List[SubTaskDTO], agent_id: str, s
     agent = auth_session.exec(select(Agent).where(Agent.id == agent_id)).first()
     if not agent or agent.role.lower() != "architect":
         raise HTTPException(status_code=403, detail="Forbidden: Only Architect agents can decompose tasks.")
+
+    # Must be repo member to decompose tasks in this repo
+    from agent_auth.models.platform import RepoMember, MembershipStatus, Repo
+    repo = auth_session.exec(select(Repo).where(Repo.full_name == parent.repo_name)).first()
+    if not repo:
+        raise HTTPException(status_code=404, detail=f"Repository '{parent.repo_name}' not registered on platform")
+    membership = auth_session.exec(
+        select(RepoMember).where(
+            RepoMember.repo_id == repo.id,
+            RepoMember.agent_id == agent.id,
+            RepoMember.status == MembershipStatus.ACTIVE,
+        )
+    ).first()
+    if not membership:
+        raise HTTPException(status_code=403, detail="Forbidden: Not a member of this repository")
 
     # Validate roles
     VALID_ROLES = ["architect", "contributor", "reviewer", "executor", "tester", "librarian", "observer"]
@@ -1260,17 +1291,19 @@ def mark_bounty_preparable(
     request: Request,
     bounty_id: str,
     session: Session = Depends(get_session),
+    auth_session: Session = Depends(get_auth_session),
     agent: Agent = Depends(require_agent)
 ):
     """
     Mark a pending bounty as ready for preparation.
 
     Only Architect agents can mark bounties as preparable.
-    This allows Contributors to claim and prepare while dependencies are being completed.
+    Must be an active member of the bounty's repository.
 
     Status transition: pending -> ready_for_preparation
     """
     from persistence import BountyStatus
+    from agent_auth.models.platform import Repo, RepoMember, MembershipStatus
 
     # Verify Architect Role
     if agent.role.lower() != "architect":
@@ -1279,6 +1312,20 @@ def mark_bounty_preparable(
     bounty = session.get(Bounty, bounty_id)
     if not bounty:
         raise HTTPException(status_code=404, detail="Bounty not found")
+
+    # Membership check
+    repo = auth_session.exec(select(Repo).where(Repo.full_name == bounty.repo_name)).first()
+    if not repo:
+        raise HTTPException(status_code=404, detail=f"Repository '{bounty.repo_name}' not registered on platform")
+    membership = auth_session.exec(
+        select(RepoMember).where(
+            RepoMember.repo_id == repo.id,
+            RepoMember.agent_id == agent.id,
+            RepoMember.status == MembershipStatus.ACTIVE,
+        )
+    ).first()
+    if not membership:
+        raise HTTPException(status_code=403, detail="Forbidden: Not a member of this repository")
 
     if bounty.status != BountyStatus.PENDING.value:
         raise HTTPException(
