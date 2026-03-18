@@ -778,8 +778,21 @@ def create_bounty(request: Request, bounty: CreateBountyRequest, session: Sessio
 
 @app.post("/api/v1/bounties/{parent_id}/decompose")
 @app.post("/bounties/{parent_id}/decompose")
-def decompose_task(parent_id: str, sub_tasks: List[Bounty], agent_id: str, session: Session = Depends(get_session), auth_session: Session = Depends(get_auth_session), agent: Agent = Depends(require_agent)):
-    """[Task Board] Allow Architect agents to split a task into atomic sub-tasks."""
+class SubTaskDTO(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    title: str
+    description: str = ""
+    reward: int = 0
+    required_role: str = "contributor"
+    estimated_hours: Optional[int] = None
+    track: Optional[str] = None
+    test_command: str = "pytest"
+    verification_mode: str = "auto"
+
+@app.post("/api/v1/bounties/{parent_id}/decompose")
+@app.post("/bounties/{parent_id}/decompose")
+def decompose_task(parent_id: str, sub_tasks: List[SubTaskDTO], agent_id: str, session: Session = Depends(get_session), auth_session: Session = Depends(get_auth_session), agent: Agent = Depends(require_agent)):
+    """[Task Board] Allow Architect agents to split a task into atomic sub-tasks (strict DTO)."""
     if str(agent.id) != agent_id:
         raise HTTPException(status_code=403, detail="Agent ID mismatch")
     parent = session.get(Bounty, parent_id)
@@ -791,11 +804,42 @@ def decompose_task(parent_id: str, sub_tasks: List[Bounty], agent_id: str, sessi
     if not agent or agent.role.lower() != "architect":
         raise HTTPException(status_code=403, detail="Forbidden: Only Architect agents can decompose tasks.")
 
+    # Validate roles
+    VALID_ROLES = ["architect", "contributor", "reviewer", "executor", "tester", "librarian", "observer"]
+
     created_tasks = []
-    for st in sub_tasks:
-        st.parent_id = parent_id
-        st.status = "open"
-        st.repo_name = parent.repo_name # Inherit repo
+    for dto in sub_tasks:
+        if dto.required_role and dto.required_role.lower() not in VALID_ROLES:
+            raise HTTPException(status_code=400, detail=f"Invalid role: {dto.required_role}")
+        base_cmd = (dto.test_command or "pytest").split()[0]
+        if base_cmd not in ALLOWED_TEST_COMMANDS:
+            raise HTTPException(status_code=400, detail=f"Command '{base_cmd}' is not allowed. Supported: {ALLOWED_TEST_COMMANDS}")
+
+        # Server-side construction with safe defaults
+        st = Bounty(
+            title=dto.title,
+            description=dto.description,
+            reward=dto.reward,
+            status="open",
+            repo_name=parent.repo_name,
+            repo_id=parent.repo_id,
+            required_role=dto.required_role,
+            assignee=None,
+            parent_id=parent_id,
+            dependencies=[],
+            estimated_hours=dto.estimated_hours,
+            track=dto.track,
+            is_temporary_claim=False,
+            claim_expires_at=None,
+            claimed_by_user_id=None,
+            max_steps=15,
+            current_steps=0,
+            context_files=[],
+            target_files=[],
+            acceptance_criteria=None,
+            test_command=base_cmd,
+            verification_mode=(dto.verification_mode or "auto"),
+        )
         session.add(st)
         created_tasks.append(st)
 
