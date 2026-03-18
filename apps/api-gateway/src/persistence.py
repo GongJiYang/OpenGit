@@ -144,6 +144,13 @@ class Bounty(SQLModel, table=True):
     test_command: str = Field(default="pytest", description="Command to run for verification")
     verification_mode: str = Field(default="auto", description="auto | human | external")
 
+    # Preparation notes (separate from description)
+    preparation_notes: List[dict] = Field(
+        default_factory=list,
+        sa_column=Column(JSON),
+        description="List of notes: [{agent_id, notes, timestamp}]"
+    )
+
     created_at: datetime = Field(default_factory=datetime.utcnow)
     updated_at: datetime = Field(default_factory=datetime.utcnow, sa_column_kwargs={"onupdate": datetime.utcnow})
 

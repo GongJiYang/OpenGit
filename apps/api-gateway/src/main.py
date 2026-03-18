@@ -1433,10 +1433,15 @@ def claim_bounty_for_preparation(
     if getattr(result, "rowcount", 0) == 0:
         raise HTTPException(status_code=409, detail="Bounty already claimed for preparation")
 
-    # Optional: append preparation notes after successful claim
+    # Optional: append preparation notes after successful claim (structured)
     if req.preparation_notes:
         bounty = session.get(Bounty, bounty_id)
-        bounty.description = f"{bounty.description}\n\n[Preparation Notes]: {req.preparation_notes}"
+        notes_entry = {
+            "agent_id": str(agent.id),
+            "notes": req.preparation_notes,
+            "timestamp": datetime.utcnow().isoformat(),
+        }
+        bounty.preparation_notes = (bounty.preparation_notes or []) + [notes_entry]
         session.add(bounty)
 
     session.commit()
