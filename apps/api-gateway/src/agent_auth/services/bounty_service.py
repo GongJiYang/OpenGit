@@ -275,11 +275,19 @@ class BountyService:
             )
 
         # Step 3: Check role restriction (temporary claims only for contributor)
-        if bounty.required_role.lower() == "architect":
+        role_lower = (bounty.required_role or "").lower()
+        if role_lower == "architect":
+            # Preserve existing behavior for architect → 401 in route layer
             return ClaimEligibility(
                 is_eligible=False,
                 error_code="ARCHITECT_REQUIRES_LOGIN",
                 error_message="Architect role requires login. Please login to claim this bounty."
+            )
+        if role_lower != "contributor":
+            return ClaimEligibility(
+                is_eligible=False,
+                error_code="TEMPORARY_CLAIM_ROLE_NOT_ALLOWED",
+                error_message="Temporary claims are only allowed for 'contributor' tasks."
             )
 
         # All checks passed
