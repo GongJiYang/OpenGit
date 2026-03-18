@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, Optional, Tuple
+from typing import Any, Optional, Tuple, List
 
 from sqlmodel import Session, select
 
@@ -61,6 +61,72 @@ class MetaAdapter:
     # --- PR operations ---
     def get_pr(self, pr_number: int) -> Optional[PlatformPR]:
         return self.session.exec(select(PlatformPR).where(PlatformPR.pr_number == pr_number)).first()
+
+    def list_prs(self, status_filter: Optional[str], limit: int) -> List[PlatformPR]:
+        query = select(PlatformPR).order_by(PlatformPR.created_at.desc())
+        if status_filter:
+            query = query.where(PlatformPR.status == status_filter)
+        query = query.limit(limit)
+        return self.session.exec(query).all()
+
+    def create_pr(self, meta_config: MetaRepoConfig, title: str, description: Optional[str], source_branch: str, source_repo: str) -> PlatformPR:
+        import subprocess
+        from pathlib import Path
+
+        # validate fork exists
+        repos_dir = Path("./agenthub_data/repos").resolve()
+        source_repo_path = repos_dir / source_repo
+        # target_repo_path not used in create_pr
+
+        # changed files
+        try:
+            result = subprocess.run(
+                ["git", "diff", "--name-only", f"refs/heads/{source_branch}", "refs/heads/main"],
+                cwd=str(source_repo_path), capture_output=True, text=True
+            )
+            changed_files = result.stdout.strip().split("\n") if result.stdout.strip() else []
+        except subprocess.CalledProcessError:
+            changed_files = []
+
+        touches_protected = any(
+            any(__import__("fnmatch").fnmatch.fnmatch(f, pattern) for pattern in (meta_config.protected_paths or []))
+            for f in changed_files
+        )
+
+        # next pr number
+        last_pr = self.session.exec(select(PlatformPR).order_by(PlatformPR.pr_number.desc()).limit(1)).first()
+        next_pr_number = (last_pr.pr_number + 1) if last_pr else 1
+
+        pr = PlatformPR(
+            pr_number=next_pr_number,
+            title=title,
+            description=description,
+            source_branch=source_branch,
+            source_repo=source_repo,
+            author_type="agent",  # TODO integrate auth
+            author_id="workitem",
+            touches_protected_paths=touches_protected,
+            requires_elevated_review=touches_protected,
+            required_approval_count=(meta_config.require_approval_count if touches_protected else 1),
+        )
+        self.session.add(pr)
+        audit = PlatformAuditLog(
+            event_type="pr_created",
+            actor_type="agent",
+            actor_id="workitem",
+            target_type="pr",
+            target_id=str(next_pr_number),
+            details={
+                "title": title,
+                "source_branch": source_branch,
+                "changed_files": changed_files,
+                "touches_protected_paths": touches_protected,
+            }
+        )
+        self.session.add(audit)
+        self.session.commit()
+        self.session.refresh(pr)
+        return pr
 
     def approve_pr(self, pr_number: int, reviewer_type: str, reviewer_id: str, comment: Optional[str], meta_config: MetaRepoConfig) -> PlatformPR:
         pr = self.get_pr(pr_number)
@@ -181,6 +247,48 @@ class MetaAdapter:
         self.session.add(audit)
         self.session.commit()
         return pr, update
+
+    # --- Update operations ---
+    def get_update(self, update_id: int) -> Optional[PlatformUpdate]:
+        return self.session.get(PlatformUpdate, update_id)
+
+    def list_updates(self, status_filter: Optional[str], limit: int) -> List[PlatformUpdate]:
+        query = select(PlatformUpdate).order_by(PlatformUpdate.created_at.desc())
+        if status_filter:
+            query = query.where(PlatformUpdate.status == status_filter)
+        query = query.limit(limit)
+        return self.session.exec(query).all()
+
+    def rollback_update(self, update_id: int, meta_config: MetaRepoConfig) -> PlatformUpdate:
+        update = self.session.get(PlatformUpdate, update_id)
+        if not update:
+            raise ValueError(f"Update {update_id} not found")
+        if not update.rollback_available:
+            raise ValueError("Rollback not available for this update")
+        if not update.previous_commit_sha:
+            raise ValueError("No previous commit available for rollback")
+
+        update.status = UpdateStatus.ROLLED_BACK.value
+        update.completed_at = datetime.utcnow()
+        self.session.add(update)
+
+        # Update config
+        meta_config.current_commit = update.previous_commit_sha
+        self.session.add(meta_config)
+
+        # Audit
+        audit = PlatformAuditLog(
+            event_type="rollback_executed",
+            actor_type="human",
+            actor_id="admin",
+            target_type="update",
+            target_id=str(update_id),
+            details={"rolled_back_to": update.previous_commit_sha},
+        )
+        self.session.add(audit)
+        self.session.commit()
+        self.session.refresh(update)
+        return update
 
 
 class WorkItemService:

@@ -6,7 +6,6 @@ API endpoints for managing the self-hosting meta-repository.
 
 import subprocess
 import fnmatch
-from datetime import datetime
 from typing import List, Optional
 from pathlib import Path
 
@@ -21,7 +20,6 @@ from persistence import (
     PlatformUpdate,
     PlatformAuditLog,
     PRStatus,
-    UpdateStatus,
     get_session,
 )
 from agent_auth.services.workitem_service import WorkItemService
@@ -106,10 +104,9 @@ async def get_meta_status(
         .limit(1)
     ).first()
 
-    # Get pending PRs count
-    pending_prs = len(session.exec(
-        select(PlatformPR).where(PlatformPR.status == PRStatus.OPEN.value)
-    ).all())
+    # Get pending PRs count via adapter（等价实现）
+    wis = WorkItemService(session)
+    pending_prs = len([p for p in wis.meta.list_prs(status_filter=PRStatus.OPEN.value, limit=1000)])
 
     return {
         "initialized": True,
@@ -367,10 +364,7 @@ async def create_pr(
     """
     Create a Pull Request for the meta-repository.
     """
-    # TODO: Get author info from auth
-    author_type = "agent"
-    author_id = "test-agent"
-
+    # TODO: Get author info from auth (kept for future integration)
     # Validate source repo exists and is a fork
     source_fork = session.exec(
         select(MetaRepoFork).where(
@@ -385,83 +379,42 @@ async def create_pr(
             detail=f"Source fork not found: {request.source_repo}"
         )
 
-    # Get changed files
-    repos_dir = Path("./agenthub_data/repos").resolve()
-    source_repo_path = repos_dir / request.source_repo
-    # target_repo_path no longer needed here; integration via WorkItemService
-
+    # 通过 WorkItemService 统一创建 PR（保持响应结构不变）
+    wis = WorkItemService(session)
     try:
-        # Get diff between branches
-        result = subprocess.run(
-            [
-                "git", "diff", "--name-only",
-                f"refs/heads/{request.source_branch}",
-                "refs/heads/main"
-            ],
-            cwd=str(source_repo_path),
-            capture_output=True,
-            text=True
+        pr = wis.meta.create_pr(
+            meta_config=meta_config,
+            title=request.title,
+            description=request.description,
+            source_branch=request.source_branch,
+            source_repo=request.source_repo,
         )
-        changed_files = result.stdout.strip().split('\n') if result.stdout.strip() else []
-    except subprocess.CalledProcessError:
-        changed_files = []
-
-    # Check protected paths
-    touches_protected = any(
-        any(fnmatch.fnmatch(f, pattern) for pattern in meta_config.protected_paths)
-        for f in changed_files
-    )
-
-    # Get next PR number
-    last_pr = session.exec(
-        select(PlatformPR).order_by(PlatformPR.pr_number.desc()).limit(1)
-    ).first()
-    next_pr_number = (last_pr.pr_number + 1) if last_pr else 1
-
-    # Create PR
-    pr = PlatformPR(
-        pr_number=next_pr_number,
-        title=request.title,
-        description=request.description,
-        source_branch=request.source_branch,
-        source_repo=request.source_repo,
-        author_type=author_type,
-        author_id=author_id,
-        touches_protected_paths=touches_protected,
-        requires_elevated_review=touches_protected,
-        required_approval_count=(
-            meta_config.require_approval_count if touches_protected else 1
-        ),
-    )
-    session.add(pr)
-
-    # Audit log
-    audit = PlatformAuditLog(
-        event_type="pr_created",
-        actor_type=author_type,
-        actor_id=author_id,
-        target_type="pr",
-        target_id=str(pr.pr_number),
-        details={
-            "title": request.title,
-            "source_branch": request.source_branch,
-            "changed_files": changed_files,
+        # 重建 changed_files 与 touches_protected 以兼容响应
+        repos_dir = Path("./agenthub_data/repos").resolve()
+        source_repo_path = repos_dir / request.source_repo
+        try:
+            result = subprocess.run(
+                ["git", "diff", "--name-only", f"refs/heads/{request.source_branch}", "refs/heads/main"],
+                cwd=str(source_repo_path), capture_output=True, text=True
+            )
+            changed_files = result.stdout.strip().split("\n") if result.stdout.strip() else []
+        except subprocess.CalledProcessError:
+            changed_files = []
+        touches_protected = any(
+            any(fnmatch.fnmatch(f, pattern) for pattern in (meta_config.protected_paths or []))
+            for f in changed_files
+        )
+        return {
+            "success": True,
+            "pr_number": pr.pr_number,
+            "title": pr.title,
+            "status": pr.status,
             "touches_protected_paths": touches_protected,
+            "required_approval_count": pr.required_approval_count,
+            "changed_files": changed_files,
         }
-    )
-    session.add(audit)
-    session.commit()
-    session.refresh(pr)
-
-    return {
-        "success": True,
-        "pr_number": pr.pr_number,
-        "title": pr.title,
-        "status": pr.status,
-        "touches_protected_paths": touches_protected,
-        "required_approval_count": pr.required_approval_count,
-        "changed_files": changed_files,
-    }
+    except Exception as e:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
 
 
 @meta_router.get("/prs")
@@ -471,13 +424,8 @@ async def list_prs(
     session: Session = Depends(get_session)
 ):
     """List Pull Requests with optional filtering."""
-    query = select(PlatformPR).order_by(PlatformPR.created_at.desc())
-
-    if status_filter:
-        query = query.where(PlatformPR.status == status_filter)
-
-    query = query.limit(limit)
-    prs = session.exec(query).all()
+    wis = WorkItemService(session)
+    prs = wis.meta.list_prs(status_filter=status_filter, limit=limit)
 
     return {
         "prs": [
@@ -651,22 +599,17 @@ async def list_updates(
     session: Session = Depends(get_session)
 ):
     """List platform update history."""
-    query = select(PlatformUpdate).order_by(PlatformUpdate.created_at.desc())
-
-    if status_filter:
-        query = query.where(PlatformUpdate.status == status_filter)
-
-    query = query.limit(limit)
-    updates = session.exec(query).all()
+    wis = WorkItemService(session)
+    updates = wis.meta.list_updates(status_filter=status_filter, limit=limit)
 
     return {
         "updates": [
             {
                 "id": u.id,
                 "source_pr_number": u.source_pr_number,
-                "source_commit_sha": u.source_commit_sha[:8],
+                "source_commit_sha": u.source_commit_sha[:8] if u.source_commit_sha else None,
                 "status": u.status,
-                "files_changed_count": len(u.files_changed),
+                "files_changed_count": len(u.files_changed or []),
                 "triggered_by": u.triggered_by,
                 "created_at": u.created_at.isoformat(),
                 "completed_at": u.completed_at.isoformat() if u.completed_at else None,
@@ -720,59 +663,17 @@ async def rollback_update(
 
     Only callable by admin.
     """
-    update = session.get(PlatformUpdate, update_id)
-
-    if not update:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Update {update_id} not found"
-        )
-
-    if not update.rollback_available:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Rollback not available for this update"
-        )
-
-    if not update.previous_commit_sha:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="No previous commit available for rollback"
-        )
-
-    # TODO: Implement actual rollback
-    # 1. Sync previous commit
-    # 2. Restart services
-    # 3. Update status
-
-    update.status = UpdateStatus.ROLLED_BACK.value
-    update.completed_at = datetime.utcnow()
-    session.add(update)
-
-    # Update config
-    meta_config.current_commit = update.previous_commit_sha
-    session.add(meta_config)
-
-    # Audit log
-    audit = PlatformAuditLog(
-        event_type="rollback_executed",
-        actor_type="human",
-        actor_id="admin",
-        target_type="update",
-        target_id=str(update_id),
-        details={
+    wis = WorkItemService(session)
+    try:
+        update = wis.meta.rollback_update(update_id, meta_config)
+        return {
+            "success": True,
+            "update_id": update_id,
             "rolled_back_to": update.previous_commit_sha,
+            "message": "Rollback completed",
         }
-    )
-    session.add(audit)
-    session.commit()
-
-    return {
-        "success": True,
-        "update_id": update_id,
-        "rolled_back_to": update.previous_commit_sha,
-        "message": "Rollback completed",
-    }
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
 
 
 # === Audit Log ===
