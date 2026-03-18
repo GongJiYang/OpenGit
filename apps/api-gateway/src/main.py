@@ -7,7 +7,7 @@ import tempfile
 import shutil
 import json
 import html
-from typing import List, Optional, Any
+from typing import List, Optional, Any, Tuple
 from fastapi import FastAPI, HTTPException, Body, Depends, Request, Header, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
@@ -809,13 +809,14 @@ def decompose_task(parent_id: str, sub_tasks: List[Bounty], agent_id: str, sessi
 
 class TaskNode(BaseModel):
     """Nested task structure for hierarchical decomposition."""
+    client_id: Optional[str] = Field(default=None, description="Client-provided stable ID used for dependency resolution")
     title: str
     description: str = ""
     reward: int = 0
     required_role: str = "contributor"
     estimated_hours: Optional[int] = None
     track: Optional[str] = None
-    dependencies: List[str] = Field(default_factory=list, description="List of task titles this depends on (resolved after creation)")
+    dependencies: List[str] = Field(default_factory=list, description="List of client_ids this depends on")
     children: List["TaskNode"] = Field(default_factory=list, description="Sub-tasks")
     test_command: str = "pytest"
     verification_mode: str = "auto"
@@ -832,7 +833,7 @@ class DecomposedBountyResponse(BaseModel):
     """Response with all created bounties and their dependencies."""
     total_created: int
     bounties: List[dict]
-    dependency_map: dict  # {task_title: bounty_id}
+    dependency_map: dict  # {client_id: bounty_id}
 
 
 def _flatten_task_tree(
@@ -840,9 +841,9 @@ def _flatten_task_tree(
     parent_id: Optional[str],
     repo_name: str,
     repo_id: Optional[str],
-    title_to_id: dict,
+    client_to_server_id: dict,
     all_bounties: List[Bounty]
-) -> Bounty:
+) -> Tuple[Bounty, Optional[str]]:
     """Recursively flatten a task tree into individual Bounty records."""
     from persistence import BountyStatus
 
@@ -862,7 +863,8 @@ def _flatten_task_tree(
         status=BountyStatus.PENDING.value if node.dependencies else BountyStatus.OPEN.value
     )
     all_bounties.append(bounty)
-    return bounty
+    # Return bounty and client_id (if provided) so caller can build mapping
+    return bounty, (node.client_id or None)
 
 
 @app.post("/api/v1/bounties/decomposed", response_model=DecomposedBountyResponse)
@@ -905,58 +907,63 @@ def create_decomposed_bounties(
         raise HTTPException(status_code=404, detail=f"Repo '{req.repo_name}' not found")
 
     all_bounties: List[Bounty] = []
-    title_to_id: dict = {}
-    title_counts: dict = {}
+    client_to_server_id: dict = {}
+    seen_client_ids: set = set()
 
     def process_node(node: TaskNode, parent_id: Optional[str] = None):
-        """Recursively process a task node with duplicate-title detection."""
-        # Detect duplicate titles along the entire tree build
-        norm_title = (node.title or "").strip()
-        if not norm_title:
-            raise HTTPException(status_code=400, detail="Task title cannot be empty")
-        count = title_counts.get(norm_title, 0)
-        if count > 0:
-            # Duplicate detected: reject to prevent ambiguous dependency resolution
-            raise HTTPException(status_code=400, detail=f"Duplicate task title detected: '{norm_title}'. Titles must be unique within the tree.")
-        title_counts[norm_title] = count + 1
+        """Recursively process a task node, building client_id -> server_id mapping."""
+        # Enforce client_id uniqueness if provided
+        if node.client_id:
+            cid = node.client_id.strip()
+            if not cid:
+                raise HTTPException(status_code=400, detail="client_id cannot be empty when provided")
+            if cid in seen_client_ids:
+                raise HTTPException(status_code=400, detail=f"Duplicate client_id detected: '{cid}'")
+            seen_client_ids.add(cid)
 
-        bounty = _flatten_task_tree(
+        bounty, cid = _flatten_task_tree(
             node=node,
             parent_id=parent_id,
             repo_name=req.repo_name,
             repo_id=req.repo_id,
-            title_to_id=title_to_id,
+            client_to_server_id=client_to_server_id,
             all_bounties=all_bounties
         )
         session.add(bounty)
         session.flush()
-        title_to_id[norm_title] = bounty.id
+        if cid:
+            client_to_server_id[cid] = bounty.id
 
         for child in node.children:
             process_node(child, bounty.id)
 
     process_node(req.root_task)
 
-    # Resolve dependencies (title -> bounty_id)
-    def find_node_deps(node: TaskNode, target_title: str) -> Optional[List[str]]:
-        # Titles are enforced unique in process_node; this function assumes uniqueness
-        if node.title == target_title:
+    # Resolve dependencies using client_id -> bounty_id mapping
+    def find_node_deps_by_client_id(node: TaskNode, target_client_id: Optional[str]) -> Optional[List[str]]:
+        if (node.client_id or None) == target_client_id:
             return node.dependencies
         for child in node.children:
-            result = find_node_deps(child, target_title)
+            result = find_node_deps_by_client_id(child, target_client_id)
             if result is not None:
                 return result
         return None
 
     for bounty in all_bounties:
-        original_deps = find_node_deps(req.root_task, bounty.title)
+        # Determine this bounty's client_id by reverse lookup
+        this_client_id = None
+        for cid, sid in client_to_server_id.items():
+            if sid == bounty.id:
+                this_client_id = cid
+                break
+        original_deps = find_node_deps_by_client_id(req.root_task, this_client_id)
         if original_deps:
             node_deps = []
-            for dep_title in original_deps:
-                if dep_title in title_to_id:
-                    node_deps.append(title_to_id[dep_title])
+            for dep_cid in original_deps:
+                if dep_cid in client_to_server_id:
+                    node_deps.append(client_to_server_id[dep_cid])
                 else:
-                    raise HTTPException(status_code=400, detail=f"Dependency '{dep_title}' not found for task '{bounty.title}'")
+                    raise HTTPException(status_code=400, detail=f"Dependency client_id '{dep_cid}' not found for task '{bounty.title}'")
             bounty.dependencies = node_deps
             bounty.status = BountyStatus.PENDING.value
         else:
@@ -990,7 +997,7 @@ def create_decomposed_bounties(
     return DecomposedBountyResponse(
         total_created=len(all_bounties),
         bounties=bounty_dicts,
-        dependency_map=title_to_id
+        dependency_map=client_to_server_id
     )
 
 
