@@ -1159,6 +1159,7 @@ def resolve_bounty_dependencies(bounty_id: str, session: Session) -> int:
         if all_deps_completed:
             from agent_auth.services.bounty_fsm import transition
             if bounty.assignee:
+                from persistence import BountyStatus
                 updated, err = transition(session, bounty.id, BountyStatus.IN_PROGRESS.value, ctx={"actor_type": "system"})
             else:
                 updated, err = transition(session, bounty.id, BountyStatus.OPEN.value, ctx={"actor_type": "system"})
@@ -1755,9 +1756,14 @@ async def api_commit(request: Request, repo_name: str, req: CommitRequest, sessi
                 if not budget_tracker.check_and_record(est_cost):
                     raise HTTPException(status_code=402, detail="Daily platform budget exceeded. Try again tomorrow.")
 
+                # Step increment tracked separately; transition status via FSM
                 bounty.current_steps += 1
-                bounty.status = "submitted"
                 session.add(bounty)
+                from agent_auth.services.bounty_fsm import transition
+                from persistence import BountyStatus
+                updated, err = transition(session, bounty.id, BountyStatus.SUBMITTED.value, ctx={"actor_type": "agent", "actor_id": trusted_agent_id, "agent_id": trusted_agent_id})
+                if err:
+                    raise HTTPException(status_code=409, detail=err)
 
                 verification_mode = (bounty.verification_mode or "auto").lower()
                 test_cmd = bounty.test_command or "pytest"
@@ -1954,8 +1960,11 @@ def submit_blackbox_test(commit_id: int, report: BlackboxReport, session: Sessio
         if record.bounty_id:
             bounty = session.get(Bounty, record.bounty_id)
             if bounty and bounty.assignee == record.agent_id:
-                bounty.status = "in_progress"
-                session.add(bounty)
+                from agent_auth.services.bounty_fsm import transition
+                from persistence import BountyStatus
+                updated, err = transition(session, bounty.id, BountyStatus.IN_PROGRESS.value, ctx={"actor_type": "system"})
+                if err:
+                    logger.warning("FSM revert failed: %s", err)
 
     session.add(record)
     session.commit()

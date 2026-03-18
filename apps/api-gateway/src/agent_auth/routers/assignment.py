@@ -186,14 +186,11 @@ async def auto_assign_task(
         raise HTTPException(
             status_code=404, detail="No suitable agent available for this task")
 
-    # Assign task
-    bounty.status = "in_progress"
-    bounty.assignee = str(best_match["agent_id"])
-    bounty.updated_at = datetime.utcnow()
-
-    session.add(bounty)
-    session.commit()
-    session.refresh(bounty)
+    # Assign task via FSM
+    from ..services.bounty_fsm import transition
+    updated, err = transition(session, bounty.id, to_status="in_progress", ctx={"actor_type": "system", "agent_id": str(best_match["agent_id"])})
+    if err:
+        raise HTTPException(status_code=409, detail=err)
 
     return best_match
 

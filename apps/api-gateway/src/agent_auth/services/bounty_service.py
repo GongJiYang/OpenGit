@@ -316,21 +316,29 @@ class BountyService:
         if not eligibility.is_eligible:
             return None, eligibility.error_message
 
-        # Create temporary claim
+        # Create temporary claim (FSM + flags)
         now = datetime.utcnow()
         expires_at = now + timedelta(hours=TEMPORARY_CLAIM_EXPIRATION_HOURS)
 
-        eligibility.bounty.status = "in_progress"
-        eligibility.bounty.assignee = str(agent_id)
-        eligibility.bounty.is_temporary_claim = True
-        eligibility.bounty.claim_expires_at = expires_at
-        eligibility.bounty.updated_at = now
+        from .bounty_fsm import transition
+        from persistence import BountyStatus
+        updated, err = transition(
+            self.bounty_session,
+            bounty_id,
+            to_status=BountyStatus.IN_PROGRESS.value,
+            ctx={"actor_type": "agent", "actor_id": str(agent_id), "agent_id": str(agent_id)},
+        )
+        if err:
+            return None, err
 
-        self.bounty_session.add(eligibility.bounty)
+        updated.is_temporary_claim = True
+        updated.claim_expires_at = expires_at
+        updated.updated_at = now
+        self.bounty_session.add(updated)
         self.bounty_session.commit()
-        self.bounty_session.refresh(eligibility.bounty)
+        self.bounty_session.refresh(updated)
 
-        return eligibility.bounty, None
+        return updated, None
 
     def convert_temporary_claim_to_permanent(
         self,
@@ -415,14 +423,16 @@ class BountyService:
 
         released_count = 0
         for bounty in expired_claims:
-            # Release the bounty back to open
-            bounty.status = "open"
-            bounty.assignee = None
-            bounty.is_temporary_claim = False
-            bounty.claim_expires_at = None
-            bounty.updated_at = now
-            self.bounty_session.add(bounty)
-            released_count += 1
+            # Release via FSM
+            from .bounty_fsm import transition
+            from persistence import BountyStatus
+            updated, err = transition(self.bounty_session, bounty.id, BountyStatus.OPEN.value, ctx={"actor_type": "system"})
+            if not err and updated:
+                updated.is_temporary_claim = False
+                updated.claim_expires_at = None
+                updated.updated_at = now
+                self.bounty_session.add(updated)
+                released_count += 1
 
         self.bounty_session.commit()
 

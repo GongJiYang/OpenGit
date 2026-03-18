@@ -29,6 +29,7 @@ from sqlmodel import Session, update
 from persistence import Bounty, BountyStatus, AuditLog
 
 
+
 def _deps_completed(session: Session, bounty: Bounty) -> bool:
     """Return True if all dependencies of `bounty` are completed."""
     if not bounty.dependencies:
@@ -165,6 +166,64 @@ def transition(session: Session, bounty_id: str, to_status: str, ctx: Optional[D
             update(Bounty)
             .where(Bounty.id == bounty_id, Bounty.status == BountyStatus.READY_FOR_PREPARATION.value, Bounty.assignee.is_not(None))
             .values(status=BountyStatus.IN_PROGRESS.value, updated_at=datetime.utcnow())
+            .execution_options(synchronize_session=False)
+        )
+        res = session.exec(stmt)
+        if getattr(res, "rowcount", 0) == 0:
+            return None, "Transition rejected due to concurrent update"
+        session.commit()
+        updated = session.get(Bounty, bounty_id)
+        _audit(session, updated, from_status, to_status, ctx)
+        session.commit()
+        return updated, None
+
+    # In-progress -> Submitted (agent submits work)
+    if from_status == BountyStatus.IN_PROGRESS.value and to_status == BountyStatus.SUBMITTED.value:
+        agent_id = ctx.get("agent_id")
+        if not agent_id or str(bounty.assignee) != str(agent_id):
+            return None, "Only assignee can submit this bounty"
+        stmt = (
+            update(Bounty)
+            .where(Bounty.id == bounty_id, Bounty.status == BountyStatus.IN_PROGRESS.value, Bounty.assignee == str(agent_id))
+            .values(status=BountyStatus.SUBMITTED.value, updated_at=datetime.utcnow())
+            .execution_options(synchronize_session=False)
+        )
+        res = session.exec(stmt)
+        if getattr(res, "rowcount", 0) == 0:
+            return None, "Transition rejected due to concurrent update"
+        session.commit()
+        updated = session.get(Bounty, bounty_id)
+        _audit(session, updated, from_status, to_status, ctx)
+        session.commit()
+        return updated, None
+
+    # Submitted -> In-progress (e.g., blackbox fail or requested changes)
+    if from_status == BountyStatus.SUBMITTED.value and to_status == BountyStatus.IN_PROGRESS.value:
+        # Keep assignee; just move back to in_progress
+        stmt = (
+            update(Bounty)
+            .where(Bounty.id == bounty_id, Bounty.status == BountyStatus.SUBMITTED.value)
+            .values(status=BountyStatus.IN_PROGRESS.value, updated_at=datetime.utcnow())
+            .execution_options(synchronize_session=False)
+        )
+        res = session.exec(stmt)
+        if getattr(res, "rowcount", 0) == 0:
+            return None, "Transition rejected due to concurrent update"
+        session.commit()
+        updated = session.get(Bounty, bounty_id)
+        _audit(session, updated, from_status, to_status, ctx)
+        session.commit()
+        return updated, None
+
+    # In-progress -> Open (temporary claim expired)
+    if from_status == BountyStatus.IN_PROGRESS.value and to_status == BountyStatus.OPEN.value:
+        # Allow only for temporary claims via context flag
+        if not bounty.is_temporary_claim:
+            return None, "Only temporary claims can be released to open"
+        stmt = (
+            update(Bounty)
+            .where(Bounty.id == bounty_id, Bounty.status == BountyStatus.IN_PROGRESS.value)
+            .values(status=BountyStatus.OPEN.value, updated_at=datetime.utcnow(), assignee=None)
             .execution_options(synchronize_session=False)
         )
         res = session.exec(stmt)
