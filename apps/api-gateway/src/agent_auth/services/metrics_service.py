@@ -220,7 +220,7 @@ def record_task_completed(
     if metrics.response_times_json:
         try:
             response_times = json.loads(metrics.response_times_json)
-        except:
+        except Exception:
             pass
     response_times.append(completion_time_hours)
 
@@ -239,7 +239,7 @@ def record_task_completed(
         if metrics.track_performance_json:
             try:
                 track_perf = json.loads(metrics.track_performance_json)
-            except:
+            except Exception:
                 pass
 
         if track not in track_perf:
@@ -258,7 +258,7 @@ def record_task_completed(
         if metrics.skill_performance_json:
             try:
                 skill_perf = json.loads(metrics.skill_performance_json)
-            except:
+            except Exception:
                 pass
 
         for skill in skills_used:
