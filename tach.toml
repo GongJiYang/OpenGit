@@ -42,6 +42,10 @@ path = "git_tree_service"
 depends_on = ["persistence"]
 
 [[modules]]
+path = "agenthub_runner"
+depends_on = []
+
+[[modules]]
 path = "persistence"
 depends_on = ["agenthub_protocol"]
 

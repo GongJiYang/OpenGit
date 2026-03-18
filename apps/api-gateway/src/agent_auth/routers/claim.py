@@ -7,7 +7,7 @@ Supports both GitHub OAuth and email-based verification.
 
 from datetime import datetime
 import logging
-
+import os
 from fastapi import APIRouter, Depends, HTTPException, status, Request
 from fastapi.responses import HTMLResponse
 from sqlmodel import Session, select
@@ -45,7 +45,7 @@ def get_session():
 
 # ============== Configuration ==============
 
-import os
+
 GITHUB_CLIENT_ID = os.getenv("GITHUB_CLIENT_ID", "")
 GITHUB_REDIRECT_URI = os.getenv("GITHUB_REDIRECT_URI", "http://localhost:8000/api/v1/oauth/github/callback")
 
@@ -483,7 +483,7 @@ async def verify_claim_with_email(
     session.exec(
         update(EmailVerification)
         .where(EmailVerification.agent_id == agent.id)
-        .where(EmailVerification.verified == False)
+        .where(EmailVerification.verified.is_(False))
         .values(verified=True)  # Mark as used to prevent reuse
     )
     session.commit()
