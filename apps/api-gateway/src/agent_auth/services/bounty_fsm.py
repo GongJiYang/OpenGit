@@ -235,4 +235,54 @@ def transition(session: Session, bounty_id: str, to_status: str, ctx: Optional[D
         session.commit()
         return updated, None
 
+    # === Cancellation and Restore ===
+    # * -> CANCELLED (allowed from pending/ready/open/in_progress/submitted)
+    if to_status == BountyStatus.CANCELLED.value:
+        # Optional guard for in_progress/submitted (authorization outside FSM)
+        stmt = (
+            update(Bounty)
+            .where(Bounty.id == bounty_id, Bounty.status.in_([
+                BountyStatus.PENDING.value,
+                BountyStatus.READY_FOR_PREPARATION.value,
+                BountyStatus.OPEN.value,
+                BountyStatus.IN_PROGRESS.value,
+                BountyStatus.SUBMITTED.value,
+            ]))
+            .values(status=BountyStatus.CANCELLED.value, updated_at=datetime.utcnow(), cancelled_at=datetime.utcnow(), cancelled_by=ctx.get("actor_id"), cancelled_reason=ctx.get("reason"))
+            .execution_options(synchronize_session=False)
+        )
+        res = session.exec(stmt)
+        if getattr(res, "rowcount", 0) == 0:
+            return None, "Transition rejected due to concurrent update or invalid state"
+        session.commit()
+        updated = session.get(Bounty, bounty_id)
+        _audit(session, updated, from_status, to_status, ctx)
+        session.commit()
+        return updated, None
+
+    # CANCELLED -> OPEN or PENDING depending on dependency completion
+    if from_status == BountyStatus.CANCELLED.value and to_status in (BountyStatus.OPEN.value, BountyStatus.PENDING.value):
+        # Decide target based on deps
+        want_open = to_status == BountyStatus.OPEN.value
+        deps_ok = _deps_completed(session, bounty)
+        if want_open and not deps_ok:
+            return None, "Dependencies are not all completed"
+        if not want_open and deps_ok:
+            # If deps are satisfied but asked for pending, normalize to open
+            to_status = BountyStatus.OPEN.value
+        stmt = (
+            update(Bounty)
+            .where(Bounty.id == bounty_id, Bounty.status == BountyStatus.CANCELLED.value)
+            .values(status=to_status, updated_at=datetime.utcnow(), cancelled_at=None, cancelled_by=None, cancelled_reason=None)
+            .execution_options(synchronize_session=False)
+        )
+        res = session.exec(stmt)
+        if getattr(res, "rowcount", 0) == 0:
+            return None, "Transition rejected due to concurrent update"
+        session.commit()
+        updated = session.get(Bounty, bounty_id)
+        _audit(session, updated, from_status, to_status, ctx)
+        session.commit()
+        return updated, None
+
     return None, f"Transition {from_status} -> {to_status} not allowed or not implemented"

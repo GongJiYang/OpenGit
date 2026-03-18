@@ -151,6 +151,11 @@ class Bounty(SQLModel, table=True):
         description="List of notes: [{agent_id, notes, timestamp}]"
     )
 
+    # Cancellation metadata
+    cancelled_by: Optional[str] = Field(default=None, index=True, description="Agent/User ID who cancelled this bounty")
+    cancelled_reason: Optional[str] = Field(default=None, description="Reason for cancellation")
+    cancelled_at: Optional[datetime] = Field(default=None, index=True)
+
     created_at: datetime = Field(default_factory=datetime.utcnow)
     updated_at: datetime = Field(default_factory=datetime.utcnow, sa_column_kwargs={"onupdate": datetime.utcnow})
 

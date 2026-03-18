@@ -7,7 +7,7 @@ import tempfile
 import shutil
 import json
 import html
-from typing import List, Optional, Any, Tuple
+from typing import List, Optional, Any, Tuple, Set
 from fastapi import FastAPI, HTTPException, Body, Depends, Request, Header, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
@@ -1550,6 +1550,120 @@ def activate_from_preparation(
         "assignee": updated.assignee,
         "message": "Bounty activated. Preparer can now submit code."
     }
+
+
+# --- Cancel / Restore Endpoints ---
+
+class CancelRequest(BaseModel):
+    reason: Optional[str] = None
+    force: bool = True  # Strict cascade default
+
+class RestoreRequest(BaseModel):
+    pass
+
+
+def _collect_cascade_ids(session: Session, root_id: str) -> Set[str]:
+    """Collect child and dependent bounty ids for strict cascade."""
+    from sqlmodel import select
+    ids: Set[str] = set()
+    to_visit = [root_id]
+    while to_visit:
+        current = to_visit.pop()
+        if current in ids:
+            continue
+        ids.add(current)
+        # Children
+        children = session.exec(select(Bounty).where(Bounty.parent_id == current)).all()
+        for c in children:
+            to_visit.append(c.id)
+        # Reverse dependents
+        dependents = session.exec(select(Bounty).where(Bounty.dependencies.contains([current]))).all()
+        for d in dependents:
+            to_visit.append(d.id)
+    return ids
+
+
+@app.post("/api/v1/bounties/{bounty_id}/cancel")
+@limiter.limit("10/minute")
+def cancel_bounty(request: Request, bounty_id: str, req: CancelRequest, session: Session = Depends(get_session), auth_session: Session = Depends(get_auth_session), identity: Any = Depends(require_active_identity)):
+    """Cancel a bounty with strict cascade to children and dependents.
+
+    Auth: repo Architect or platform Admin. Cascade default enabled (force=True).
+    """
+    # AuthZ: repo membership + architect/admin check
+    bounty = session.get(Bounty, bounty_id)
+    if not bounty:
+        raise HTTPException(status_code=404, detail="Bounty not found")
+
+    from agent_auth.models.platform import Repo, RepoRole, UserRole, RepoMember, MembershipStatus
+    repo = auth_session.exec(select(Repo).where(Repo.full_name == bounty.repo_name)).first()
+    if not repo:
+        raise HTTPException(status_code=404, detail=f"Repository '{bounty.repo_name}' not registered on platform")
+
+    allowed = False
+    # If identity is a User
+    if hasattr(identity, "role") and isinstance(identity.role, UserRole):
+        allowed = identity.role == UserRole.ADMIN
+    else:
+        # Agent path: require repo membership and ARCHITECT role
+        membership = auth_session.exec(select(RepoMember).where(RepoMember.repo_id == repo.id, RepoMember.agent_id == identity.id, RepoMember.status == MembershipStatus.ACTIVE)).first()
+        allowed = bool(membership and membership.role == RepoRole.ARCHITECT)
+
+    if not allowed:
+        raise HTTPException(status_code=403, detail="Forbidden: architect/admin required")
+
+    # Cascade ids
+    ids = _collect_cascade_ids(session, bounty_id) if req.force else {bounty_id}
+
+    from agent_auth.services.bounty_fsm import transition
+    from persistence import BountyStatus
+
+    errors = []
+    for bid in ids:
+        _, err = transition(session, bid, BountyStatus.CANCELLED.value, ctx={"actor_type": "user" if hasattr(identity, "role") else "agent", "actor_id": getattr(identity, "id", None) or getattr(identity, "agent_id", None), "reason": req.reason})
+        if err:
+            errors.append({"bounty_id": bid, "error": err})
+
+    if errors:
+        raise HTTPException(status_code=409, detail={"message": "Some cancellations failed", "errors": errors})
+
+    return {"cancelled": list(ids), "count": len(ids)}
+
+
+@app.post("/api/v1/bounties/{bounty_id}/restore")
+@limiter.limit("10/minute")
+def restore_bounty(request: Request, bounty_id: str, req: RestoreRequest, session: Session = Depends(get_session), auth_session: Session = Depends(get_auth_session), identity: Any = Depends(require_active_identity)):
+    """Restore a cancelled bounty. If dependencies complete -> open else pending."""
+    bounty = session.get(Bounty, bounty_id)
+    if not bounty:
+        raise HTTPException(status_code=404, detail="Bounty not found")
+
+    from agent_auth.models.platform import Repo, RepoRole, UserRole, RepoMember, MembershipStatus
+    repo = auth_session.exec(select(Repo).where(Repo.full_name == bounty.repo_name)).first()
+    if not repo:
+        raise HTTPException(status_code=404, detail=f"Repository '{bounty.repo_name}' not registered on platform")
+
+    allowed = False
+    if hasattr(identity, "role") and isinstance(identity.role, UserRole):
+        allowed = identity.role == UserRole.ADMIN
+    else:
+        membership = auth_session.exec(select(RepoMember).where(RepoMember.repo_id == repo.id, RepoMember.agent_id == identity.id, RepoMember.status == MembershipStatus.ACTIVE)).first()
+        allowed = bool(membership and membership.role == RepoRole.ARCHITECT)
+
+    if not allowed:
+        raise HTTPException(status_code=403, detail="Forbidden: architect/admin required")
+
+    from agent_auth.services.bounty_fsm import transition
+    from persistence import BountyStatus
+
+    # Try OPEN first, fallback to PENDING
+    updated, err = transition(session, bounty_id, BountyStatus.OPEN.value, ctx={"actor_type": "user" if hasattr(identity, "role") else "agent", "actor_id": getattr(identity, "id", None) or getattr(identity, "agent_id", None)})
+    if err:
+        updated, err = transition(session, bounty_id, BountyStatus.PENDING.value, ctx={"actor_type": "user" if hasattr(identity, "role") else "agent", "actor_id": getattr(identity, "id", None) or getattr(identity, "agent_id", None)})
+        if err:
+            raise HTTPException(status_code=409, detail=err)
+
+    return {"restored": updated.id, "status": updated.status}
 
 
 # --- Bounty Decision Endpoint (Structured Output Validation) ---
