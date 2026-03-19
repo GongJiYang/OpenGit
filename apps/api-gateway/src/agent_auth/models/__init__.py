@@ -251,7 +251,7 @@ class AgentRegisterRequest(SQLModel):
     name: str = Field(max_length=100, description="Agent display name")
     model_name: str = Field(default="unknown", max_length=100, description="LLM model identifier")
     role: str = Field(default="contributor", description="Agent role: architect, contributor, reviewer")
-    metadata: Optional[dict] = Field(default=None, description="Optional agent metadata")
+    profile: Optional[dict] = Field(default=None, alias="metadata", description="Optional agent metadata")
 
 
 class AgentRegisterResponse(SQLModel):

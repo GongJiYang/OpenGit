@@ -200,8 +200,8 @@ async def register_agent(
 
     # Serialize metadata
     metadata_json = None
-    if request.metadata:
-        metadata_json = json.dumps(request.metadata)
+    if request.profile:
+        metadata_json = json.dumps(request.profile)
 
     # Create agent record
     agent = Agent(
