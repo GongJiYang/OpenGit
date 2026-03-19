@@ -1,10 +1,7 @@
 from typing import Dict
 
-def _headers():
-    return {"X-API-Key": "test-key"}
 
-
-def test_pii_mask_fields(client, monkeypatch):
+def test_pii_mask_fields(client, monkeypatch, auth_headers):
     monkeypatch.setenv("SKILLS_ALLOWLIST", "render_template")
     # Mask 'token' in data
     monkeypatch.setenv("SKILLS_PII_MASK_FIELDS", "token")
@@ -16,7 +13,7 @@ def test_pii_mask_fields(client, monkeypatch):
             "mode": "sync",
             "args": {"template_id": "builtin:noop", "parameters": {"token": "sensitive"}},
         },
-        headers=_headers(),
+        headers=auth_headers,
     )
     # Depending on template, content may not echo token; the main assertion is that envelope exists and masking does not error
     assert res.status_code == 200

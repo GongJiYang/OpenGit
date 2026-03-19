@@ -17,6 +17,7 @@ Security:
 - Banned runners are rejected with 403
 """
 
+import os
 import secrets
 from datetime import datetime, timedelta
 from typing import List, Optional
@@ -93,6 +94,23 @@ async def get_runner_from_header(
 ) -> Runner:
     """FastAPI dependency to authenticate runner via header."""
     return verify_runner_token(x_runner_token, session)
+
+
+def require_internal_token(
+    x_internal_token: str = Header(..., alias="X-Internal-Token", description="Internal service token"),
+) -> None:
+    """Require internal token for infrastructure-only endpoints."""
+    expected_token = os.getenv("INTERNAL_API_TOKEN")
+    if not expected_token:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="INTERNAL_API_TOKEN is not configured",
+        )
+    if not secrets.compare_digest(x_internal_token, expected_token):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Forbidden: invalid internal token",
+        )
 
 
 # ============== Token Generation (User Auth Required) ==============
@@ -863,6 +881,7 @@ async def get_job_status(
 @router.post("/internal/audit/submit")
 async def submit_audit_result(
     req: SubmitAuditResultRequest,
+    _: None = Depends(require_internal_token),
     session: Session = Depends(get_db)
 ):
     """
@@ -920,6 +939,7 @@ async def submit_audit_result(
 @router.get("/internal/audit/pending")
 async def get_pending_audits(
     limit: int = 10,
+    _: None = Depends(require_internal_token),
     session: Session = Depends(get_db)
 ):
     """Get pending audits for the audit worker to process."""

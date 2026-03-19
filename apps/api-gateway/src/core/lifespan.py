@@ -9,9 +9,13 @@ from agenthub_git_core.repo_manager import RepoManager
 from agenthub_semantic_store.ast_parser import PythonASTParser
 from agenthub_semantic_store.indexer import VectorIndexer
 
+from core.security import validate_security_env
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    validate_security_env()
+
     # 读取开关（默认关闭，测试安全）
     enable_indexer = os.getenv("APP_ENABLE_INDEXER", "0") == "1"
     enable_sandbox = os.getenv("APP_ENABLE_SANDBOX", "0") == "1"

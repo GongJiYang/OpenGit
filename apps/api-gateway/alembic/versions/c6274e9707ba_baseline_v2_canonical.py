@@ -270,6 +270,30 @@ def upgrade() -> None:
     op.create_index(op.f('ix_platform_prs_author_type'), 'platform_prs', ['author_type'], unique=False)
     op.create_index(op.f('ix_platform_prs_pr_number'), 'platform_prs', ['pr_number'], unique=True)
     op.create_index(op.f('ix_platform_prs_status'), 'platform_prs', ['status'], unique=False)
+    op.create_table('skill_async_jobs',
+    sa.Column('job_id', sa.String(), nullable=False),
+    sa.Column('skill_name', sa.String(), nullable=False),
+    sa.Column('actor_id', sa.String(), nullable=False),
+    sa.Column('status', sa.String(), nullable=False),
+    sa.Column('trace_id', sa.String(), nullable=True),
+    sa.Column('args_hash', sa.String(), nullable=True),
+    sa.Column('result_hash', sa.String(), nullable=True),
+    sa.Column('result', sa.JSON(), nullable=True),
+    sa.Column('started_at', sa.DateTime(), nullable=True),
+    sa.Column('finished_at', sa.DateTime(), nullable=True),
+    sa.Column('created_at', sa.DateTime(), nullable=False),
+    sa.Column('updated_at', sa.DateTime(), nullable=False),
+    sa.PrimaryKeyConstraint('job_id')
+    )
+    op.create_index(op.f('ix_skill_async_jobs_actor_id'), 'skill_async_jobs', ['actor_id'], unique=False)
+    op.create_index(op.f('ix_skill_async_jobs_args_hash'), 'skill_async_jobs', ['args_hash'], unique=False)
+    op.create_index(op.f('ix_skill_async_jobs_created_at'), 'skill_async_jobs', ['created_at'], unique=False)
+    op.create_index(op.f('ix_skill_async_jobs_finished_at'), 'skill_async_jobs', ['finished_at'], unique=False)
+    op.create_index(op.f('ix_skill_async_jobs_result_hash'), 'skill_async_jobs', ['result_hash'], unique=False)
+    op.create_index(op.f('ix_skill_async_jobs_skill_name'), 'skill_async_jobs', ['skill_name'], unique=False)
+    op.create_index(op.f('ix_skill_async_jobs_started_at'), 'skill_async_jobs', ['started_at'], unique=False)
+    op.create_index(op.f('ix_skill_async_jobs_status'), 'skill_async_jobs', ['status'], unique=False)
+    op.create_index(op.f('ix_skill_async_jobs_trace_id'), 'skill_async_jobs', ['trace_id'], unique=False)
     op.create_table('platform_updates',
     sa.Column('id', sa.Integer(), nullable=False),
     sa.Column('source_pr_id', sa.Integer(), nullable=True),
@@ -574,6 +598,16 @@ def downgrade() -> None:
     op.drop_index(op.f('ix_platform_updates_source_commit_sha'), table_name='platform_updates')
     op.drop_index(op.f('ix_platform_updates_previous_commit_sha'), table_name='platform_updates')
     op.drop_table('platform_updates')
+    op.drop_index(op.f('ix_skill_async_jobs_trace_id'), table_name='skill_async_jobs')
+    op.drop_index(op.f('ix_skill_async_jobs_status'), table_name='skill_async_jobs')
+    op.drop_index(op.f('ix_skill_async_jobs_started_at'), table_name='skill_async_jobs')
+    op.drop_index(op.f('ix_skill_async_jobs_skill_name'), table_name='skill_async_jobs')
+    op.drop_index(op.f('ix_skill_async_jobs_result_hash'), table_name='skill_async_jobs')
+    op.drop_index(op.f('ix_skill_async_jobs_finished_at'), table_name='skill_async_jobs')
+    op.drop_index(op.f('ix_skill_async_jobs_created_at'), table_name='skill_async_jobs')
+    op.drop_index(op.f('ix_skill_async_jobs_args_hash'), table_name='skill_async_jobs')
+    op.drop_index(op.f('ix_skill_async_jobs_actor_id'), table_name='skill_async_jobs')
+    op.drop_table('skill_async_jobs')
     op.drop_index(op.f('ix_platform_prs_status'), table_name='platform_prs')
     op.drop_index(op.f('ix_platform_prs_pr_number'), table_name='platform_prs')
     op.drop_index(op.f('ix_platform_prs_author_type'), table_name='platform_prs')

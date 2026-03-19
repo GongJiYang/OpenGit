@@ -8,4 +8,4 @@ from .database import get_db
 
 def get_auth_session():
     """Return SQLModel Session from agent_auth database layer."""
-    return get_db()  # delegated to internal database.get_db
+    yield from get_db()  # delegated to internal database.get_db

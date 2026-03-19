@@ -382,6 +382,25 @@ class PlatformAuditLog(SQLModel, table=True):
     timestamp: datetime = Field(default_factory=datetime.utcnow, index=True)
 
 
+class SkillAsyncJob(SQLModel, table=True):
+    """Persistent async job record for /skills/start (mode=async)."""
+
+    __tablename__ = "skill_async_jobs"
+
+    job_id: str = Field(primary_key=True)
+    skill_name: str = Field(index=True)
+    actor_id: str = Field(index=True)
+    status: str = Field(index=True)
+    trace_id: Optional[str] = Field(default=None, index=True)
+    args_hash: Optional[str] = Field(default=None, index=True)
+    result_hash: Optional[str] = Field(default=None, index=True)
+    result: Optional[dict] = Field(default=None, sa_column=Column(JSON))
+    started_at: Optional[datetime] = Field(default=None, index=True)
+    finished_at: Optional[datetime] = Field(default=None, index=True)
+    created_at: datetime = Field(default_factory=datetime.utcnow, index=True)
+    updated_at: datetime = Field(default_factory=datetime.utcnow, sa_column_kwargs={"onupdate": datetime.utcnow})
+
+
 # --- Database Setup & Optimization ---
 
 _engine = None

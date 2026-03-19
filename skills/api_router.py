@@ -1,5 +1,6 @@
 from typing import Any, Dict, Optional, List
 from uuid import uuid4
+from datetime import datetime
 import asyncio
 import os
 import json
@@ -8,7 +9,7 @@ import hashlib
 from collections import deque
 from urllib.parse import urlparse
 
-from fastapi import APIRouter, BackgroundTasks, HTTPException, Query, Request, Header
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Query, Request, Depends
 from pydantic import BaseModel
 from slowapi import Limiter
 from slowapi.util import get_remote_address
@@ -17,15 +18,14 @@ from skills.base import JobStatus, SkillJob, Envelope, ErrorInfo, Paging
 from copy import deepcopy
 from bots.base_agent import BaseAgent
 from skills.registry import SkillRegistry
-from persistence import PlatformAuditLog, get_engine
-from sqlmodel import Session
+from persistence import PlatformAuditLog, SkillAsyncJob, get_engine
+from sqlmodel import Session, select
+
+from dependencies.auth import require_agent
 
 router = APIRouter(prefix="/skills", tags=["skills"])
 # Local limiter for skills endpoints (fallback if gateway limiter not applied)
 _limiter = Limiter(key_func=get_remote_address)
-
-# Simple in-memory job store for async skill runs (non-persistent)
-_JOBS: Dict[str, Dict[str, Any]] = {}
 
 # --- M6-3: Simple circuit breaker (opt-in via env) ---
 _CB_WINDOW = int(os.getenv("SKILLS_CB_WINDOW", "20"))           # last N executions
@@ -40,6 +40,11 @@ _CB_OPEN_UNTIL: Dict[str, float] = {}
 
 # Single agent instance for skill invocation
 _AGENT = BaseAgent(agent_id="api-router", role="router")
+
+
+def _principal_id(principal: Any) -> str:
+    """Normalize principal id for audit and ownership checks."""
+    return str(getattr(principal, "id", _AGENT.agent_id))
 
 
 def _redact(obj: Any, keys: List[str]) -> Any:
@@ -136,18 +141,23 @@ class StartSkillRequest(BaseModel):
     description: Optional[str] = None
 
 
-async def _run_skill_and_store(job_id: str, name: str, args: Dict[str, Any], trace_id: Optional[str]):
-    rec = _JOBS.get(job_id)
+async def _run_skill_and_store(
+    job_id: str,
+    name: str,
+    args: Dict[str, Any],
+    trace_id: Optional[str],
+    actor_id: str,
+):
+    rec = _set_job_running(job_id)
     if not rec:
         return
-    # mark running
-    rec["status"] = JobStatus.running.value
-    rec["job"]["status"] = JobStatus.running
+
     try:
         # Execute skill with unified envelope
         start_ts = time.time()
         result = _AGENT.use_skill_enveloped(name, **args)
         duration_ms = int((time.time() - start_ts) * 1000)
+
         # Attach trace/duration to meta
         if isinstance(result, dict):
             meta = result.get("meta") or {}
@@ -155,16 +165,20 @@ async def _run_skill_and_store(job_id: str, name: str, args: Dict[str, Any], tra
                 meta["trace_id"] = trace_id
             meta["duration_ms"] = duration_ms
             result["meta"] = meta
+
+        # Ensure job block
+        if isinstance(result, dict) and "job" not in result:
+            result["job"] = SkillJob(id=job_id, status=JobStatus.succeeded).model_dump()
+
         # Status transition based on ok
         if isinstance(result, dict) and result.get("ok") is True:
-            rec["status"] = JobStatus.succeeded.value
             # PII mask on final envelope
             result = _apply_pii_mask_in_envelope(result)
-            rec["result"] = result
-            rec["job"]["status"] = JobStatus.succeeded
+            result["job"] = SkillJob(id=job_id, status=JobStatus.succeeded).model_dump()
+            _set_job_result(job_id=job_id, status=JobStatus.succeeded, result=result)
             _write_audit(
                 event_type="skill_completed",
-                actor_id=_AGENT.agent_id,
+                actor_id=actor_id,
                 details={
                     "skill_name": name,
                     "args_hash": _hash_payload(args),
@@ -176,12 +190,23 @@ async def _run_skill_and_store(job_id: str, name: str, args: Dict[str, Any], tra
             )
             _memory_write_success(name, args, result)
         else:
-            rec["status"] = JobStatus.failed.value
-            rec["result"] = result
-            rec["job"]["status"] = JobStatus.failed
+            if not isinstance(result, dict):
+                result = Envelope(
+                    ok=False,
+                    data=None,
+                    message="skill execution failed",
+                    error=ErrorInfo(code="skill_execution_error", reason="invalid skill envelope", retriable=False),
+                    job=SkillJob(id=job_id, status=JobStatus.failed),
+                    description=f"Async execution for {name} failed",
+                    meta={"trace_id": trace_id, "duration_ms": duration_ms},
+                ).model_dump()
+            else:
+                result["job"] = SkillJob(id=job_id, status=JobStatus.failed).model_dump()
+
+            _set_job_result(job_id=job_id, status=JobStatus.failed, result=result)
             _write_audit(
                 event_type="skill_failed",
-                actor_id=_AGENT.agent_id,
+                actor_id=actor_id,
                 details={
                     "skill_name": name,
                     "args_hash": _hash_payload(args),
@@ -192,21 +217,19 @@ async def _run_skill_and_store(job_id: str, name: str, args: Dict[str, Any], tra
                 trace_id=trace_id,
             )
     except Exception as e:  # noqa: BLE001
-        rec["status"] = JobStatus.failed.value
         env = Envelope(
             ok=False,
             data=None,
             message="skill execution failed",
             error=ErrorInfo(code="skill_execution_error", reason=str(e), retriable=False),
-            job=rec["job"],
+            job=SkillJob(id=job_id, status=JobStatus.failed),
             description=f"Async execution for {name} failed",
             meta={"trace_id": trace_id} if trace_id else None,
         ).model_dump()
-        rec["result"] = env
-        rec["job"]["status"] = JobStatus.failed
+        _set_job_result(job_id=job_id, status=JobStatus.failed, result=env)
         _write_audit(
             event_type="skill_failed",
-            actor_id=_AGENT.agent_id,
+            actor_id=actor_id,
             details={
                 "skill_name": name,
                 "args_hash": _hash_payload(args),
@@ -243,6 +266,77 @@ def _write_audit(event_type: str, actor_id: str, details: Dict[str, Any], trace_
         pass
 
 
+def _create_skill_job(
+    *,
+    job_id: str,
+    skill_name: str,
+    actor_id: str,
+    status: JobStatus,
+    trace_id: Optional[str],
+    args: Dict[str, Any],
+) -> None:
+    with Session(get_engine()) as session:
+        rec = SkillAsyncJob(
+            job_id=job_id,
+            skill_name=skill_name,
+            actor_id=actor_id,
+            status=status.value,
+            trace_id=trace_id,
+            args_hash=_hash_payload(args),
+            started_at=None,
+            finished_at=None,
+            result=None,
+        )
+        session.add(rec)
+        session.commit()
+
+
+def _set_job_running(job_id: str) -> Optional[SkillAsyncJob]:
+    with Session(get_engine()) as session:
+        rec = session.get(SkillAsyncJob, job_id)
+        if rec is None:
+            return None
+        rec.status = JobStatus.running.value
+        rec.started_at = datetime.utcnow()
+        session.add(rec)
+        session.commit()
+        session.refresh(rec)
+        return rec
+
+
+def _set_job_result(
+    *,
+    job_id: str,
+    status: JobStatus,
+    result: Dict[str, Any],
+) -> Optional[SkillAsyncJob]:
+    with Session(get_engine()) as session:
+        rec = session.get(SkillAsyncJob, job_id)
+        if rec is None:
+            return None
+        rec.status = status.value
+        rec.result = result
+        rec.result_hash = _hash_payload(result)
+        rec.finished_at = datetime.utcnow()
+        session.add(rec)
+        session.commit()
+        session.refresh(rec)
+        return rec
+
+
+def _get_job(job_id: str) -> Optional[SkillAsyncJob]:
+    with Session(get_engine()) as session:
+        stmt = select(SkillAsyncJob).where(SkillAsyncJob.job_id == job_id)
+        return session.exec(stmt).first()
+
+
+def _job_status_value(status: str) -> JobStatus:
+    try:
+        return JobStatus(status)
+    except Exception:
+        return JobStatus.failed
+
+
 def _is_skill_allowed(name: str) -> bool:
     allow = os.getenv("SKILLS_ALLOWLIST")
     if not allow:
@@ -257,11 +351,8 @@ async def start_skill(
     req: StartSkillRequest,
     bg: BackgroundTasks,
     request: Request,
-    x_api_key: Optional[str] = Header(None, alias="X-API-Key"),
+    principal: Any = Depends(require_agent),
 ):
-    # Simple API key presence check to align with gateway style (detailed validate lives in main)
-    if not x_api_key:
-        raise HTTPException(status_code=401, detail="Missing X-API-Key")
 
     if not _is_skill_allowed(req.name):
         raise HTTPException(status_code=403, detail="Skill not allowed by policy")
@@ -279,6 +370,8 @@ async def start_skill(
 
     if mode not in ("sync", "async"):
         raise HTTPException(status_code=400, detail="mode must be 'sync' or 'async'")
+
+    actor_id = _principal_id(principal)
 
     if mode == "sync":
         # Direct synchronous execution with unified envelope + soft timeout
@@ -299,7 +392,7 @@ async def start_skill(
             ).model_dump()
             _write_audit(
                 event_type="skill_failed",
-                actor_id=_AGENT.agent_id,
+                actor_id=actor_id,
                 details={
                     "skill_name": name,
                     "args_hash": _hash_payload(args),
@@ -336,7 +429,7 @@ async def start_skill(
             # Audit
             _write_audit(
                 event_type="skill_completed" if result.get("ok") else "skill_failed",
-                actor_id=_AGENT.agent_id,
+                actor_id=actor_id,
                 details={
                     "skill_name": name,
                     "args_hash": _hash_payload(args),
@@ -368,7 +461,7 @@ async def start_skill(
             ).model_dump()
             _write_audit(
                 event_type="skill_failed",
-                actor_id=_AGENT.agent_id,
+                actor_id=actor_id,
                 details={
                     "skill_name": name,
                     "args_hash": _hash_payload(args),
@@ -389,17 +482,19 @@ async def start_skill(
     job_id = str(uuid4())
     job = SkillJob(id=job_id, status=JobStatus.queued)
 
-    _JOBS[job_id] = {
-        "status": JobStatus.queued.value,
-        "result": None,
-        "job": job.model_dump(),
-        "name": name,
-        "args": args,
-    }
+    _create_skill_job(
+        job_id=job_id,
+        skill_name=name,
+        actor_id=actor_id,
+        status=JobStatus.queued,
+        trace_id=trace_id,
+        args=args,
+    )
+
     # Audit queued
     _write_audit(
         event_type="skill_queued",
-        actor_id=_AGENT.agent_id,
+        actor_id=actor_id,
         details={
             "skill_name": name,
             "args_hash": _hash_payload(args),
@@ -409,7 +504,7 @@ async def start_skill(
     )
 
     # schedule background task with trace_id (soft timeout applied within task if needed)
-    bg.add_task(_run_skill_and_store, job_id, name, args, trace_id)
+    bg.add_task(_run_skill_and_store, job_id, name, args, trace_id, actor_id)
     # Return queued envelope with polling hint
     env = Envelope(
         ok=True,
@@ -425,15 +520,21 @@ async def start_skill(
 
 @router.get("/jobs/{job_id}")
 @_limiter.limit("120/minute")
-async def get_job_status(request: Request, job_id: str, x_api_key: Optional[str] = Header(None, alias="X-API-Key")):
-    if not x_api_key:
-        raise HTTPException(status_code=401, detail="Missing X-API-Key")
-    rec = _JOBS.get(job_id)
+async def get_job_status(
+    request: Request,
+    job_id: str,
+    principal: Any = Depends(require_agent),
+):
+    rec = _get_job(job_id)
     if not rec:
         raise HTTPException(status_code=404, detail="job not found")
 
-    status = rec.get("status")
-    result = rec.get("result")
+    actor_id = _principal_id(principal)
+    if rec.actor_id and rec.actor_id != actor_id:
+        raise HTTPException(status_code=403, detail="forbidden")
+
+    status = rec.status
+    result = rec.result
 
     # If finished and result exists, return the final envelope
     if status in (JobStatus.succeeded.value, JobStatus.failed.value) and result is not None:
@@ -444,7 +545,7 @@ async def get_job_status(request: Request, job_id: str, x_api_key: Optional[str]
         ok=True,
         data=None,
         message="job in progress" if status != JobStatus.queued.value else "job queued",
-        job=SkillJob(id=job_id, status=JobStatus(status)),
+        job=SkillJob(id=job_id, status=_job_status_value(status)),
         description="Polling job status",
     ).model_dump()
 
@@ -454,8 +555,11 @@ async def get_job_status(request: Request, job_id: str, x_api_key: Optional[str]
 async def list_definitions(
     cursor: Optional[int] = Query(None, ge=0),
     limit: int = Query(20, ge=1, le=200),
+    principal: Any = Depends(require_agent),
 ):
     """Return paginated skill definitions with cursor pagination."""
+    actor_id = _principal_id(principal)
+
     # Pull current definitions from registry inside a temporary agent (shares registry impl)
     registry: SkillRegistry = _AGENT.skills
     defs: List[Dict[str, Any]] = registry.get_definitions()
@@ -476,10 +580,24 @@ async def list_definitions(
         "total": len(defs),
     }
 
-    return Envelope(
+    resp = Envelope(
         ok=True,
         data=page,
         message="ok",
         paging=Paging(**paging),
         description="Paginated skill definitions",
     ).model_dump()
+
+    _write_audit(
+        event_type="skill_definitions_listed",
+        actor_id=actor_id,
+        details={
+            "cursor": cursor,
+            "limit": limit,
+            "returned": len(page),
+            "total": len(defs),
+        },
+        trace_id=None,
+    )
+
+    return resp
