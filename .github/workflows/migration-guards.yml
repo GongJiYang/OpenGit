@@ -39,7 +39,7 @@ jobs:
             fastapi uvicorn \
             alembic sqlalchemy sqlmodel \
             pydantic qdrant-client zhipuai mem0ai \
-            gitpython passlib bcrypt apscheduler python-jose[cryptography] \
+            gitpython passlib bcrypt apscheduler aiohttp python-jose[cryptography] \
             email-validator
 
       - name: Ensure single Alembic head and no branches
