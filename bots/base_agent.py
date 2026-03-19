@@ -26,6 +26,8 @@ from skills.library.template_ops import (  # noqa: E402
     RegisterTemplateSkill, SearchTemplatesSkill
 )
 from skills.library.memory_ops import PersistentMemorySkill  # noqa: E402
+from skills.base import ErrorInfo  # noqa: E402
+
 
 class BaseAgent:
     def __init__(self, agent_id: str, role: str):
@@ -67,6 +69,68 @@ class BaseAgent:
         except Exception as e:
             return f"Error executing skill '{skill_name}': {e}"
 
+    def use_skill_enveloped(self, skill_name: str, **kwargs) -> Dict:
+        """
+        调用技能并返回统一响应信封（含 job 等元信息）。
+        不破坏原 use_skill 的返回约定，供需要结构化输出的路径使用。
+        """
+        skill = self.skills.get(skill_name)
+        if not skill:
+            return {
+                "ok": False,
+                "data": None,
+                "message": f"Skill '{skill_name}' not found",
+                "error": {
+                    "code": "skill_not_found",
+                    "reason": f"No such skill: {skill_name}",
+                    "retriable": False,
+                },
+                "meta": {"agent_id": self.agent_id, "model_name": self.model_name},
+            }
+        try:
+            # 优先使用 Skill 基类提供的 run_with_envelope（M3）
+            if hasattr(skill, "run_with_envelope"):
+                return skill.run_with_envelope(**kwargs)
+            # 回退：老技能仅有 validate_and_execute → 包装成信封
+            data = skill.validate_and_execute(**kwargs)
+            if hasattr(skill, "make_envelope"):
+                return skill.make_envelope(
+                    ok=True,
+                    data=data,
+                    message="ok",
+                    description=getattr(skill, "description", ""),
+                )
+            # 极限回退：直接手工构造
+            return {
+                "ok": True,
+                "data": data,
+                "message": "ok",
+                "meta": {"agent_id": self.agent_id, "model_name": self.model_name},
+                "description": getattr(skill, "description", ""),
+            }
+        except Exception as e:  # noqa: BLE001
+            # 优先走统一信封错误
+            if hasattr(skill, "make_envelope"):
+                return skill.make_envelope(
+                    ok=False,
+                    data=None,
+                    message="skill execution failed",
+                    error=ErrorInfo(code="skill_execution_error", reason=str(e), retriable=False),
+                    description=getattr(skill, "description", ""),
+                )
+            return {
+                "ok": False,
+                "data": None,
+                "message": "skill execution failed",
+                "error": {
+                    "code": "skill_execution_error",
+                    "reason": str(e),
+                    "retriable": False,
+                },
+                "meta": {"agent_id": self.agent_id, "model_name": self.model_name},
+                "description": getattr(skill, "description", ""),
+            }
+
     def log(self, msg: str, emoji: str = "🤖"):
         print(f"{emoji} [{self.role.upper()}]: {msg}")
 
@@ -80,7 +144,7 @@ class BaseAgent:
             if res.status_code == 200:
                 data = res.json()
                 self.log(f"Repo created at {data['path']}", "✅")
-                return data['path'] # Remote path
+                return data['path']  # Remote path
             else:
                 self.log(f"Failed to create repo: {res.text}", "❌")
                 return None

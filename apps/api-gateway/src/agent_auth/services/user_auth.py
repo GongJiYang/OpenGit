@@ -16,6 +16,9 @@ from sqlmodel import Session, select
 from passlib.context import CryptContext
 from jose import JWTError, jwt
 
+from fastapi import HTTPException, status, Header
+from typing import Annotated
+
 from ..models.platform import (
     User,
     UserAgentBinding,
@@ -288,9 +291,6 @@ class UserAuthService:
 
 
 # ============== FastAPI Depends ==============
-
-from fastapi import HTTPException, status, Header
-from typing import Annotated
 
 
 async def get_current_user(

@@ -1,1 +1,14 @@
-Generic single-database configuration.
+Alembic canonical migration system for api-gateway.
+
+Use only:
+- alembic.ini
+- alembic/env.py
+- alembic/versions/*
+
+Legacy migrations directory has been retired.
+
+Validation commands:
+- alembic -c apps/api-gateway/alembic.ini heads
+- alembic -c apps/api-gateway/alembic.ini branches
+- alembic -c apps/api-gateway/alembic.ini history --verbose
+- alembic -c apps/api-gateway/alembic.ini upgrade head

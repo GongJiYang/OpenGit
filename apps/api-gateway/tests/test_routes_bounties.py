@@ -8,13 +8,6 @@ from fastapi.testclient import TestClient
 sys.path.insert(0, os.path.abspath("apps/api-gateway/src"))
 
 from main import app  # noqa: E402
-from persistence import create_db_and_tables  # noqa: E402
-
-
-@pytest.fixture(scope="session", autouse=True)
-def _setup_db():
-    # Ensure tables exist for TestClient (uses default SQLite path)
-    create_db_and_tables()
 
 
 @pytest.fixture()

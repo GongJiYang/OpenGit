@@ -23,9 +23,8 @@ from typing import List, Optional
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, status, Header
-from sqlmodel import Session, select, Field
+from sqlmodel import Session, select
 from passlib.context import CryptContext
-from pydantic import BaseModel
 
 from ..models.runner import (
     Runner,
@@ -46,6 +45,14 @@ from ..models.platform import User
 from ..database import get_db
 from ..services.verification import VerificationService
 from ..services.user_auth import get_current_user
+from schemas.runner import (
+    EndpointInfoResponse,
+    ServiceReadyRequest,
+    ServiceReadyResponse,
+    ServiceStatusResponse,
+    SubmitAuditResultRequest,
+    UpdateRepoBindingRequest,
+)
 
 router = APIRouter(prefix="/runners", tags=["Runners"])
 
@@ -449,27 +456,6 @@ async def submit_job_result(
 
 # ============== Service Ready Notification ==============
 
-class ServiceReadyRequest(BaseModel):
-    """Request to report service endpoint is ready."""
-    job_id: UUID
-    service_endpoint: str = Field(..., max_length=500,
-                                   description="URL where the deployed service is accessible")
-    health_check_path: str = Field(default="/health", max_length=100,
-                                    description="Health check endpoint path")
-    access_token_validity_hours: int = Field(default=1, ge=1, le=24,
-                                               description="How long the access token should be valid")
-
-
-class ServiceReadyResponse(BaseModel):
-    """Response for service ready notification."""
-    success: bool
-    job_id: UUID
-    service_endpoint: str
-    access_token: str
-    expires_at: datetime
-    message: str
-
-
 @router.post("/service-ready", response_model=ServiceReadyResponse)
 async def report_service_ready(
     req: ServiceReadyRequest,
@@ -601,12 +587,6 @@ async def delete_runner(
 
 
 # ============== Repository Binding Management ==============
-
-class UpdateRepoBindingRequest(BaseModel):
-    """Request to update runner's repository bindings."""
-    allowed_repo_ids: List[str] = Field(description="List of repo IDs the runner can serve")
-    is_global: bool = Field(default=False, description="If True, runner serves all repos")
-
 
 @router.put("/{runner_id}/repos")
 async def update_runner_repos(
@@ -878,14 +858,6 @@ async def get_job_status(
 
 # ============== Internal Audit Endpoints ==============
 
-from pydantic import BaseModel
-
-
-class SubmitAuditResultRequest(BaseModel):
-    """Request to submit audit result from trusted infrastructure."""
-    audit_id: UUID
-    audited_stdout: str
-    audited_exit_code: int
 
 
 @router.post("/internal/audit/submit")
@@ -971,20 +943,6 @@ async def get_pending_audits(
 
 # ============== Service Status API (for Testers) ==============
 
-class ServiceStatusResponse(BaseModel):
-    """Response for service status query."""
-    job_id: UUID
-    status: str
-    service_endpoint: Optional[str] = None
-    access_token: Optional[str] = None
-    token_expires_at: Optional[datetime] = None
-    token_expires_in_seconds: Optional[int] = None
-    runner_id: Optional[UUID] = None
-    runner_status: Optional[str] = None
-    is_ready_for_testing: bool = False
-    message: str
-
-
 @router.get("/jobs/{job_id}/service-status", response_model=ServiceStatusResponse)
 async def get_service_status(
     job_id: UUID,
@@ -1063,17 +1021,6 @@ async def get_service_status(
         is_ready_for_testing=is_ready,
         message=message
     )
-
-
-class EndpointInfoResponse(BaseModel):
-    """Response for quick endpoint info (for authenticated testers)."""
-    job_id: UUID
-    bounty_id: str
-    service_endpoint: str
-    access_token: str
-    expires_at: datetime
-    expires_in_seconds: int
-    health_check_url: Optional[str] = None
 
 
 @router.get("/jobs/{job_id}/endpoint", response_model=EndpointInfoResponse)

@@ -2,9 +2,10 @@ import sys
 import os
 import time
 
+from bots.base_agent import BaseAgent
+
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")))
 
-from bots.base_agent import BaseAgent
 
 class Contributor(BaseAgent):
     def __init__(self):

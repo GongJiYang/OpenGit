@@ -1,13 +1,12 @@
 import sys
 import os
 
+from bots.base_agent import BaseAgent
+from skills.library.architect_ops import CreateWorkItemSkill, DefineInterfaceSkill
+
 # Hack for imports
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")))
 
-from bots.base_agent import BaseAgent
-
-from bots.base_agent import BaseAgent
-from skills.library.architect_ops import CreateWorkItemSkill, DefineInterfaceSkill
 
 class Architect(BaseAgent):
     def __init__(self):

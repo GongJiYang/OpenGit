@@ -8,12 +8,19 @@ API endpoints for multi-agent collaboration:
 - Code review workflow
 """
 
-from typing import List, Optional
+from typing import Optional
 from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
 from sqlmodel import Session
 
+from schemas.collaboration import (
+    AcquireLockRequest,
+    CreateReviewRequest,
+    DetectConflictRequest,
+    RegisterRegionRequest,
+    ReleaseLockRequest,
+    SubmitReviewRequest,
+)
 from ..database import get_db
 from ..services.collaboration_service import CollaborationService
 
@@ -29,46 +36,6 @@ def get_collaboration_service(session: Session = Depends(get_db)) -> Collaborati
     if session_id not in _collaboration_services:
         _collaboration_services[session_id] = CollaborationService(session)
     return _collaboration_services[session_id]
-
-
-# ==================== Request Models ====================
-
-class AcquireLockRequest(BaseModel):
-    agent_id: UUID
-    file_path: str
-    timeout_seconds: int = 300
-
-
-class ReleaseLockRequest(BaseModel):
-    agent_id: UUID
-    file_path: str
-
-
-class RegisterRegionRequest(BaseModel):
-    agent_id: UUID
-    file_path: str
-    start_line: int
-    end_line: int
-    description: str = ""
-
-
-class DetectConflictRequest(BaseModel):
-    agent_id: UUID
-    file_path: str
-    start_line: int
-    end_line: int
-
-
-class CreateReviewRequest(BaseModel):
-    review_id: str
-    file_path: str
-    agent_id: UUID
-
-
-class SubmitReviewRequest(BaseModel):
-    reviewer_id: UUID
-    status: str  # pending, approved, rejected, changes_requested
-    comments: Optional[List[dict]] = None
 
 
 # ==================== File Locking Endpoints ====================

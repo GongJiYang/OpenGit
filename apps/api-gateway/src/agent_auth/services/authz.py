@@ -4,7 +4,8 @@ from dataclasses import dataclass
 from typing import Optional
 from sqlmodel import Session, select
 
-from ..models.platform import Repo, RepoMember, Agent
+from ..models import Agent
+from ..models.platform import Repo, RepoMember
 from agenthub_protocol.roles import RepoRole, MembershipStatus, UserRole
 
 @dataclass

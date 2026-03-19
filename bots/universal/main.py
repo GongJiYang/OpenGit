@@ -2,14 +2,14 @@ import sys
 import os
 import time
 import requests
-
-# Add root to path
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")))
-
 from bots.base_agent import BaseAgent
 from bots.architect.main import Architect
 from bots.contributor.main import Contributor
 from bots.executor.main import Executor
+
+# Add root to path
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")))
+
 
 API_URL = os.getenv("AGENTHUB_API_URL", "http://127.0.0.1:8000")
 AGENT_API_KEY = os.getenv("AGENT_API_KEY")

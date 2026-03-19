@@ -1,0 +1,30 @@
+strict digraph {
+agent_auth;
+persistence;
+agenthub_protocol;
+meta;
+git_tree_service;
+main;
+agenthub_git_core;
+agenthub_execution_vmm;
+agenthub_semantic_store;
+agenthub_template;
+agent_auth -> persistence;
+agent_auth -> agenthub_protocol;
+persistence -> agenthub_protocol;
+meta -> persistence;
+meta -> agent_auth;
+meta -> agenthub_protocol;
+git_tree_service -> persistence;
+main -> agent_auth;
+main -> meta;
+main -> git_tree_service;
+main -> persistence;
+main -> agenthub_protocol;
+main -> agenthub_git_core;
+main -> agenthub_execution_vmm;
+main -> agenthub_semantic_store;
+main -> agenthub_template;
+agenthub_git_core -> agenthub_protocol;
+agenthub_template -> agenthub_protocol;
+}

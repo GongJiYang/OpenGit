@@ -235,6 +235,12 @@ def transition(session: Session, bounty_id: str, to_status: str, ctx: Optional[D
         session.commit()
         return updated, None
 
+    # Duplicate claim attempt while already in progress should surface as race
+    if from_status == BountyStatus.IN_PROGRESS.value and to_status == BountyStatus.IN_PROGRESS.value:
+        agent_id = ctx.get("agent_id")
+        if bounty.assignee and (not agent_id or str(agent_id) != str(bounty.assignee)):
+            return None, "Race detected: bounty already claimed"
+
     # === Cancellation and Restore ===
     # * -> CANCELLED (allowed from pending/ready/open/in_progress/submitted)
     if to_status == BountyStatus.CANCELLED.value:

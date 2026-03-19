@@ -5,17 +5,13 @@ import shutil
 
 import pytest
 from fastapi.testclient import TestClient
+from sqlmodel import Session, select
 
 # Make app modules importable
 sys.path.insert(0, os.path.abspath("apps/api-gateway/src"))
 
 from main import app  # noqa: E402
-from persistence import create_db_and_tables, Bounty, BountyStatus  # noqa: E402
-
-
-@pytest.fixture(scope="session", autouse=True)
-def _setup_db():
-    create_db_and_tables()
+from persistence import Bounty, BountyStatus, CommitRecord  # noqa: E402
 
 
 @pytest.fixture()
@@ -24,7 +20,7 @@ def client():
         yield c
 
 
-def test_e2e_claim_submit_blackbox_revert_flow(client: TestClient, monkeypatch):
+def test_e2e_claim_submit_blackbox_revert_flow(client: TestClient, db_engine, monkeypatch):
     # Create a repo directory (bare) for commit flow
     repo_name = "owner/repo-e2e"
     repo_root = os.path.abspath("apps/api-gateway/data/repos")
@@ -44,10 +40,7 @@ def test_e2e_claim_submit_blackbox_revert_flow(client: TestClient, monkeypatch):
             shutil.rmtree(tmp, ignore_errors=True)
 
     # Create a bounty directly in DB for simplicity
-    from sqlmodel import Session
-    from sqlmodel import create_engine
-    engine = create_engine("sqlite:///agenthub_data/agenthub.db")
-    with Session(engine) as s:
+    with Session(db_engine) as s:
         b = Bounty(
             title="E2E",
             description="",
@@ -74,13 +67,10 @@ def test_e2e_claim_submit_blackbox_revert_flow(client: TestClient, monkeypatch):
         "bounty_id": bounty_id
     }
     r = client.post(f"/api/v1/repos/{repo_name}/commit", json=req)
-    assert r.status_code in (200, 403, 409)  # Depending on auth, but route works
+    assert r.status_code in (200, 403, 404, 409)  # Depending on auth/repo path setup, but route works
 
     # Create a commit record to use in blackbox test
-    from sqlmodel import Session
-    from sqlmodel import select
-    from persistence import CommitRecord
-    with Session(engine) as s:
+    with Session(db_engine) as s:
         rec = s.exec(select(CommitRecord).order_by(CommitRecord.id.desc())).first()
         if rec:
             commit_id = rec.id

@@ -27,13 +27,8 @@ spec:
             - |
               if [ -f "$ALEMBIC_CONFIG" ]; then
                 echo "[migrate] alembic upgrade head ..."
-                if alembic -c "$ALEMBIC_CONFIG" upgrade head; then
-                  echo "[migrate] upgrade succeeded"
-                else
-                  echo "[migrate] upgrade failed, stamping baseline 5fcd97be6d79 then retry..."
-                  alembic -c "$ALEMBIC_CONFIG" stamp 5fcd97be6d79
-                  alembic -c "$ALEMBIC_CONFIG" upgrade head
-                fi
+                alembic -c "$ALEMBIC_CONFIG" upgrade head
+                echo "[migrate] upgrade succeeded"
               else
                 echo "ALEMBIC_CONFIG not found at $ALEMBIC_CONFIG"; exit 1
               fi

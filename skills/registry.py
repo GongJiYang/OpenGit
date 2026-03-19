@@ -1,5 +1,5 @@
 from typing import Dict, List, Optional
-from .base import Skill
+from .base import Skill, Envelope, SkillJob
 
 class SkillRegistry:
     def __init__(self):
@@ -22,12 +22,17 @@ class SkillRegistry:
     def get_definitions(self) -> List[Dict]:
         """
         Get JSON-safe definitions of all skills (useful for LLM context).
+        Includes async capability flag and job/output schema metadata for discovery.
         """
         definitions = []
         for skill in self._skills.values():
             definitions.append({
-                "name": skill.name,
+                "name": skill.name,  # name@semver per convention
                 "description": skill.description,
-                "parameters": skill.input_schema.model_json_schema()
+                "supports_async": getattr(skill, "supports_async", False),
+                "parameters": skill.input_schema.model_json_schema(),
+                # Inline schema refs to simplify discovery; can be externalized later
+                "job_schema": SkillJob.model_json_schema(),
+                "output_schema": Envelope.model_json_schema(),
             })
         return definitions

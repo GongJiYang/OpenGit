@@ -1,0 +1,96 @@
+name: Migration Guards
+
+on:
+  pull_request:
+    paths:
+      - 'apps/api-gateway/alembic/**'
+      - 'apps/api-gateway/src/**'
+      - 'opengit-infra/overlays/**/job-migrate.yaml'
+      - 'deploy/k8s/api-gateway/job-migrate.yaml'
+      - '.github/workflows/migration-guards.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'apps/api-gateway/alembic/**'
+      - 'apps/api-gateway/src/**'
+      - 'opengit-infra/overlays/**/job-migrate.yaml'
+      - 'deploy/k8s/api-gateway/job-migrate.yaml'
+      - '.github/workflows/migration-guards.yml'
+
+jobs:
+  guard-migration-graph:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/api-gateway
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies for Alembic env
+        run: |
+          python -m pip install --upgrade pip
+          pip install \
+            fastapi uvicorn \
+            alembic sqlalchemy sqlmodel \
+            pydantic qdrant-client zhipuai mem0ai \
+            gitpython passlib python-jose[cryptography] \
+            email-validator
+
+      - name: Ensure single Alembic head and no branches
+        run: |
+          set -euo pipefail
+          HEAD_COUNT=$(python -m alembic -c alembic.ini heads | grep -c '(head)' || true)
+          if [ "$HEAD_COUNT" -ne 1 ]; then
+            echo "Expected exactly one Alembic head, got $HEAD_COUNT"
+            python -m alembic -c alembic.ini heads
+            exit 1
+          fi
+
+          BRANCH_OUTPUT=$(python -m alembic -c alembic.ini branches || true)
+          if [ -n "$(echo "$BRANCH_OUTPUT" | tr -d '[:space:]')" ]; then
+            echo "Alembic branches detected (must be empty):"
+            echo "$BRANCH_OUTPUT"
+            exit 1
+          fi
+
+      - name: Ensure SQL upgrade is non-destructive baseline
+        run: |
+          set -euo pipefail
+          python -m alembic -c alembic.ini upgrade head --sql > /tmp/alembic_upgrade.sql
+          if grep -Eqi 'DROP[[:space:]]+TABLE|DROP[[:space:]]+INDEX' /tmp/alembic_upgrade.sql; then
+            echo "Destructive DROP detected in generated upgrade SQL"
+            grep -Ein 'DROP[[:space:]]+TABLE|DROP[[:space:]]+INDEX' /tmp/alembic_upgrade.sql || true
+            exit 1
+          fi
+
+  guard-no-stamp-fallback:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Block stamp fallback in migration jobs
+        run: |
+          set -euo pipefail
+          TARGETS=(
+            "opengit-infra/overlays/dev/job-migrate.yaml"
+            "opengit-infra/overlays/staging/job-migrate.yaml"
+            "opengit-infra/overlays/prod/job-migrate.yaml"
+            "deploy/k8s/api-gateway/job-migrate.yaml"
+          )
+
+          for f in "${TARGETS[@]}"; do
+            if [ -f "$f" ]; then
+              if grep -Eiq '(^|[[:space:]])alembic([^\n]*)[[:space:]]stamp([[:space:]]|$)' "$f"; then
+                echo "Forbidden alembic stamp detected in $f"
+                grep -Ein 'alembic([^\n]*)[[:space:]]stamp' "$f" || true
+                exit 1
+              fi
+            fi
+          done
