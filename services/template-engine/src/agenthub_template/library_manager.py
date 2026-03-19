@@ -2,24 +2,37 @@
 模板库管理器
 支持多源模板库、优先级合并、热重载
 """
-import os
-import yaml
 import json
-import time
-from abc import ABC, abstractmethod
-from typing import List, Dict, Optional
-from pathlib import Path
-from dataclasses import dataclass, field
-import threading
 import logging
+import os
+from pathlib import Path
+import threading
+import time
+from typing import Dict, List, Optional
 
 import sys
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../../../../packages/protocol/src"))
+from abc import ABC, abstractmethod
+from dataclasses import dataclass, field
 
-from agenthub_protocol.template import (
-    Template, TemplateRegistry, TemplateParameter,
-    ParameterType
-)
+import yaml
+
+
+
+def _load_protocol_templates():
+    """Load protocol template models with monorepo path fallback."""
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../../../../packages/protocol/src"))
+
+    from agenthub_protocol.template import (
+        ParameterType,
+        Template,
+        TemplateParameter,
+        TemplateRegistry,
+    )
+
+    return Template, TemplateRegistry, TemplateParameter, ParameterType
+
+
+Template, TemplateRegistry, TemplateParameter, ParameterType = _load_protocol_templates()
 
 logger = logging.getLogger(__name__)
 

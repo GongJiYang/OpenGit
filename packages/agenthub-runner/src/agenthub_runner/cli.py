@@ -83,7 +83,7 @@ def start(
             console.print("[red]Warning: Docker not available![/red]")
 
         runner_name = name or platform.node()
-        label_list = [l.strip() for l in labels.split(",") if l.strip()]
+        label_list = [label.strip() for label in labels.split(",") if label.strip()]
 
         # Get memory info
         memory_gb = None

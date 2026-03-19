@@ -1,26 +1,35 @@
 import os
-import subprocess
 import shutil
 import stat
+import subprocess
 import sys
 
-# --- Hack for Monorepo Paths ---
-base_dir = os.path.dirname(os.path.abspath(__file__))
-protocol_path = os.path.abspath(os.path.join(base_dir, "../../../../packages/protocol/src"))
-if protocol_path not in sys.path:
-    sys.path.append(protocol_path)
 
-from agenthub_protocol.path_utils import ensure_safe_path
+def _load_ensure_safe_path():
+    """Load protocol path utility with monorepo path fallback."""
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    protocol_path = os.path.abspath(os.path.join(base_dir, "../../../../packages/protocol/src"))
+    if protocol_path not in sys.path:
+        sys.path.append(protocol_path)
+
+    from agenthub_protocol.path_utils import ensure_safe_path
+
+    return ensure_safe_path
 
 class RepoManager:
     def __init__(self, storage_root: str):
         self.storage_root = os.path.abspath(storage_root)
         os.makedirs(self.storage_root, exist_ok=True)
+        self._ensure_safe_path = _load_ensure_safe_path()
 
     def create_repo(self, repo_name: str) -> str:
         """Initialize a bare git repo and install the AgentHub hook."""
         try:
-            repo_path_obj = ensure_safe_path(self.storage_root, repo_name, "Invalid repository name")
+            repo_path_obj = self._ensure_safe_path(
+                self.storage_root,
+                repo_name,
+                "Invalid repository name",
+            )
             repo_path = str(repo_path_obj)
         except ValueError as e:
             raise ValueError(str(e))

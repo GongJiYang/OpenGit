@@ -2,18 +2,26 @@
 解决方案操作技能
 提供错误解决方案的检索和存储能力
 """
-import sys
 import os
+import sys
 from typing import List
 
 from pydantic import BaseModel, Field
 
 from skills.base import Skill
 
-# 添加 semantic-store 路径
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../../services/semantic-store/src"))
 
-from agenthub_semantic_store.solution_kb import SolutionKnowledgeBase, SolutionRecord
+
+def _load_solution_kb():
+    """Load semantic-store solution KB with monorepo path fallback."""
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../../services/semantic-store/src"))
+
+    from agenthub_semantic_store.solution_kb import SolutionKnowledgeBase, SolutionRecord
+
+    return SolutionKnowledgeBase, SolutionRecord
+
+
+SolutionKnowledgeBase, SolutionRecord = _load_solution_kb()
 
 
 class SearchSolutionInput(BaseModel):

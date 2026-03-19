@@ -2,17 +2,27 @@
 模板渲染器
 使用 Jinja2 渲染模板，支持参数验证和代码格式化
 """
+import ast
 import os
 import re
 import subprocess
-from typing import Dict, Any, List
-
-from jinja2 import Environment, BaseLoader, TemplateSyntaxError, UndefinedError
-
 import sys
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../../../../packages/protocol/src"))
+from typing import Any, Dict, List
 
-from agenthub_protocol.template import Template, RenderedTemplate
+from jinja2 import BaseLoader, Environment, TemplateSyntaxError, UndefinedError
+
+
+
+def _load_protocol_templates():
+    """Load protocol template models with monorepo path fallback."""
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../../../../packages/protocol/src"))
+
+    from agenthub_protocol.template import RenderedTemplate, Template
+
+    return Template, RenderedTemplate
+
+
+Template, RenderedTemplate = _load_protocol_templates()
 
 
 class TemplateRenderer:
@@ -220,8 +230,6 @@ class CodeBlockLocator:
         if not file_path.endswith('.py'):
             raise ValueError("AST定位目前只支持Python文件")
 
-        import ast
-
         tree = ast.parse(content)
 
         # 解析节点路径: "UserService.login" -> ["UserService", "login"]
@@ -229,7 +237,6 @@ class CodeBlockLocator:
 
         # 查找节点
         target_node = None
-        current_path = []
 
         for node in ast.walk(tree):
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):

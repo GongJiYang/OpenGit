@@ -35,7 +35,6 @@ class TemplateParameter(BaseModel):
         """确保默认值与类型匹配"""
         if v is None:
             return v
-        param_type = info.data.get('type', ParameterType.STRING)
         # 类型检查可以在这里扩展
         return v
 

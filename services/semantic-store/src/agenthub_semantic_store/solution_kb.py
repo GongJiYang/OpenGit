@@ -285,7 +285,7 @@ class SolutionKnowledgeBase:
                 "total_solutions": info.points_count,
                 "collection_name": self.COLLECTION_NAME
             }
-        except:
+        except Exception:
             return {"total_solutions": 0, "collection_name": self.COLLECTION_NAME}
 
 

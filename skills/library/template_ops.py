@@ -4,23 +4,45 @@
 """
 import os
 import sys
-from typing import List, Dict, Optional, Any, Literal
+from typing import Any, Dict, List, Literal, Optional
 
 from pydantic import BaseModel, Field
 
 from skills.base import Skill
 
-# 添加路径
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../../services/template-engine/src"))
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../../packages/protocol/src"))
 
-from agenthub_template.library_manager import (
-    TemplateLibraryManager, create_default_manager
-)
-from agenthub_template.renderer import (
-    TemplateRenderer, StructuredChangeExecutor
-)
-from agenthub_protocol.template import Template, TemplateParameter, ParameterType, TemplateMetadata
+
+def _load_template_deps():
+    """Load template-engine and protocol deps with monorepo path fallback."""
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../../services/template-engine/src"))
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../../packages/protocol/src"))
+
+    from agenthub_protocol.template import ParameterType, Template, TemplateMetadata, TemplateParameter
+    from agenthub_template.library_manager import TemplateLibraryManager, create_default_manager
+    from agenthub_template.renderer import StructuredChangeExecutor, TemplateRenderer
+
+    return (
+        TemplateLibraryManager,
+        create_default_manager,
+        TemplateRenderer,
+        StructuredChangeExecutor,
+        Template,
+        TemplateParameter,
+        ParameterType,
+        TemplateMetadata,
+    )
+
+
+(
+    TemplateLibraryManager,
+    create_default_manager,
+    TemplateRenderer,
+    StructuredChangeExecutor,
+    Template,
+    TemplateParameter,
+    ParameterType,
+    TemplateMetadata,
+) = _load_template_deps()
 
 
 # ============== 输入模型 ==============

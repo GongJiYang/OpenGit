@@ -1,7 +1,9 @@
 from abc import ABC, abstractmethod
 from typing import Tuple, Optional
-import subprocess
 import os
+import subprocess
+
+from .guard import ExecutionGuard
 
 class Sandbox(ABC):
     """
@@ -28,8 +30,6 @@ class Sandbox(ABC):
     def close_session(self, session_id: str):
         """Terminates a persistent session."""
         pass
-
-from .guard import ExecutionGuard
 
 class SubprocessSandbox(Sandbox):
     """

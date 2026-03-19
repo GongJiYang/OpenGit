@@ -1,16 +1,26 @@
 import os
-import sys
 from pathlib import Path
+import sys
+
 from pydantic import BaseModel, Field
 
-# --- Hack for Monorepo Paths ---
-base_dir = os.path.dirname(os.path.abspath(__file__))
-protocol_path = os.path.abspath(os.path.join(base_dir, "../../packages/protocol/src"))
-if protocol_path not in sys.path:
-    sys.path.append(protocol_path)
-
-from agenthub_protocol.path_utils import ensure_safe_path
 from ..base import Skill
+
+
+
+def _load_ensure_safe_path():
+    """Load protocol path utility with monorepo path fallback."""
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    protocol_path = os.path.abspath(os.path.join(base_dir, "../../packages/protocol/src"))
+    if protocol_path not in sys.path:
+        sys.path.append(protocol_path)
+
+    from agenthub_protocol.path_utils import ensure_safe_path
+
+    return ensure_safe_path
+
+
+_ensure_safe_path = _load_ensure_safe_path()
 
 class ReadFileArgs(BaseModel):
     path: str = Field(..., description="Path to the file to read (relative to workspace if root_dir is set)")
@@ -25,7 +35,11 @@ class ReadFileSkill(Skill):
             allow_abs = os.getenv("ALLOW_ABSOLUTE_SKILL_IO", "0") == "1"
             if self.root_dir:
                 try:
-                    full_path = ensure_safe_path(self.root_dir, path, f"Access denied. Path {path} is outside the workspace")
+                    full_path = _ensure_safe_path(
+                        self.root_dir,
+                        path,
+                        f"Access denied. Path {path} is outside the workspace",
+                    )
                 except ValueError as e:
                     return f"Error: {str(e)}"
             else:
@@ -58,7 +72,11 @@ class WriteFileSkill(Skill):
             allow_abs = os.getenv("ALLOW_ABSOLUTE_SKILL_IO", "0") == "1"
             if self.root_dir:
                 try:
-                    full_path = ensure_safe_path(self.root_dir, path, f"Access denied. Path {path} is outside the workspace")
+                    full_path = _ensure_safe_path(
+                        self.root_dir,
+                        path,
+                        f"Access denied. Path {path} is outside the workspace",
+                    )
                 except ValueError as e:
                     return f"Error: {str(e)}"
             else:

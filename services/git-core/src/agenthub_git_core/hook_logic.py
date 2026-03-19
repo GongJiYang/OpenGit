@@ -1,14 +1,22 @@
-import sys
-import os
 import json
+import os
 import subprocess
+import sys
 
-# Ensure we can import the protocol package
-# In a real deployment, this would be installed in the environment
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../../packages/protocol/src")))
 
-from agenthub_protocol import TraceCommit
-from agenthub_protocol.validator import TraceValidator
+def _load_protocol_runtime():
+    """Load protocol classes with monorepo path fallback."""
+    protocol_path = os.path.abspath(
+        os.path.join(os.path.dirname(__file__), "../../../../packages/protocol/src")
+    )
+    if protocol_path not in sys.path:
+        sys.path.append(protocol_path)
+
+    from agenthub_protocol import TraceCommit
+    from agenthub_protocol.validator import TraceValidator
+
+    return TraceCommit, TraceValidator
+
 
 def get_commit_message(commit_sha: str) -> str:
     """Read the raw commit message body."""
@@ -16,11 +24,14 @@ def get_commit_message(commit_sha: str) -> str:
     result = subprocess.run(cmd, capture_output=True, text=True, check=True)
     return result.stdout.strip()
 
+
 def validate_push() -> None:
     """
     Standard Git Pre-Receive Hook.
     Reads (old_sha, new_sha, ref_name) from stdin.
     """
+    TraceCommit, TraceValidator = _load_protocol_runtime()
+
     print("🤖 AgentHub Guard: Inspecting incoming commits...", file=sys.stderr)
 
     # Read lines from stdin
@@ -32,13 +43,16 @@ def validate_push() -> None:
     for line in input_lines:
         old_sha, new_sha, ref = line.split()
         if not ref.startswith("refs/heads/"):
-            print(f"❌ REJECTED: Unsupported ref '{ref}'. Only refs/heads/* allowed.", file=sys.stderr)
+            print(
+                f"❌ REJECTED: Unsupported ref '{ref}'. Only refs/heads/* allowed.",
+                file=sys.stderr,
+            )
             sys.exit(1)
 
         # Skip creating a new branch or deleting one for MVP simplicity
         # (Real logic would check the whole range)
         if new_sha == "0000000000000000000000000000000000000000":
-             continue # Delete branch
+            continue  # Delete branch
 
         # Validate all commits in the push range
         if old_sha == "0000000000000000000000000000000000000000":
@@ -65,12 +79,16 @@ def validate_push() -> None:
                 print(f"🧠 Reasoning Trace: {len(trace.reasoning_trace)} steps", file=sys.stderr)
             except json.JSONDecodeError:
                 print(f"❌ REJECTED: Commit {commit_sha[:7]} is not valid JSON.", file=sys.stderr)
-                print("   AgentHub requires all commits to be structured JSON conforming to TraceCommit Schema.", file=sys.stderr)
+                print(
+                    "   AgentHub requires all commits to be structured JSON conforming to TraceCommit Schema.",
+                    file=sys.stderr,
+                )
                 sys.exit(1)
             except Exception as e:
                 print(f"❌ REJECTED: Commit {commit_sha[:7]} violates AgentHub Protocol.", file=sys.stderr)
                 print(f"   Error: {str(e)}", file=sys.stderr)
                 sys.exit(1)
+
 
 if __name__ == "__main__":
     validate_push()
