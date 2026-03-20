@@ -22,7 +22,7 @@ from typing import Optional, List, Dict, Any
 from uuid import UUID, uuid4
 
 from sqlmodel import Field, SQLModel, Column, Text, JSON
-from sqlalchemy import Index
+from sqlalchemy import Index, UniqueConstraint
 
 
 # ============== Enums ==============
@@ -34,6 +34,13 @@ class RunnerStatus(str, Enum):
     BUSY = "busy"            # Currently executing a job
     DISABLED = "disabled"    # Manually disabled by owner
     BANNED = "banned"        # Permanently banned for cheating
+
+
+class RunnerPoolType(str, Enum):
+    """Runner pool visibility and dispatch scope."""
+    PRIVATE = "private"
+    SHARED = "shared"
+    PLATFORM = "platform"
 
 
 class ComputeJobStatus(str, Enum):
@@ -107,7 +114,12 @@ class Runner(SQLModel, table=True):
     labels: List[str] = Field(default_factory=list, sa_column=Column(JSON),
                                description="Custom labels for job matching, e.g., ['gpu', 'macos']")
 
-    # Repository Binding (empty = serve all repos = global runner)
+    # Pool & Repository Binding
+    pool_type: RunnerPoolType = Field(
+        default=RunnerPoolType.PRIVATE,
+        index=True,
+        description="Runner pool type: private, shared, platform"
+    )
     allowed_repo_ids: List[str] = Field(
         default_factory=list,
         sa_column=Column(JSON),
@@ -214,6 +226,23 @@ class ComputeJob(SQLModel, table=True):
                                        description="Assigned runner (null if pending)")
     execution_mode: ExecutionMode = Field(default=ExecutionMode.SHARED_LOCAL,
                                            description="Where to execute this job")
+
+    # Requester identity (who requested this job)
+    requester_user_id: Optional[UUID] = Field(
+        default=None,
+        index=True,
+        description="User who requested this compute job"
+    )
+    requester_agent_id: Optional[UUID] = Field(
+        default=None,
+        index=True,
+        description="Agent identity of requester (if available)"
+    )
+    requester_type: Optional[str] = Field(
+        default=None,
+        max_length=20,
+        description="Requester type: user / agent / system"
+    )
 
     # Job definition
     test_command: str = Field(default="pytest", max_length=500,
@@ -344,6 +373,33 @@ class AuditLog(SQLModel, table=True):
         indexes = [
             Index("ix_audit_logs_job_id", "job_id"),
             Index("ix_audit_logs_runner_id", "runner_id"),
+        ]
+
+
+# ============== Runner Share Grant ==============
+
+class RunnerShareGrant(SQLModel, table=True):
+    """
+    Authorization record that allows another user to dispatch jobs to a shared runner.
+    """
+
+    __tablename__ = "runner_share_grants"
+    __table_args__ = (
+        UniqueConstraint("runner_id", "grantee_user_id", name="uq_runner_share_runner_grantee"),
+    )
+
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+    runner_id: UUID = Field(foreign_key="runners.id", nullable=False, index=True)
+    grantee_user_id: UUID = Field(foreign_key="users.id", nullable=False, index=True)
+    granted_by_user_id: UUID = Field(foreign_key="users.id", nullable=False, index=True)
+    can_execute: bool = Field(default=True, description="Whether grantee can dispatch jobs to this runner")
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+
+    class Config:
+        indexes = [
+            Index("ix_runner_share_grants_runner_id", "runner_id"),
+            Index("ix_runner_share_grants_grantee_user_id", "grantee_user_id"),
+            Index("ix_runner_share_grants_granted_by_user_id", "granted_by_user_id"),
         ]
 
 

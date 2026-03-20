@@ -38,6 +38,13 @@ interface PendingVerification {
     agent_id: string;
 }
 
+interface RepoMeta {
+    id: string;
+    full_name: string;
+    name: string;
+    owner: string;
+}
+
 export default function RepoPage() {
     const params = useParams();
     const repoId = params.repoId as string;
@@ -45,6 +52,8 @@ export default function RepoPage() {
     const [files, setFiles] = useState<string[]>([]);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState("");
+    const [repoName, setRepoName] = useState<string>("");
+    const [repoDisplayName, setRepoDisplayName] = useState<string>(repoId);
 
     // File viewer state
     const [selectedFile, setSelectedFile] = useState<string | null>(null);
@@ -56,34 +65,48 @@ export default function RepoPage() {
     const API_BASE = process.env.NEXT_PUBLIC_API_BASE || "/api";
 
     useEffect(() => {
-        async function fetchTree() {
+        async function resolveRepoAndFetchTree() {
             try {
-                const res = await fetch(`${API_BASE}/repos/${repoId}/tree`);
-                if (!res.ok) {
-                    if (res.status === 404) throw new Error("Repository not found or empty");
+                setLoading(true);
+                setError("");
+
+                const repoMetaRes = await fetch(`${API_BASE}/v1/repos/${repoId}`);
+                if (!repoMetaRes.ok) {
+                    if (repoMetaRes.status === 404) throw new Error("Repository not found");
+                    throw new Error("Failed to fetch repository metadata");
+                }
+
+                const repoMeta = await repoMetaRes.json() as RepoMeta;
+                const resolvedRepoName = repoMeta.full_name;
+                setRepoName(resolvedRepoName);
+                setRepoDisplayName(resolvedRepoName);
+
+                const treeRes = await fetch(`${API_BASE}/repos/${encodeURIComponent(resolvedRepoName)}/tree`);
+                if (!treeRes.ok) {
+                    if (treeRes.status === 404) throw new Error("Repository not found or empty");
                     throw new Error("Failed to fetch repository tree");
                 }
-                const data = await res.json();
+                const data = await treeRes.json();
                 setFiles(data.files || []);
-            } catch (err: any) {
-                setError(err.message);
+            } catch (err: unknown) {
+                setError(err instanceof Error ? err.message : "Failed to fetch repository tree");
             } finally {
                 setLoading(false);
             }
         }
 
         if (repoId) {
-            fetchTree();
+            resolveRepoAndFetchTree();
         }
-    }, [repoId]);
+    }, [API_BASE, repoId]);
 
     useEffect(() => {
         async function fetchPendingVerifications() {
             try {
                 const apiBase = process.env.NEXT_PUBLIC_API_BASE || "/api";
                 const agentKey = process.env.NEXT_PUBLIC_AGENT_API_KEY || "";
-                if (!agentKey) return;
-                const res = await fetch(`${apiBase}/api/v1/commits/pending/verification?repo_name=${repoId}`, {
+                if (!agentKey || !repoName) return;
+                const res = await fetch(`${apiBase}/v1/commits/pending/verification?repo_name=${encodeURIComponent(repoName)}`, {
                     headers: { "X-API-Key": agentKey }
                 });
                 if (!res.ok) return;
@@ -93,10 +116,10 @@ export default function RepoPage() {
                 // ignore
             }
         }
-        if (repoId) {
+        if (repoName) {
             fetchPendingVerifications();
         }
-    }, [repoId]);
+    }, [repoName]);
 
     async function handleFileClick(filename: string) {
         setSelectedFile(filename);
@@ -104,11 +127,14 @@ export default function RepoPage() {
         setFileContent("");
 
         try {
-            const res = await fetch(`${API_BASE}/repos/${repoId}/blob?path=${encodeURIComponent(filename)}`);
+            if (!repoName) {
+                throw new Error("Repository not resolved");
+            }
+            const res = await fetch(`${API_BASE}/repos/${encodeURIComponent(repoName)}/blob?path=${encodeURIComponent(filename)}`);
             if (!res.ok) throw new Error("Failed to load file");
             const data = await res.json();
             setFileContent(data.content || "// Empty file");
-        } catch (err) {
+        } catch {
             setFileContent("// Error loading file content");
         } finally {
             setFileLoading(false);
@@ -137,7 +163,7 @@ export default function RepoPage() {
                     <div className="flex items-start justify-between mb-4">
                         <div>
                             <div className="flex items-center gap-3 mb-2">
-                                <h1 className="text-3xl font-bold text-emerald-400 font-mono">{repoId}</h1>
+                                <h1 className="text-3xl font-bold text-emerald-400 font-mono">{repoDisplayName}</h1>
                             </div>
                             <p className="text-zinc-400 text-sm max-w-2xl">No repository metadata available yet.</p>
                         </div>
@@ -264,7 +290,7 @@ export default function RepoPage() {
                     )}
 
                     {/* Tasks / Bounty Board */}
-                    <TaskBoard repoId={repoId} />
+                    <TaskBoard repoId={repoName || repoId} />
 
                     <div className="glass-panel rounded-2xl">
                         <div className="p-4 border-b border-white/5 flex items-center gap-2">
@@ -291,6 +317,7 @@ function CIJobHistory({ repoId }: { repoId: string }) {
 
     useEffect(() => {
         fetchJobs();
+        // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [repoId, filter]);
 
     const fetchJobs = async () => {

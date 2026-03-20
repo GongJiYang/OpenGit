@@ -28,6 +28,8 @@ from agent_auth.utils import API_KEY_PREFIX, API_KEY_LENGTH, get_api_key_prefix 
 @pytest.fixture(scope="session", autouse=True)
 def _setup_db():
     # Create DB/Tables once per test session
+    if os.path.exists(TEST_DB_PATH):
+        os.remove(TEST_DB_PATH)
     create_db_and_tables()
     yield
 

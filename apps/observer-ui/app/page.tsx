@@ -6,7 +6,9 @@ import RecoveryStatsPanel from "./components/RecoveryStatsPanel";
 
 // Types
 interface Repo {
+  id: string;
   name: string;
+  full_name: string;
   status: "unknown";
 }
 
@@ -15,6 +17,13 @@ interface Stats {
   total_repos: number;
   total_vectors: number;
   system_load: string;
+}
+
+interface StatCardProps {
+  title: string;
+  value: string | number;
+  icon: React.ReactNode;
+  trend: string;
 }
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE || "/api";
@@ -37,7 +46,20 @@ export default function Home() {
         // Fetch Repos
         const resRepos = await fetch(`${API_BASE}/repos`);
         const reposData = await resRepos.json();
-        setRepos(reposData.map((name: string) => ({ name, status: "unknown" })));
+        setRepos(
+          reposData.map((name: string) => {
+            const normalized = name.endsWith(".git") ? name.slice(0, -4) : name;
+            const parts = normalized.split("/");
+            const owner = parts.length > 1 ? parts[0] : "local";
+            const repoName = parts.length > 1 ? parts.slice(1).join("/") : normalized;
+            return {
+              id: normalized,
+              name: repoName,
+              full_name: `${owner}/${repoName}`,
+              status: "unknown" as const,
+            };
+          })
+        );
 
         setError(false);
       } catch (e) {
@@ -144,7 +166,7 @@ export default function Home() {
             <div className="p-4 font-mono text-sm space-y-2 text-zinc-300">
               <div className="opacity-60">Live stream API not available yet.</div>
               {repos.length > 0 && (
-                <div className="text-emerald-400">Known repos: {repos.map(r => r.name).join(", ")}</div>
+                <div className="text-emerald-400">Known repos: {repos.map(r => r.full_name).join(", ")}</div>
               )}
               <div className="pl-4 border-l-2 border-zinc-800 text-zinc-500 mt-4">
                 Awaiting new TraceCommits...
@@ -167,7 +189,7 @@ export default function Home() {
               </div>
             ) : (
               repos.map(r => (
-                <RepoCard key={r.name} name={r.name} status={r.status} />
+                <RepoCard key={r.id} repoId={r.id} name={r.full_name} status={r.status} />
               ))
             )}
           </div>
@@ -178,7 +200,7 @@ export default function Home() {
   );
 }
 
-function StatCard({ title, value, icon, trend }: any) {
+function StatCard({ title, value, icon, trend }: StatCardProps) {
   return (
     <div className="glass-panel p-6 rounded-xl relative overflow-hidden group hover:border-zinc-700 transition-colors">
       <div className="flex justify-between items-start mb-4">
@@ -195,13 +217,13 @@ import Link from "next/link";
 
 // ...
 
-function RepoCard({ name, status }: any) {
-  const statusColors: any = {
+function RepoCard({ repoId, name, status }: { repoId: string; name: string; status: "unknown" }) {
+  const statusColors: Record<string, string> = {
     unknown: "text-zinc-400 bg-zinc-400/10"
   };
 
   return (
-    <Link href={`/repos/${name}`}>
+    <Link href={`/repos/${encodeURIComponent(repoId)}`}>
       <div className="p-4 border border-zinc-800 bg-zinc-900/40 rounded-lg flex items-center justify-between hover:bg-zinc-800/40 transition-colors cursor-pointer group">
         <div className="flex items-center gap-3">
           <GitBranch className="w-4 h-4 text-zinc-500 group-hover:text-emerald-500 transition-colors" />

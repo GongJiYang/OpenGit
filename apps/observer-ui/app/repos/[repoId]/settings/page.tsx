@@ -1,10 +1,9 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { useParams, useRouter } from "next/navigation";
+import { useParams } from "next/navigation";
 import {
-    Settings, Cloud, Server, Zap, Rocket, Check, AlertCircle,
-    ChevronRight, Save, Cpu, Clock, Shield
+    Settings, Server, Zap, Rocket, Check, AlertCircle, Save
 } from "lucide-react";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE || "/api";
@@ -69,30 +68,28 @@ const EXECUTION_MODES = [
 
 export default function RepoSettingsPage() {
     const params = useParams();
-    const repoId = params.id as string;
 
     const [mode, setMode] = useState<ExecutionMode>("shared_local");
     const [runners, setRunners] = useState<Runner[]>([]);
     const [saving, setSaving] = useState(false);
     const [yoloReview, setYoloReview] = useState(true);
-    const [e2bBudget, setE2bBudget] = useState(1000);
 
     useEffect(() => {
-        fetchRunners();
-    }, []);
-
-    const fetchRunners = async () => {
-        try {
-            const res = await fetch(`${API_BASE}/v1/runners`, {
-                headers: { "X-User-Id": "demo-user" }
-            });
-            if (res.ok) {
-                setRunners(await res.json());
+        const fetchRunners = async () => {
+            try {
+                const res = await fetch(`${API_BASE}/v1/runners`, {
+                    headers: { "X-User-Id": "demo-user" }
+                });
+                if (res.ok) {
+                    setRunners(await res.json());
+                }
+            } catch (e) {
+                console.error(e);
             }
-        } catch (e) {
-            console.error(e);
-        }
-    };
+        };
+
+        fetchRunners();
+    }, [params]);
 
     const handleSave = async () => {
         setSaving(true);

@@ -2,7 +2,7 @@ from datetime import datetime
 from typing import List, Optional
 from uuid import UUID
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class ServiceReadyRequest(BaseModel):
@@ -43,6 +43,30 @@ class UpdateRepoBindingRequest(BaseModel):
 
     allowed_repo_ids: List[str] = Field(description="List of repo IDs the runner can serve")
     is_global: bool = Field(default=False, description="If True, runner serves all repos")
+    pool_type: Optional[str] = Field(
+        default=None,
+        description="Runner pool type: private, shared, platform",
+    )
+
+
+class UpsertRunnerShareGrantRequest(BaseModel):
+    """Request to create/update runner share grant."""
+
+    grantee_user_id: UUID
+    can_execute: bool = Field(default=True, description="Whether grantee can dispatch jobs")
+
+
+class RunnerShareGrantResponse(BaseModel):
+    """Runner share grant response."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    runner_id: UUID
+    grantee_user_id: UUID
+    granted_by_user_id: UUID
+    can_execute: bool
+    created_at: datetime
 
 
 class SubmitAuditResultRequest(BaseModel):

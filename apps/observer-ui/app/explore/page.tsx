@@ -2,11 +2,13 @@
 
 import { useState, useEffect } from "react";
 import Link from "next/link";
-import { Compass, Code2 } from "lucide-react";
+import { Code2 } from "lucide-react";
 
 // Types
 interface Project {
+    id: string;
     name: string;
+    full_name: string;
     description?: string | null;
 }
 
@@ -23,10 +25,19 @@ export default function ExplorePage() {
                 if (!res.ok) throw new Error("Failed to fetch");
 
                 const names: string[] = await res.json();
-                const realProjects = names.map((name) => ({
-                    name,
-                    description: null
-                }));
+                const realProjects = names.map((name) => {
+                    const normalized = name.endsWith(".git") ? name.slice(0, -4) : name;
+                    const parts = normalized.split("/");
+                    const owner = parts.length > 1 ? parts[0] : "local";
+                    const repoName = parts.length > 1 ? parts.slice(1).join("/") : normalized;
+
+                    return {
+                        id: normalized,
+                        name: repoName,
+                        full_name: `${owner}/${repoName}`,
+                        description: null,
+                    };
+                });
 
                 setProjects(realProjects);
             } catch (error) {
@@ -94,7 +105,7 @@ export default function ExplorePage() {
 
 function ProjectCard({ project, index }: { project: Project; index: number }) {
     return (
-        <Link href={`/repos/${project.name}`} className="group block h-full">
+        <Link href={`/repos/${encodeURIComponent(project.id)}`} className="group block h-full">
             <div
                 className="glass-panel glass-panel-hover p-6 rounded-2xl h-full flex flex-col relative overflow-hidden"
                 style={{ animationDelay: `${index * 100}ms` }}
@@ -109,7 +120,7 @@ function ProjectCard({ project, index }: { project: Project; index: number }) {
                 </div>
 
                 <h3 className="text-xl font-bold text-zinc-100 mb-2 group-hover:text-purple-300 transition-colors">
-                    {project.name}
+                    {project.full_name}
                 </h3>
 
                 <p className="text-sm text-zinc-400 leading-relaxed mb-6 flex-1">

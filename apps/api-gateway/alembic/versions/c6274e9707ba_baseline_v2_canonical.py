@@ -142,6 +142,9 @@ def upgrade() -> None:
     sa.Column('submission_id', sa.String(), nullable=True),
     sa.Column('runner_id', sa.Uuid(), nullable=True),
     sa.Column('execution_mode', sa.Enum('SHARED_LOCAL', 'YOLO_MODE', 'SELF_HOSTED', name='executionmode'), nullable=False),
+    sa.Column('requester_user_id', sa.Uuid(), nullable=True),
+    sa.Column('requester_agent_id', sa.Uuid(), nullable=True),
+    sa.Column('requester_type', sa.String(length=20), nullable=True),
     sa.Column('test_command', sa.String(length=500), nullable=False),
     sa.Column('code_url', sa.String(length=500), nullable=True),
     sa.Column('code_branch', sa.String(length=100), nullable=True),
@@ -186,6 +189,8 @@ def upgrade() -> None:
     )
     op.create_index(op.f('ix_compute_jobs_bounty_id'), 'compute_jobs', ['bounty_id'], unique=False)
     op.create_index(op.f('ix_compute_jobs_repo_id'), 'compute_jobs', ['repo_id'], unique=False)
+    op.create_index(op.f('ix_compute_jobs_requester_agent_id'), 'compute_jobs', ['requester_agent_id'], unique=False)
+    op.create_index(op.f('ix_compute_jobs_requester_user_id'), 'compute_jobs', ['requester_user_id'], unique=False)
     op.create_index(op.f('ix_compute_jobs_runner_id'), 'compute_jobs', ['runner_id'], unique=False)
     op.create_index(op.f('ix_compute_jobs_status'), 'compute_jobs', ['status'], unique=False)
     op.create_table('meta_repo_config',
@@ -463,6 +468,7 @@ def upgrade() -> None:
     sa.Column('os_version', sa.String(length=100), nullable=True),
     sa.Column('docker_version', sa.String(length=50), nullable=True),
     sa.Column('labels', sa.JSON(), nullable=True),
+    sa.Column('pool_type', sa.Enum('PRIVATE', 'SHARED', 'PLATFORM', name='runnerpooltype'), nullable=False),
     sa.Column('allowed_repo_ids', sa.JSON(), nullable=True),
     sa.Column('is_global', sa.Boolean(), nullable=False),
     sa.Column('total_jobs_completed', sa.Integer(), nullable=False),
@@ -481,7 +487,24 @@ def upgrade() -> None:
     sa.PrimaryKeyConstraint('id')
     )
     op.create_index(op.f('ix_runners_owner_user_id'), 'runners', ['owner_user_id'], unique=False)
+    op.create_index(op.f('ix_runners_pool_type'), 'runners', ['pool_type'], unique=False)
     op.create_index(op.f('ix_runners_status'), 'runners', ['status'], unique=False)
+    op.create_table('runner_share_grants',
+    sa.Column('id', sa.Uuid(), nullable=False),
+    sa.Column('runner_id', sa.Uuid(), nullable=False),
+    sa.Column('grantee_user_id', sa.Uuid(), nullable=False),
+    sa.Column('granted_by_user_id', sa.Uuid(), nullable=False),
+    sa.Column('can_execute', sa.Boolean(), nullable=False),
+    sa.Column('created_at', sa.DateTime(), nullable=False),
+    sa.ForeignKeyConstraint(['granted_by_user_id'], ['users.id'], ),
+    sa.ForeignKeyConstraint(['grantee_user_id'], ['users.id'], ),
+    sa.ForeignKeyConstraint(['runner_id'], ['runners.id'], ),
+    sa.PrimaryKeyConstraint('id'),
+    sa.UniqueConstraint('runner_id', 'grantee_user_id', name='uq_runner_share_runner_grantee')
+    )
+    op.create_index(op.f('ix_runner_share_grants_granted_by_user_id'), 'runner_share_grants', ['granted_by_user_id'], unique=False)
+    op.create_index(op.f('ix_runner_share_grants_grantee_user_id'), 'runner_share_grants', ['grantee_user_id'], unique=False)
+    op.create_index(op.f('ix_runner_share_grants_runner_id'), 'runner_share_grants', ['runner_id'], unique=False)
     op.create_table('user_agent_bindings',
     sa.Column('id', sa.Uuid(), nullable=False),
     sa.Column('user_id', sa.Uuid(), nullable=False),
@@ -567,7 +590,12 @@ def downgrade() -> None:
     op.drop_index(op.f('ix_user_agent_bindings_user_id'), table_name='user_agent_bindings')
     op.drop_index(op.f('ix_user_agent_bindings_agent_id'), table_name='user_agent_bindings')
     op.drop_table('user_agent_bindings')
+    op.drop_index(op.f('ix_runner_share_grants_runner_id'), table_name='runner_share_grants')
+    op.drop_index(op.f('ix_runner_share_grants_grantee_user_id'), table_name='runner_share_grants')
+    op.drop_index(op.f('ix_runner_share_grants_granted_by_user_id'), table_name='runner_share_grants')
+    op.drop_table('runner_share_grants')
     op.drop_index(op.f('ix_runners_status'), table_name='runners')
+    op.drop_index(op.f('ix_runners_pool_type'), table_name='runners')
     op.drop_index(op.f('ix_runners_owner_user_id'), table_name='runners')
     op.drop_table('runners')
     op.drop_index(op.f('ix_runner_tokens_user_id'), table_name='runner_tokens')
@@ -628,6 +656,8 @@ def downgrade() -> None:
     op.drop_table('meta_repo_config')
     op.drop_index(op.f('ix_compute_jobs_status'), table_name='compute_jobs')
     op.drop_index(op.f('ix_compute_jobs_runner_id'), table_name='compute_jobs')
+    op.drop_index(op.f('ix_compute_jobs_requester_user_id'), table_name='compute_jobs')
+    op.drop_index(op.f('ix_compute_jobs_requester_agent_id'), table_name='compute_jobs')
     op.drop_index(op.f('ix_compute_jobs_repo_id'), table_name='compute_jobs')
     op.drop_index(op.f('ix_compute_jobs_bounty_id'), table_name='compute_jobs')
     op.drop_table('compute_jobs')

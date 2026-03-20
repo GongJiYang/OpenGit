@@ -23,9 +23,9 @@ from datetime import datetime, timedelta
 from typing import List, Optional
 from uuid import UUID
 
+import bcrypt
 from fastapi import APIRouter, Depends, HTTPException, status, Header
 from sqlmodel import Session, select
-from passlib.context import CryptContext
 
 from ..models.runner import (
     Runner,
@@ -41,6 +41,8 @@ from ..models.runner import (
     RunnerResponse,
     ComputeJobResponse,
     AuditLog,
+    RunnerPoolType,
+    RunnerShareGrant,
 )
 from ..models.platform import User
 from ..database import get_db
@@ -53,14 +55,69 @@ from schemas.runner import (
     ServiceStatusResponse,
     SubmitAuditResultRequest,
     UpdateRepoBindingRequest,
+    UpsertRunnerShareGrantRequest,
+    RunnerShareGrantResponse,
 )
 
 router = APIRouter(prefix="/runners", tags=["Runners"])
 
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+def _parse_user_id_header(user_id: Optional[str]) -> Optional[UUID]:
+    """Parse X-User-Id header to UUID."""
+    if not user_id:
+        return None
+    try:
+        return UUID(user_id)
+    except ValueError:
+        return None
+
+
+def _runner_can_accept_job(runner: Runner, job: ComputeJob, session: Session) -> bool:
+    """Check whether this runner is authorized to execute the job."""
+    # Repository binding gate
+    if not runner.is_global:
+        job_repo_id = str(job.repo_id) if job.repo_id else None
+        if not job_repo_id or job_repo_id not in runner.allowed_repo_ids:
+            return False
+
+    # Requester gate by pool type
+    if runner.pool_type == RunnerPoolType.PLATFORM:
+        return True
+
+    if job.requester_user_id is None:
+        # Legacy jobs without requester identity are restricted to private pool runners
+        return runner.pool_type == RunnerPoolType.PRIVATE
+
+    if runner.pool_type == RunnerPoolType.PRIVATE:
+        return job.requester_user_id == runner.owner_user_id
+
+    # SHARED: owner or explicit share grant
+    if job.requester_user_id == runner.owner_user_id:
+        return True
+
+    grant = session.exec(
+        select(RunnerShareGrant).where(
+            RunnerShareGrant.runner_id == runner.id,
+            RunnerShareGrant.grantee_user_id == job.requester_user_id,
+            RunnerShareGrant.can_execute.is_(True),
+        )
+    ).first()
+    return grant is not None
 
 
 # ============== Helper Functions ==============
+
+def _hash_token(token: str) -> str:
+    """Hash token using bcrypt library directly to avoid passlib backend issues."""
+    return bcrypt.hashpw(token.encode("utf-8"), bcrypt.gensalt(rounds=12)).decode("utf-8")
+
+
+def _verify_token(token: str, token_hash: str) -> bool:
+    """Verify token hash using bcrypt library directly."""
+    try:
+        return bcrypt.checkpw(token.encode("utf-8"), token_hash.encode("utf-8"))
+    except ValueError:
+        return False
+
 
 def verify_runner_token(token: str, session: Session) -> Runner:
     """Verify runner authentication token and return runner."""
@@ -74,7 +131,7 @@ def verify_runner_token(token: str, session: Session) -> Runner:
     runners = session.exec(select(Runner)).all()
 
     for runner in runners:
-        if pwd_context.verify(token, runner.token_hash):
+        if _verify_token(token, runner.token_hash):
             if runner.is_banned:
                 raise HTTPException(
                     status_code=status.HTTP_403_FORBIDDEN,
@@ -126,7 +183,7 @@ async def generate_runner_token(
     User must be authenticated (JWT). Token is shown ONLY ONCE.
     """
     token = f"ahrun_{secrets.token_urlsafe(32)}"
-    token_hash = pwd_context.hash(token)
+    token_hash = _hash_token(token)
 
     runner_token = RunnerToken(
         user_id=user_id,
@@ -170,7 +227,7 @@ async def register_runner(
 
     # Generate runner auth token
     runner_auth_token = f"ahauth_{secrets.token_urlsafe(32)}"
-    runner_auth_hash = pwd_context.hash(runner_auth_token)
+    runner_auth_hash = _hash_token(runner_auth_token)
 
     # Create runner
     runner = Runner(
@@ -266,13 +323,8 @@ async def poll_jobs(
 
     assignments = []
     for job in jobs:
-        # Check repository binding
-        if not runner.is_global:
-            # Runner is repo-specific, check if job's repo is allowed
-            job_repo_id = str(job.repo_id) if job.repo_id else None
-            if not job_repo_id or job_repo_id not in runner.allowed_repo_ids:
-                # Skip this job - runner not allowed for this repo
-                continue
+        if not _runner_can_accept_job(runner, job, session):
+            continue
 
         # Assign job to runner
         job.runner_id = runner.id
@@ -566,13 +618,7 @@ async def list_my_runners(
     - X-User-Id header (UUID) for demo/testing
     - Authorization Bearer token (JWT) for production
     """
-    # Try to get user_id from header first
-    actual_user_id = None
-    if user_id:
-        try:
-            actual_user_id = UUID(user_id)
-        except ValueError:
-            pass  # Not a valid UUID, try JWT
+    actual_user_id = _parse_user_id_header(user_id)
 
     # If no valid user_id, return empty list (unauthenticated)
     if not actual_user_id:
@@ -619,13 +665,7 @@ async def update_runner_repos(
     - is_global=True: Runner serves all repos (ignores allowed_repo_ids)
     - is_global=False: Runner only serves repos in allowed_repo_ids
     """
-    # Validate user_id
-    actual_user_id = None
-    if user_id:
-        try:
-            actual_user_id = UUID(user_id)
-        except ValueError:
-            pass
+    actual_user_id = _parse_user_id_header(user_id)
 
     if not actual_user_id:
         raise HTTPException(status_code=401, detail="Authentication required")
@@ -639,6 +679,13 @@ async def update_runner_repos(
     # Update bindings
     runner.allowed_repo_ids = req.allowed_repo_ids
     runner.is_global = req.is_global
+
+    if req.pool_type:
+        try:
+            runner.pool_type = RunnerPoolType(req.pool_type.lower())
+        except ValueError:
+            raise HTTPException(status_code=400, detail=f"Invalid pool_type: {req.pool_type}")
+
     session.add(runner)
     session.commit()
     session.refresh(runner)
@@ -647,8 +694,117 @@ async def update_runner_repos(
         "success": True,
         "runner_id": str(runner.id),
         "is_global": runner.is_global,
+        "pool_type": runner.pool_type.value,
         "allowed_repo_ids": runner.allowed_repo_ids
     }
+
+
+@router.get("/{runner_id}/shares", response_model=List[RunnerShareGrantResponse])
+async def list_runner_shares(
+    runner_id: UUID,
+    user_id: Optional[str] = Header(None, alias="X-User-Id"),
+    session: Session = Depends(get_db)
+):
+    """List share grants of a runner. Owner only."""
+    actual_user_id = _parse_user_id_header(user_id)
+    if not actual_user_id:
+        raise HTTPException(status_code=401, detail="Authentication required")
+
+    runner = session.get(Runner, runner_id)
+    if not runner:
+        raise HTTPException(status_code=404, detail="Runner not found")
+    if runner.owner_user_id != actual_user_id:
+        raise HTTPException(status_code=403, detail="Not your runner")
+
+    grants = session.exec(
+        select(RunnerShareGrant)
+        .where(RunnerShareGrant.runner_id == runner_id)
+        .order_by(RunnerShareGrant.created_at.desc())
+    ).all()
+    return [RunnerShareGrantResponse.model_validate(g) for g in grants]
+
+
+@router.post("/{runner_id}/shares", response_model=RunnerShareGrantResponse)
+async def upsert_runner_share(
+    runner_id: UUID,
+    req: UpsertRunnerShareGrantRequest,
+    user_id: Optional[str] = Header(None, alias="X-User-Id"),
+    session: Session = Depends(get_db)
+):
+    """Create or update a share grant for a runner. Owner only."""
+    actual_user_id = _parse_user_id_header(user_id)
+    if not actual_user_id:
+        raise HTTPException(status_code=401, detail="Authentication required")
+
+    runner = session.get(Runner, runner_id)
+    if not runner:
+        raise HTTPException(status_code=404, detail="Runner not found")
+    if runner.owner_user_id != actual_user_id:
+        raise HTTPException(status_code=403, detail="Not your runner")
+
+    if req.grantee_user_id == runner.owner_user_id:
+        raise HTTPException(status_code=400, detail="Owner does not need a share grant")
+
+    grant = session.exec(
+        select(RunnerShareGrant).where(
+            RunnerShareGrant.runner_id == runner_id,
+            RunnerShareGrant.grantee_user_id == req.grantee_user_id,
+        )
+    ).first()
+
+    if grant:
+        grant.can_execute = req.can_execute
+        session.add(grant)
+    else:
+        grant = RunnerShareGrant(
+            runner_id=runner_id,
+            grantee_user_id=req.grantee_user_id,
+            granted_by_user_id=actual_user_id,
+            can_execute=req.can_execute,
+        )
+        session.add(grant)
+
+    # Sharing implies shared pool
+    if runner.pool_type == RunnerPoolType.PRIVATE:
+        runner.pool_type = RunnerPoolType.SHARED
+        session.add(runner)
+
+    session.commit()
+    session.refresh(grant)
+    return RunnerShareGrantResponse.model_validate(grant)
+
+
+@router.delete("/{runner_id}/shares/{grantee_user_id}")
+async def delete_runner_share(
+    runner_id: UUID,
+    grantee_user_id: UUID,
+    user_id: Optional[str] = Header(None, alias="X-User-Id"),
+    session: Session = Depends(get_db)
+):
+    """Delete a share grant for a runner. Owner only."""
+    actual_user_id = _parse_user_id_header(user_id)
+    if not actual_user_id:
+        raise HTTPException(status_code=401, detail="Authentication required")
+
+    runner = session.get(Runner, runner_id)
+    if not runner:
+        raise HTTPException(status_code=404, detail="Runner not found")
+    if runner.owner_user_id != actual_user_id:
+        raise HTTPException(status_code=403, detail="Not your runner")
+
+    grant = session.exec(
+        select(RunnerShareGrant).where(
+            RunnerShareGrant.runner_id == runner_id,
+            RunnerShareGrant.grantee_user_id == grantee_user_id,
+        )
+    ).first()
+    if not grant:
+        raise HTTPException(status_code=404, detail="Share grant not found")
+
+    session.delete(grant)
+    session.commit()
+
+    return {"success": True, "runner_id": str(runner_id), "grantee_user_id": str(grantee_user_id)}
 
 
 @router.post("/{runner_id}/repos/{repo_id}")
@@ -659,13 +815,7 @@ async def add_runner_repo(
     session: Session = Depends(get_db)
 ):
     """Add a single repository to runner's allowed list."""
-    # Validate user_id
-    actual_user_id = None
-    if user_id:
-        try:
-            actual_user_id = UUID(user_id)
-        except ValueError:
-            pass
+    actual_user_id = _parse_user_id_header(user_id)
 
     if not actual_user_id:
         raise HTTPException(status_code=401, detail="Authentication required")
@@ -702,13 +852,7 @@ async def remove_runner_repo(
     session: Session = Depends(get_db)
 ):
     """Remove a single repository from runner's allowed list."""
-    # Validate user_id
-    actual_user_id = None
-    if user_id:
-        try:
-            actual_user_id = UUID(user_id)
-        except ValueError:
-            pass
+    actual_user_id = _parse_user_id_header(user_id)
 
     if not actual_user_id:
         raise HTTPException(status_code=401, detail="Authentication required")

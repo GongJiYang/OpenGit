@@ -33,7 +33,7 @@ interface CommitRecord {
     diff_summary: string;
     verification_exit_code?: number | null;
     verification_stdout?: string | null;
-    trace_json?: any;
+    trace_json?: unknown;
 }
 
 interface CommitDetail {
@@ -59,8 +59,8 @@ export default function ReviewsPage() {
             }
             const data = await res.json();
             setPending(data || []);
-        } catch (e: any) {
-            setError(e.message || "Failed to load");
+        } catch (e: unknown) {
+            setError(e instanceof Error ? e.message : "Failed to load");
         } finally {
             setLoading(false);
         }
@@ -76,8 +76,8 @@ export default function ReviewsPage() {
             }
             const data = await res.json();
             setSelected(data);
-        } catch (e: any) {
-            setError(e.message || "Failed to load detail");
+        } catch (e: unknown) {
+            setError(e instanceof Error ? e.message : "Failed to load detail");
         }
     }
 
@@ -96,8 +96,8 @@ export default function ReviewsPage() {
             if (selected?.record?.id === commitId) {
                 setSelected(null);
             }
-        } catch (e: any) {
-            setError(e.message || "Action failed");
+        } catch (e: unknown) {
+            setError(e instanceof Error ? e.message : "Action failed");
         } finally {
             setLoading(false);
         }
@@ -111,8 +111,8 @@ export default function ReviewsPage() {
         <div className="space-y-6">
             <div className="flex items-center justify-between">
                 <div>
-                    <h1 className="text-3xl font-bold text-white">Test Reports</h1>
-                    <p className="text-zinc-400 text-sm">Automated blackbox test results for submitted code.</p>
+                    <h1 className="text-3xl font-bold text-white">Review Queue</h1>
+                    <p className="text-zinc-400 text-sm">Pending commit reviews awaiting approve/reject decisions.</p>
                 </div>
                 <button
                     onClick={fetchPending}
@@ -149,6 +149,20 @@ export default function ReviewsPage() {
                                     >
                                         <FileText className="w-3 h-3" /> Detail
                                     </button>
+                                    <button
+                                        onClick={() => handleAction(c.id, "approve")}
+                                        disabled={loading}
+                                        className="text-xs px-2 py-1 rounded bg-emerald-500/20 text-emerald-300 hover:bg-emerald-500/30 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1"
+                                    >
+                                        <CheckCircle className="w-3 h-3" /> Approve
+                                    </button>
+                                    <button
+                                        onClick={() => handleAction(c.id, "reject")}
+                                        disabled={loading}
+                                        className="text-xs px-2 py-1 rounded bg-red-500/20 text-red-300 hover:bg-red-500/30 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1"
+                                    >
+                                        <XCircle className="w-3 h-3" /> Reject
+                                    </button>
                                 </div>
                             </div>
                             {c.verification_exit_code !== undefined && (
@@ -176,7 +190,7 @@ export default function ReviewsPage() {
                     ) : (
                         <div className="text-xs text-zinc-500">No diff available.</div>
                     )}
-                    {selected.record.trace_json && (
+                    {selected.record.trace_json != null && (
                         <pre className="text-[11px] text-zinc-400 mt-4 bg-black/30 p-3 rounded overflow-auto max-h-[300px] whitespace-pre-wrap">
                             {JSON.stringify(selected.record.trace_json, null, 2)}
                         </pre>
