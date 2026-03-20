@@ -10,7 +10,8 @@ set -euo pipefail
 
 export PYTHONUNBUFFERED=1
 export PYTHONDONTWRITEBYTECODE=1
-export PYTHONPATH="${PYTHONPATH:-/app}"
+DEFAULT_PYTHONPATH="/app:/app/apps/api-gateway:/app/apps/api-gateway/src"
+export PYTHONPATH="${DEFAULT_PYTHONPATH}${PYTHONPATH:+:${PYTHONPATH}}"
 
 if [ "${RUN_MIGRATIONS}" = "1" ]; then
   if command -v alembic >/dev/null 2>&1; then
@@ -27,7 +28,6 @@ fi
 
 # Optional extra uvicorn flags via UVICORN_EXTRA (e.g. "--proxy-headers --forwarded-allow-ips=*")
 echo "[entrypoint] Starting uvicorn (factory)"
-cd /app/apps/api-gateway
-exec uvicorn src.main:create_app \
+exec uvicorn --app-dir /app/apps/api-gateway src.main:create_app \
   --factory --host "${APP_HOST}" --port "${APP_PORT}" \
   ${UVICORN_WORKERS:+--workers "${UVICORN_WORKERS}"} ${UVICORN_EXTRA:-}

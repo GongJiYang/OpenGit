@@ -30,8 +30,8 @@ EXPOSE 8000
 COPY apps/api-gateway/entrypoint.sh /app/entrypoint.sh
 RUN chmod +x /app/entrypoint.sh
 
-# Set Working Directory back to repo root (factory import uses PYTHONPATH=/app)
-WORKDIR /app
+# Keep runtime working directory aligned with api-gateway module path
+WORKDIR /app/apps/api-gateway
 
 # Expose Port
 EXPOSE 8000
