@@ -13,7 +13,6 @@ import {
   GitBranch,
   Layers,
   Zap,
-  LayoutGrid,
   List
 } from "lucide-react";
 import DAGVisualization from "../components/DAGVisualization";
@@ -25,8 +24,6 @@ import CollaborationPanel from "../components/CollaborationPanel";
 import CodeReviewPanel from "../components/CodeReviewPanel";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE || "/api";
-const AGENT_API_KEY = process.env.NEXT_PUBLIC_AGENT_API_KEY || "";
-const AGENT_ID = process.env.NEXT_PUBLIC_AGENT_ID || "";
 
 type StatusFilter = "all" | "pending" | "ready_for_preparation" | "open" | "in_progress" | "submitted" | "completed";
 type ViewMode = "list" | "tracks" | "dag";
@@ -69,9 +66,7 @@ export default function BountiesPage() {
 
     async function fetchBounties() {
         try {
-            const res = await fetch(`${API_BASE}/bounties`, {
-                headers: AGENT_API_KEY ? { "X-API-Key": AGENT_API_KEY } : undefined
-            });
+            const res = await fetch(`${API_BASE}/bounties`);
             const data = await res.json();
             setBounties(data);
         } catch (e) {
@@ -97,8 +92,7 @@ export default function BountiesPage() {
         await fetch(`${API_BASE}/bounties`, {
             method: "POST",
             headers: {
-                "Content-Type": "application/json",
-                ...(AGENT_API_KEY ? { "X-API-Key": AGENT_API_KEY } : {})
+                "Content-Type": "application/json"
             },
             body: JSON.stringify(payload)
         });
@@ -110,7 +104,7 @@ export default function BountiesPage() {
         fetchBounties();
     }
 
-    async function handleHierarchicalSubmit(rootTask: any, repoName: string) {
+    async function handleHierarchicalSubmit(rootTask: unknown, repoName: string) {
         setLoading(true);
         const finalRepoName = repoName.endsWith('.git') ? repoName : `${repoName}.git`;
 
@@ -118,8 +112,7 @@ export default function BountiesPage() {
             const res = await fetch(`${API_BASE}/v1/bounties/decomposed`, {
                 method: "POST",
                 headers: {
-                    "Content-Type": "application/json",
-                    ...(AGENT_API_KEY ? { "X-API-Key": AGENT_API_KEY } : {})
+                    "Content-Type": "application/json"
                 },
                 body: JSON.stringify({
                     repo_name: finalRepoName,
@@ -148,11 +141,9 @@ export default function BountiesPage() {
         const res = await fetch(`${API_BASE}/v1/bounties/${bountyId}/claim-preparation`, {
             method: "POST",
             headers: {
-                "Content-Type": "application/json",
-                ...(AGENT_API_KEY ? { "X-API-Key": AGENT_API_KEY } : {})
+                "Content-Type": "application/json"
             },
             body: JSON.stringify({
-                agent_id: AGENT_ID,
                 preparation_notes: notes
             })
         });
@@ -167,10 +158,7 @@ export default function BountiesPage() {
 
     async function handleActivate(bountyId: string) {
         const res = await fetch(`${API_BASE}/v1/bounties/${bountyId}/activate-from-preparation`, {
-            method: "POST",
-            headers: {
-                ...(AGENT_API_KEY ? { "X-API-Key": AGENT_API_KEY } : {})
-            }
+            method: "POST"
         });
 
         if (res.ok) {
@@ -406,7 +394,6 @@ export default function BountiesPage() {
                                     bounties={bounties.map(b => ({ ...b, dependencies: b.dependencies || [] }))}
                                     onClaimPreparation={handleClaimPreparation}
                                     onActivate={handleActivate}
-                                    agentId={AGENT_ID}
                                 />
                             )}
 

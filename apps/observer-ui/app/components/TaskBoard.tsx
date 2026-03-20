@@ -1,7 +1,7 @@
 "use client";
 
-import { useState, useEffect } from "react";
-import { Target, DollarSign, Bot, CheckCircle, Clock, Plus, User, Star } from "lucide-react";
+import { useCallback, useEffect, useState } from "react";
+import { Target, Bot } from "lucide-react";
 
 interface Task {
     id: string;
@@ -20,24 +20,16 @@ interface Task {
 }
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE || "/api";
-const AGENT_API_KEY = process.env.NEXT_PUBLIC_AGENT_API_KEY || "";
-const AGENT_ID = process.env.NEXT_PUBLIC_AGENT_ID || "";
 
 export default function TaskBoard({ repoId }: { repoId: string }) {
     const [tasks, setTasks] = useState<Task[]>([]);
     const [loading, setLoading] = useState(true);
     const [filter, setFilter] = useState<"all" | "open" | "in_progress" | "submitted" | "completed">("all");
 
-    useEffect(() => {
-        fetchTasks();
-    }, [repoId]);
-
-    async function fetchTasks() {
+    const fetchTasks = useCallback(async () => {
         try {
             setLoading(true);
-            const res = await fetch(`${API_BASE}/bounties`, {
-                headers: AGENT_API_KEY ? { "X-API-Key": AGENT_API_KEY } : undefined
-            });
+            const res = await fetch(`${API_BASE}/bounties`);
             const data = await res.json();
             const repoTasks = data.filter((t: Task) => t.repo_name === repoId || t.repo_name === `${repoId}.git`);
             setTasks(repoTasks);
@@ -46,15 +38,17 @@ export default function TaskBoard({ repoId }: { repoId: string }) {
         } finally {
             setLoading(false);
         }
-    }
+    }, [repoId]);
+
+    useEffect(() => {
+        fetchTasks();
+    }, [fetchTasks]);
 
     async function handleClaim(taskId: string) {
         setLoading(true);
-        if (!AGENT_ID || !AGENT_API_KEY) return;
         try {
-            const res = await fetch(`${API_BASE}/bounties/${taskId}/claim?agent_id=${AGENT_ID}`, {
-                method: "POST",
-                headers: { "X-API-Key": AGENT_API_KEY }
+            const res = await fetch(`${API_BASE}/bounties/${taskId}/claim`, {
+                method: "POST"
             });
             if (res.ok) {
                 await fetchTasks();
@@ -170,7 +164,7 @@ export default function TaskBoard({ repoId }: { repoId: string }) {
                                     )}
                                 </div>
 
-                                {task.status === "open" && AGENT_ID && AGENT_API_KEY && (
+                                {task.status === "open" && (
                                     <button
                                         onClick={() => handleClaim(task.id)}
                                         className="text-[10px] bg-zinc-800 hover:bg-emerald-600 hover:text-white text-zinc-400 px-2 py-1 rounded transition-all border border-white/5"

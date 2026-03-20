@@ -15,7 +15,6 @@ import {
 } from "lucide-react";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE || "/api";
-const AGENT_API_KEY = process.env.NEXT_PUBLIC_AGENT_API_KEY || "";
 
 interface ServiceEndpointInfo {
   job_id: string;
@@ -46,9 +45,7 @@ export default function ServiceEndpointPanel({ jobId, onStatusChange }: ServiceE
     setError(null);
 
     try {
-      const res = await fetch(`${API_BASE}/v1/runners/jobs/${jobId}/service-status`, {
-        headers: AGENT_API_KEY ? { "X-API-Key": AGENT_API_KEY } : undefined
-      });
+      const res = await fetch(`${API_BASE}/v1/runners/jobs/${jobId}/service-status`);
 
       if (!res.ok) {
         if (res.status === 404) {
@@ -62,8 +59,8 @@ export default function ServiceEndpointPanel({ jobId, onStatusChange }: ServiceE
       const data = await res.json();
       setServiceInfo(data);
       onStatusChange?.(data);
-    } catch (e: any) {
-      setError(e.message || "Failed to fetch service status");
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : "Failed to fetch service status");
     } finally {
       setLoading(false);
     }

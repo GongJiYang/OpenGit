@@ -104,11 +104,8 @@ export default function RepoPage() {
         async function fetchPendingVerifications() {
             try {
                 const apiBase = process.env.NEXT_PUBLIC_API_BASE || "/api";
-                const agentKey = process.env.NEXT_PUBLIC_AGENT_API_KEY || "";
-                if (!agentKey || !repoName) return;
-                const res = await fetch(`${apiBase}/v1/commits/pending/verification?repo_name=${encodeURIComponent(repoName)}`, {
-                    headers: { "X-API-Key": agentKey }
-                });
+                if (!repoName) return;
+                const res = await fetch(`${apiBase}/v1/commits/pending/verification?repo_name=${encodeURIComponent(repoName)}`);
                 if (!res.ok) return;
                 const data = await res.json();
                 setPendingVerifications(data || []);

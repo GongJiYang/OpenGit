@@ -31,7 +31,6 @@ interface PreparationModeProps {
   bounties: Bounty[];
   onClaimPreparation: (bountyId: string, notes: string) => Promise<void>;
   onActivate: (bountyId: string) => Promise<void>;
-  agentId?: string;
 }
 
 const STATUS_CONFIG: Record<string, { color: string; bgColor: string; borderColor: string }> = {
@@ -41,7 +40,7 @@ const STATUS_CONFIG: Record<string, { color: string; bgColor: string; borderColo
   in_progress: { color: "text-blue-400", bgColor: "bg-blue-500/10", borderColor: "border-blue-500/30" },
 };
 
-export default function PreparationMode({ bounties, onClaimPreparation, onActivate, agentId }: PreparationModeProps) {
+export default function PreparationMode({ bounties, onClaimPreparation, onActivate }: PreparationModeProps) {
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [preparationNotes, setPreparationNotes] = useState<Record<string, string>>({});
   const [isSubmitting, setIsSubmitting] = useState<string | null>(null);
@@ -117,8 +116,7 @@ export default function PreparationMode({ bounties, onClaimPreparation, onActiva
           const isExpanded = expandedId === bounty.id;
           const config = STATUS_CONFIG[bounty.status] || STATUS_CONFIG.pending;
           const depsCompleted = areDependenciesCompleted(bounty);
-          const isAlreadyClaimed = bounty.assignee && bounty.assignee !== agentId;
-          const isMyClaim = bounty.assignee === agentId;
+          const hasAssignee = Boolean(bounty.assignee);
 
           return (
             <div
@@ -176,16 +174,10 @@ export default function PreparationMode({ bounties, onClaimPreparation, onActiva
                   )}
 
                   {/* Claim status */}
-                  {isMyClaim && (
-                    <div className="flex items-center gap-1 text-[10px] text-blue-400">
-                      <Eye className="w-3 h-3" />
-                      You are preparing
-                    </div>
-                  )}
-                  {isAlreadyClaimed && (
+                  {hasAssignee && (
                     <div className="flex items-center gap-1 text-[10px] text-zinc-500">
                       <AlertTriangle className="w-3 h-3" />
-                      Claimed by another agent
+                      Claimed
                     </div>
                   )}
                 </div>
@@ -223,7 +215,7 @@ export default function PreparationMode({ bounties, onClaimPreparation, onActiva
                   )}
 
                   {/* Preparation notes input */}
-                  {!isMyClaim && !isAlreadyClaimed && bounty.status === "ready_for_preparation" && (
+                  {!hasAssignee && bounty.status === "ready_for_preparation" && (
                     <div className="mb-4">
                       <h5 className="text-xs text-zinc-500 uppercase mb-2">Preparation Notes (optional)</h5>
                       <textarea
@@ -241,7 +233,7 @@ export default function PreparationMode({ bounties, onClaimPreparation, onActiva
                   {/* Action buttons */}
                   <div className="flex gap-2">
                     {/* Claim for preparation */}
-                    {bounty.status === "ready_for_preparation" && !isAlreadyClaimed && !isMyClaim && (
+                    {bounty.status === "ready_for_preparation" && !hasAssignee && (
                       <button
                         onClick={() => handleClaimPreparation(bounty.id)}
                         disabled={isSubmitting === bounty.id}
@@ -262,7 +254,7 @@ export default function PreparationMode({ bounties, onClaimPreparation, onActiva
                     )}
 
                     {/* Activate (if deps completed and I'm the preparer) */}
-                    {isMyClaim && depsCompleted && bounty.status === "ready_for_preparation" && (
+                    {hasAssignee && depsCompleted && bounty.status === "ready_for_preparation" && (
                       <button
                         onClick={() => handleActivate(bounty.id)}
                         disabled={isSubmitting === bounty.id}

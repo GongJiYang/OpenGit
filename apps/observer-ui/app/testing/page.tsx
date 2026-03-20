@@ -16,7 +16,6 @@ import {
 import ServiceEndpointPanel from "../components/ServiceEndpointPanel";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE || "/api";
-const AGENT_API_KEY = process.env.NEXT_PUBLIC_AGENT_API_KEY || "";
 
 interface ComputeJob {
   id: string;
@@ -61,9 +60,7 @@ export default function TestingPage() {
     setError(null);
 
     try {
-      const res = await fetch(`${API_BASE}/v1/runners/jobs`, {
-        headers: AGENT_API_KEY ? { "X-API-Key": AGENT_API_KEY } : undefined
-      });
+      const res = await fetch(`${API_BASE}/v1/runners/jobs`);
 
       if (!res.ok) {
         throw new Error(`Failed to fetch jobs: ${res.status}`);
@@ -71,8 +68,8 @@ export default function TestingPage() {
 
       const data = await res.json();
       setJobs(data || []);
-    } catch (e: any) {
-      setError(e.message || "Failed to load jobs");
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : "Failed to load jobs");
     } finally {
       setLoading(false);
     }
@@ -100,12 +97,6 @@ export default function TestingPage() {
     running: jobs.filter(j => j.status === "running" || j.status === "assigned").length,
     completed: jobs.filter(j => j.status === "completed").length,
     failed: jobs.filter(j => j.status === "failed" || j.status === "timeout").length,
-  };
-
-  const formatTime = (dateStr: string | null) => {
-    if (!dateStr) return "N/A";
-    const date = new Date(dateStr);
-    return date.toLocaleString();
   };
 
   const getTimeAgo = (dateStr: string) => {

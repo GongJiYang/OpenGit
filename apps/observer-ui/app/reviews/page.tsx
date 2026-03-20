@@ -3,16 +3,9 @@
 import { useEffect, useState } from "react";
 import { CheckCircle, XCircle, RefreshCw, FileText } from "lucide-react";
 
-const AGENT_API_KEY = process.env.NEXT_PUBLIC_AGENT_API_KEY || "";
-
-// Helper to get auth headers - supports both agent API key and user JWT
+// Helper to get user auth header; server-side route handler injects agent credentials
 const getAuthHeaders = (): Record<string, string> => {
     const headers: Record<string, string> = {};
-    // Agent auth (X-API-Key)
-    if (AGENT_API_KEY) {
-        headers["X-API-Key"] = AGENT_API_KEY;
-    }
-    // User auth (JWT from localStorage)
     if (typeof window !== "undefined") {
         const token = localStorage.getItem("token");
         if (token) {

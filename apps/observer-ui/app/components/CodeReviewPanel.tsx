@@ -5,7 +5,6 @@ import {
   GitPullRequest,
   CheckCircle,
   XCircle,
-  MessageSquare,
   Clock,
   User,
   FileText,
@@ -13,13 +12,11 @@ import {
   ChevronUp,
   AlertCircle,
   Loader2,
-  Send,
   Eye,
   RefreshCw
 } from "lucide-react";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE || "/api";
-const AGENT_ID = process.env.NEXT_PUBLIC_AGENT_ID || "";
 
 interface ReviewComment {
   author_id: string;
@@ -71,11 +68,9 @@ export default function CodeReviewPanel({
   }, [externalReviews]);
 
   const fetchReviews = async () => {
-    if (!AGENT_ID) return;
-
     setLoading(true);
     try {
-      const res = await fetch(`${API_BASE}/v1/collaboration/reviews/reviewer/${AGENT_ID}`);
+      const res = await fetch(`${API_BASE}/v1/collaboration/reviews/reviewer/me`);
       if (res.ok) {
         const data = await res.json();
         setReviews(data.reviews || []);
@@ -88,7 +83,7 @@ export default function CodeReviewPanel({
   };
 
   const handleCreateReview = async () => {
-    if (!newFilePath.trim() || !AGENT_ID) return;
+    if (!newFilePath.trim()) return;
 
     const reviewId = `review-${Date.now()}`;
 
@@ -98,8 +93,7 @@ export default function CodeReviewPanel({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           review_id: reviewId,
-          file_path: newFilePath,
-          agent_id: AGENT_ID
+          file_path: newFilePath
         })
       });
 
@@ -120,7 +114,6 @@ export default function CodeReviewPanel({
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          reviewer_id: AGENT_ID,
           status: status,
           comments: newComment ? [{ content: newComment }] : null
         })
