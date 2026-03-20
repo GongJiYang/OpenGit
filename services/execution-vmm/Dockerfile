@@ -15,4 +15,4 @@ RUN pip install .
 
 EXPOSE 8002
 
-CMD ["python", "src/agenthub_execution_vmm/main.py"]
+CMD ["python", "-m", "agenthub_execution_vmm.sandbox"]

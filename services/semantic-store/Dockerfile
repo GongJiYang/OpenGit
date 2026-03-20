@@ -15,4 +15,4 @@ RUN pip install .
 
 EXPOSE 8001
 
-CMD ["python", "src/agenthub_semantic_store/main.py"]
+CMD ["python", "-m", "agenthub_semantic_store.indexer"]
