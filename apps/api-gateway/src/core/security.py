@@ -5,35 +5,14 @@ from fastapi import HTTPException
 
 from agenthub_protocol.path_utils import ensure_safe_path
 
-
-_INSECURE_DEFAULTS = {
-    "JWT_SECRET": "change-this-in-production",
-    "JWT_SECRET_KEY": "dev-secret-key-change-in-production",
-    "WECHAT_TOKEN": "agenthub_token",
-}
+from core.settings import get_settings
 
 
 def validate_security_env() -> None:
     """Validate critical security env vars and fail-fast on insecure config."""
-    mode = os.getenv("APP_SECURITY_MODE", "strict").strip().lower()
-    if mode not in {"strict", "warn"}:
-        mode = "strict"
-
-    problems: list[str] = []
-
-    for key, bad in _INSECURE_DEFAULTS.items():
-        value = os.getenv(key)
-        if not value:
-            problems.append(f"{key} is not set")
-        elif value == bad:
-            problems.append(f"{key} uses insecure default")
-
-    for key in ("GITHUB_CLIENT_ID", "GITHUB_CLIENT_SECRET"):
-        if not os.getenv(key):
-            problems.append(f"{key} is not set")
-
-    if not os.getenv("INTERNAL_API_TOKEN"):
-        problems.append("INTERNAL_API_TOKEN is not set")
+    settings = get_settings(refresh=True)
+    mode = settings.normalized_security_mode
+    problems = settings.collect_security_problems()
 
     if not problems:
         return
@@ -43,6 +22,7 @@ def validate_security_env() -> None:
         print(f"[security-warning] {message}")
         return
     raise RuntimeError(message)
+
 
 STORE_ROOT = os.path.abspath("./agenthub_data/repos")
 

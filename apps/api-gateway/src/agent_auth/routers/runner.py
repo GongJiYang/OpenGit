@@ -17,7 +17,6 @@ Security:
 - Banned runners are rejected with 403
 """
 
-import os
 import secrets
 from datetime import datetime, timedelta
 from typing import List, Optional
@@ -26,6 +25,8 @@ from uuid import UUID
 import bcrypt
 from fastapi import APIRouter, Depends, HTTPException, status, Header
 from sqlmodel import Session, select
+
+from core.settings import get_settings
 
 from ..models.runner import (
     Runner,
@@ -157,7 +158,7 @@ def require_internal_token(
     x_internal_token: str = Header(..., alias="X-Internal-Token", description="Internal service token"),
 ) -> None:
     """Require internal token for infrastructure-only endpoints."""
-    expected_token = os.getenv("INTERNAL_API_TOKEN")
+    expected_token = get_settings().internal_api_token
     if not expected_token:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -548,7 +549,6 @@ async def report_service_ready(
     - Includes job_id and runner_id for audit
     """
     import jwt as pyjwt
-    import os
 
     # Get the job
     job = session.get(ComputeJob, req.job_id)
@@ -561,7 +561,11 @@ async def report_service_ready(
                             detail=f"Job status must be 'running', current: {job.status}")
 
     # Generate JWT access token for tester
-    jwt_secret = os.getenv("JWT_SECRET_KEY", "dev-secret-key-change-in-production")
+    settings = get_settings()
+    jwt_secret = settings.effective_jwt_secret_key
+    if not jwt_secret:
+        raise HTTPException(status_code=500, detail="JWT secret is not configured")
+
     expires_at = datetime.utcnow() + timedelta(hours=req.access_token_validity_hours)
 
     token_payload = {

@@ -38,7 +38,7 @@ jobs:
           pip install \
             fastapi uvicorn \
             alembic sqlalchemy sqlmodel \
-            pydantic qdrant-client zhipuai mem0ai \
+            pydantic pydantic-settings qdrant-client zhipuai mem0ai \
             gitpython passlib bcrypt apscheduler aiohttp python-jose[cryptography] \
             email-validator
 

@@ -2,6 +2,7 @@ from uuid import uuid4
 
 from sqlmodel import Session
 
+from core.settings import clear_settings_cache
 from agent_auth.models.runner import AuditLog, ComputeJob, ComputeJobStatus, ExecutionMode
 
 
@@ -39,6 +40,7 @@ def test_internal_audit_pending_requires_internal_token(client):
 
 def test_internal_audit_pending_rejects_invalid_internal_token(client, monkeypatch):
     monkeypatch.setenv("INTERNAL_API_TOKEN", "internal-secret")
+    clear_settings_cache()
     res = client.get(
         "/api/v1/runners/internal/audit/pending",
         headers={"X-Internal-Token": "wrong"},
@@ -48,6 +50,7 @@ def test_internal_audit_pending_rejects_invalid_internal_token(client, monkeypat
 
 def test_internal_audit_pending_accepts_internal_token(client, monkeypatch):
     monkeypatch.setenv("INTERNAL_API_TOKEN", "internal-secret")
+    clear_settings_cache()
     res = client.get(
         "/api/v1/runners/internal/audit/pending",
         headers={"X-Internal-Token": "internal-secret"},
@@ -58,6 +61,7 @@ def test_internal_audit_pending_accepts_internal_token(client, monkeypatch):
 
 def test_internal_audit_submit_requires_valid_internal_token(client, monkeypatch):
     monkeypatch.setenv("INTERNAL_API_TOKEN", "internal-secret")
+    clear_settings_cache()
     audit_id = _seed_job_and_audit()
 
     bad = client.post(

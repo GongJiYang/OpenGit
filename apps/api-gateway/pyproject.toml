@@ -9,6 +9,7 @@ description = "Main API Gateway for AgentHub"
 dependencies = [
     "fastapi",
     "uvicorn",
+    "pydantic-settings",
     "mem0ai",
     "zhipuai",
     "qdrant-client",

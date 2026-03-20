@@ -8,7 +8,6 @@ Handles:
 - User-Agent permanent binding
 """
 
-import os
 from datetime import datetime, timedelta
 from typing import Optional, Tuple
 
@@ -28,11 +27,10 @@ from ..models.platform import (
     TokenResponse,
 )
 from ..models import Agent, AgentStatus
+from core.settings import get_settings
 
 # Configuration
-JWT_SECRET = os.getenv("JWT_SECRET", "change-this-in-production")
 JWT_ALGORITHM = "HS256"
-JWT_EXPIRATION_HOURS = int(os.getenv("JWT_EXPIRATION_HOURS", "24"))
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
@@ -74,8 +72,13 @@ class UserAuthService:
     @staticmethod
     def create_access_token(user_id: str, expires_delta: timedelta = None) -> str:
         """Create a JWT access token for a user."""
+        settings = get_settings()
         if expires_delta is None:
-            expires_delta = timedelta(hours=JWT_EXPIRATION_HOURS)
+            expires_delta = timedelta(hours=settings.jwt_expiration_hours)
+
+        secret = settings.effective_jwt_secret
+        if not secret:
+            raise RuntimeError("JWT_SECRET is not configured")
 
         expire = datetime.utcnow() + expires_delta
         payload = {
@@ -84,13 +87,17 @@ class UserAuthService:
             "iat": datetime.utcnow(),
             "type": "access",
         }
-        return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
+        return jwt.encode(payload, secret, algorithm=JWT_ALGORITHM)
 
     @staticmethod
     def verify_token(token: str) -> Optional[dict]:
         """Verify and decode a JWT token."""
+        settings = get_settings()
+        secret = settings.effective_jwt_secret
+        if not secret:
+            return None
         try:
-            payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+            payload = jwt.decode(token, secret, algorithms=[JWT_ALGORITHM])
             return payload
         except JWTError:
             return None

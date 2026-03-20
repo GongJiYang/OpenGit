@@ -10,18 +10,21 @@ from agenthub_semantic_store.ast_parser import PythonASTParser
 from agenthub_semantic_store.indexer import VectorIndexer
 
 from core.security import validate_security_env
+from core.settings import get_settings
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     validate_security_env()
 
+    settings = get_settings()
+
     # 读取开关（默认关闭，测试安全）
-    enable_indexer = os.getenv("APP_ENABLE_INDEXER", "0") == "1"
-    enable_sandbox = os.getenv("APP_ENABLE_SANDBOX", "0") == "1"
+    enable_indexer = settings.app_enable_indexer
+    enable_sandbox = settings.app_enable_sandbox
 
     # 统一初始化到 app.state
-    app.state.store_root = os.path.abspath("./agenthub_data/repos")
+    app.state.store_root = settings.store_root
     os.makedirs(app.state.store_root, exist_ok=True)
 
     app.state.repo_manager = RepoManager(app.state.store_root)
@@ -39,7 +42,7 @@ async def lifespan(app: FastAPI):
     app.state.sandbox = SubprocessSandbox() if enable_sandbox else None
 
     # 可选：按需启动 scheduler（多 pod 场景建议加开关 RUN_SCHEDULER=1）
-    if os.getenv("RUN_SCHEDULER") == "1":
+    if settings.run_scheduler:
         def session_factory():
             from persistence import get_session as _get_session
 
@@ -63,6 +66,6 @@ async def lifespan(app: FastAPI):
         yield
     finally:
         # 关闭 sandbox / scheduler
-        if os.getenv("RUN_SCHEDULER") == "1":
+        if settings.run_scheduler:
             stop_scheduler()
         # 如 indexer/sandbox 有 close()，在此清理

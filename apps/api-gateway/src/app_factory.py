@@ -14,6 +14,7 @@ from pydantic import BaseModel as _BaseModel  # noqa: F401
 # from agent_auth.services.workitem_service import WorkItemService  # imported where used
 from sqlmodel import Session, select
 from core.middleware import limiter, setup_rate_limit_and_middlewares
+from core.settings import get_settings
 
 # --- Hack for Monorepo Paths (MVP only) ---
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -376,7 +377,7 @@ def create_app() -> FastAPI:
         app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
     # CORS
-    frontend_url = os.getenv("FRONTEND_URL", "http://localhost:3000")
+    frontend_url = get_settings().frontend_url
     app.add_middleware(
         CORSMiddleware,
         allow_origins=[frontend_url],

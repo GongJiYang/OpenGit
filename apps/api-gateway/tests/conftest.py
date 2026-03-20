@@ -19,6 +19,7 @@ TEST_DB_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), "../agent
 os.makedirs(os.path.dirname(TEST_DB_PATH), exist_ok=True)
 os.environ["DATABASE_URL"] = f"sqlite:///{TEST_DB_PATH}"
 
+from core.settings import clear_settings_cache  # noqa: E402
 from persistence import create_db_and_tables, get_engine  # noqa: E402
 from main import app  # noqa: E402
 from agent_auth.models import Agent, AgentStatus  # noqa: E402
@@ -78,6 +79,8 @@ def auth_headers() -> Dict[str, str]:
 
 @pytest.fixture()
 def client(monkeypatch):
+    clear_settings_cache()
+
     # Default governance/security env for tests
     monkeypatch.setenv("SKILLS_ALLOWLIST", "list_templates")
     monkeypatch.setenv("SKILLS_CIRCUIT_BREAKER", "1")
@@ -89,7 +92,7 @@ def client(monkeypatch):
     # Security envs required by fail-fast startup validation
     monkeypatch.setenv("APP_SECURITY_MODE", "strict")
     monkeypatch.setenv("JWT_SECRET", "test-jwt-secret")
-    monkeypatch.setenv("JWT_SECRET_KEY", "test-service-jwt-secret")
+    monkeypatch.setenv("JWT_SECRET_KEY", "test-jwt-secret")
     monkeypatch.setenv("WECHAT_TOKEN", "test-wechat-token")
     monkeypatch.setenv("GITHUB_CLIENT_ID", "test-github-client-id")
     monkeypatch.setenv("GITHUB_CLIENT_SECRET", "test-github-client-secret")
@@ -97,5 +100,6 @@ def client(monkeypatch):
 
     # PII mask default empty
     monkeypatch.delenv("SKILLS_PII_MASK_FIELDS", raising=False)
+    clear_settings_cache()
     with TestClient(app) as c:
         yield c

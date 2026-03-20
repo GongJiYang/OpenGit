@@ -10,6 +10,7 @@ from sqlmodel import Session, select
 from agent_auth.deps import get_auth_session
 from core.middleware import limiter
 from core.security import STORE_ROOT, get_secure_repo_path
+from core.settings import get_settings
 from dependencies.auth import require_agent, require_active_identity
 from git_tree_service import GitTreeService
 from persistence import Bounty, get_session
@@ -119,7 +120,7 @@ def create_bounty(
         raise HTTPException(status_code=403, detail="Forbidden: Not a member of this repository")
 
     # verification_mode validation
-    verification_mode = (bounty.verification_mode or os.getenv("DEFAULT_VERIFICATION_MODE", "auto")).lower()
+    verification_mode = (bounty.verification_mode or get_settings().default_verification_mode).lower()
     if verification_mode not in ["auto", "human", "external"]:
         raise HTTPException(status_code=400, detail="Invalid verification_mode")
 
@@ -774,7 +775,7 @@ def activate_from_preparation(
 
     # Authorization gate
     allowed = False
-    expected_token = os.getenv("INTERNAL_API_TOKEN")
+    expected_token = get_settings().internal_api_token
     if expected_token and x_internal_token and x_internal_token == expected_token:
         allowed = True
     else:
