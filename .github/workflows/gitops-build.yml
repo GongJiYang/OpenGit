@@ -89,7 +89,7 @@ jobs:
           git commit -m "deploy: ${GITHUB_SHA}.${{ github.run_number }}" || exit 0
           git push
 
-      - name: Sync GitOps repo (jobs/config)
+      - name: Sync GitOps repo (jobs/config/secret)
         env:
           GITOPS_TOKEN: ${{ secrets.INFRA_REPO_TOKEN }}
         run: |
@@ -97,16 +97,17 @@ jobs:
           if [ ! -d gitops ]; then
             git clone https://$GITOPS_TOKEN@github.com/$INFRA_REPO.git gitops
           fi
-          # Sync Job manifests and ConfigMap from app repo to infra repo
+          # Sync Job manifests, ConfigMap, and Secret from app repo to infra repo
           cp -f opengit-infra/overlays/dev/job-migrate.yaml gitops/overlays/dev/job-migrate.yaml || true
           cp -f opengit-infra/overlays/staging/job-migrate.yaml gitops/overlays/staging/job-migrate.yaml || true
           cp -f opengit-infra/overlays/prod/job-migrate.yaml gitops/overlays/prod/job-migrate.yaml || true
           cp -f opengit-infra/base/api-gateway/configmap.yaml gitops/base/api-gateway/configmap.yaml || true
+          cp -f opengit-infra/base/api-gateway/secret.yaml gitops/base/api-gateway/secret.yaml || true
           cd gitops
           git config user.name "gitops-bot"
           git config user.email "gitops-bot@users.noreply.github.com"
-          git add overlays/dev/job-migrate.yaml overlays/staging/job-migrate.yaml overlays/prod/job-migrate.yaml base/api-gateway/configmap.yaml
-          git commit -m "infra: sync job-migrate + configmap from app repo" || exit 0
+          git add overlays/dev/job-migrate.yaml overlays/staging/job-migrate.yaml overlays/prod/job-migrate.yaml base/api-gateway/configmap.yaml base/api-gateway/secret.yaml
+          git commit -m "infra: sync job-migrate + configmap + secret from app repo" || exit 0
           git push
 
       - name: Update GitOps repo (staging)
