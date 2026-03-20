@@ -18,14 +18,12 @@ spec:
           image: your-registry/agenthub-api-gateway:TAG
           imagePullPolicy: IfNotPresent
           workingDir: /app/apps/api-gateway
+          envFrom:
+            - secretRef:
+                name: api-gateway-secrets
           env:
             - name: PYTHONPATH
               value: "/app:/app/apps/api-gateway:/app/apps/api-gateway/src"
-            - name: DATABASE_URL
-              valueFrom:
-                secretKeyRef:
-                  name: api-gateway-secrets
-                  key: DATABASE_URL
             - name: APP_ENABLE_INDEXER
               value: "0"
             - name: APP_ENABLE_SANDBOX

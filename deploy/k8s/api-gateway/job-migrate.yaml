@@ -12,12 +12,10 @@ spec:
         - name: migrate
           image: your-registry/agenthub-api-gateway:TAG
           imagePullPolicy: IfNotPresent
+          envFrom:
+            - secretRef:
+                name: api-gateway-secrets
           env:
-            - name: DATABASE_URL
-              valueFrom:
-                secretKeyRef:
-                  name: api-gateway-secrets
-                  key: DATABASE_URL
             - name: ALEMBIC_CONFIG
               value: /app/apps/api-gateway/alembic.ini
           command: ["sh","-c"]
