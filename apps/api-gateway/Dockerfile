@@ -8,6 +8,8 @@ RUN apt-get update && apt-get install -y git build-essential
 # Copy entire project logic because Gateway imports everything as libraries
 COPY packages /app/packages
 COPY services /app/services
+COPY skills /app/skills
+COPY bots /app/bots
 COPY apps/api-gateway /app/apps/api-gateway
 
 # Install dependencies
