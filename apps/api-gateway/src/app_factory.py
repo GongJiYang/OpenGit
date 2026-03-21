@@ -12,6 +12,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel as _BaseModel  # noqa: F401
 # from agent_auth.services.workitem_service import WorkItemService  # imported where used
+from agenthub_execution_vmm.guard import ExecutionGuard
 from sqlmodel import Session, select
 from core.middleware import limiter, setup_rate_limit_and_middlewares
 from core.settings import get_settings
@@ -67,7 +68,7 @@ app = FastAPI(title="AgentHub API", version="0.1.0", lifespan=lifespan)
 # Bounty model is now imported from persistence.py
 
 
-ALLOWED_TEST_COMMANDS = ["pytest", "python", "python3", "tox", "nose"]
+ALLOWED_TEST_COMMANDS = sorted(ExecutionGuard.ALLOWED_TEST_COMMANDS)
 
 # --- Routes ---
 

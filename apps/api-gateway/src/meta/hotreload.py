@@ -4,12 +4,13 @@ Hot-Reload Manager
 Manages service restart and hot-reload operations after code sync.
 """
 
-import subprocess
 import asyncio
-from datetime import datetime
-from typing import List, Dict, Optional
+import shlex
+import subprocess
 from dataclasses import dataclass
+from datetime import datetime
 from enum import Enum
+from typing import Dict, List, Optional
 
 import httpx
 
@@ -52,6 +53,13 @@ class HotReloadManager:
     Determines which services need to be restarted based on changed files,
     executes the restart, and performs health checks.
     """
+
+    ACTION_PRIORITY: Dict[ReloadAction, int] = {
+        ReloadAction.NONE: 0,
+        ReloadAction.RELOAD: 1,
+        ReloadAction.RESTART: 2,
+        ReloadAction.REBUILD: 3,
+    }
 
     # Default service configurations
     DEFAULT_SERVICES: Dict[str, ServiceConfig] = {
@@ -147,10 +155,31 @@ class HotReloadManager:
                     for service_name in rule.services:
                         # Only upgrade action, never downgrade
                         current = actions.get(service_name, ReloadAction.NONE)
-                        if rule.action.value > current.value:
+                        if self.ACTION_PRIORITY[rule.action] > self.ACTION_PRIORITY[current]:
                             actions[service_name] = rule.action
 
         return actions
+
+    @staticmethod
+    def _run_safe_command(command: str, cwd: Optional[str] = None) -> subprocess.CompletedProcess:
+        """Execute command without shell expansion."""
+        tokens = shlex.split(command)
+        return subprocess.run(tokens, shell=False, capture_output=True, text=True, cwd=cwd)
+
+    def _run_fallback_commands(self, command: str, cwd: Optional[str] = None) -> subprocess.CompletedProcess:
+        """Run command segments separated by shell fallback operator '||' safely."""
+        segments = [seg.strip() for seg in command.split("||") if seg.strip()]
+        if not segments:
+            return subprocess.CompletedProcess(args=[], returncode=1, stdout="", stderr="Empty command")
+
+        last_result: Optional[subprocess.CompletedProcess] = None
+        for seg in segments:
+            result = self._run_safe_command(seg, cwd=cwd)
+            if result.returncode == 0:
+                return result
+            last_result = result
+
+        return last_result if last_result is not None else subprocess.CompletedProcess(args=[], returncode=1, stdout="", stderr="Command failed")
 
     async def execute_reload(
         self,
@@ -227,7 +256,7 @@ class HotReloadManager:
                 # Send reload signal
                 if config.reload_signal:
                     cmd = f"pkill -{config.reload_signal} -f {service_name}"
-                    result = subprocess.run(cmd, shell=True, capture_output=True)
+                    result = self._run_safe_command(cmd)
                     log_lines.append(
                         f"[RELOAD] {service_name}: Sent {config.reload_signal} signal"
                     )
@@ -237,11 +266,9 @@ class HotReloadManager:
             elif action == ReloadAction.RESTART:
                 # Full restart
                 if config.restart_command:
-                    result = subprocess.run(
+                    result = self._run_fallback_commands(
                         config.restart_command,
-                        shell=True,
-                        capture_output=True,
-                        cwd=config.working_dir
+                        cwd=config.working_dir,
                     )
                     log_lines.append(
                         f"[RELOAD] {service_name}: Restart {'OK' if result.returncode == 0 else 'FAILED'}"
@@ -252,26 +279,22 @@ class HotReloadManager:
             elif action == ReloadAction.REBUILD:
                 # Rebuild + restart
                 if config.build_command:
-                    result = subprocess.run(
+                    result = self._run_safe_command(
                         config.build_command,
-                        shell=True,
-                        capture_output=True,
-                        cwd=config.working_dir
+                        cwd=config.working_dir,
                     )
                     if result.returncode != 0:
                         log_lines.append(
-                            f"[RELOAD] {service_name}: Build FAILED - {result.stderr.decode()[:200]}"
+                            f"[RELOAD] {service_name}: Build FAILED - {result.stderr[:200]}"
                         )
                         return False
                     log_lines.append(f"[RELOAD] {service_name}: Build OK")
 
                 # Then restart
                 if config.restart_command:
-                    result = subprocess.run(
+                    result = self._run_fallback_commands(
                         config.restart_command,
-                        shell=True,
-                        capture_output=True,
-                        cwd=config.working_dir
+                        cwd=config.working_dir,
                     )
                     log_lines.append(
                         f"[RELOAD] {service_name}: Restart {'OK' if result.returncode == 0 else 'FAILED'}"
@@ -340,11 +363,9 @@ class HotReloadManager:
             return False
 
         if config.restart_command:
-            result = subprocess.run(
+            result = self._run_fallback_commands(
                 config.restart_command,
-                shell=True,
-                capture_output=True,
-                cwd=config.working_dir
+                cwd=config.working_dir,
             )
 
             if result.returncode == 0:

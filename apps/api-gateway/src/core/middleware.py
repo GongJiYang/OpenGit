@@ -13,14 +13,45 @@ limiter = Limiter(key_func=get_remote_address)
 MAX_REQUEST_SIZE = 20 * 1024 * 1024  # 20MB
 
 
+class _RequestTooLargeError(Exception):
+    pass
+
+
+def _payload_too_large_response() -> JSONResponse:
+    return JSONResponse(
+        status_code=413,
+        content={"detail": f"Payload too large. Maximum allowed size is {MAX_REQUEST_SIZE / 1024 / 1024}MB."},
+    )
+
+
 async def limit_request_size_mw(request: Request, call_next):
     content_length = request.headers.get("content-length")
-    if content_length and int(content_length) > MAX_REQUEST_SIZE:
-        return JSONResponse(
-            status_code=413,
-            content={"detail": f"Payload too large. Maximum allowed size is {MAX_REQUEST_SIZE / 1024 / 1024}MB."}
-        )
-    return await call_next(request)
+    if content_length:
+        try:
+            if int(content_length) > MAX_REQUEST_SIZE:
+                return _payload_too_large_response()
+        except (TypeError, ValueError):
+            # Ignore malformed header and enforce size via streamed body accounting.
+            pass
+
+    total_received = 0
+    original_receive = request._receive
+
+    async def limited_receive():
+        nonlocal total_received
+        message = await original_receive()
+        if message.get("type") == "http.request":
+            total_received += len(message.get("body") or b"")
+            if total_received > MAX_REQUEST_SIZE:
+                raise _RequestTooLargeError
+        return message
+
+    request._receive = limited_receive
+
+    try:
+        return await call_next(request)
+    except _RequestTooLargeError:
+        return _payload_too_large_response()
 
 
 async def tracing_mw(request: Request, call_next):

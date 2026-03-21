@@ -4,11 +4,12 @@ import hmac
 import json
 import logging
 import os
+import secrets
 import shutil
 import subprocess
 import tempfile
 import time
-from datetime import date
+from datetime import date, datetime, timezone
 from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
@@ -116,6 +117,37 @@ async def api_commit(
 
     # Create temp working directory
     work_dir = tempfile.mkdtemp(prefix="agenthub_commit_")
+    bounty = None
+    bounty_transitioned = False
+
+    def rollback_bounty_transition() -> None:
+        nonlocal bounty, bounty_transitioned
+        if not bounty_transitioned or bounty is None:
+            return
+        try:
+            from agent_auth.services.bounty_fsm import transition
+            from persistence import BountyStatus
+
+            _, rollback_err = transition(
+                session,
+                bounty.id,
+                BountyStatus.IN_PROGRESS.value,
+                ctx={"actor_type": "system", "actor_id": "system", "agent_id": trusted_agent_id},
+            )
+            if rollback_err:
+                logger.warning("[commit] failed to rollback bounty transition: %s", rollback_err)
+                return
+
+            bounty_transitioned = False
+            refreshed_bounty = session.get(Bounty, bounty.id)
+            if refreshed_bounty:
+                refreshed_bounty.current_steps = max(0, (refreshed_bounty.current_steps or 0) - 1)
+                session.add(refreshed_bounty)
+                session.commit()
+                session.refresh(refreshed_bounty)
+                bounty = refreshed_bounty
+        except Exception as rollback_exc:
+            logger.warning("[commit] exception while rolling back bounty transition: %s", rollback_exc)
 
     try:
         # Clone bare repo to temp dir
@@ -136,16 +168,78 @@ async def api_commit(
         # Stage all changes
         subprocess.run(["git", "add", "-A"], cwd=work_dir, check=True, capture_output=True)
 
-        # Determine Branch Name (Level  isolation)
+        # Determine Branch Name (Level isolation) with high-entropy suffix
+        suffix = secrets.token_hex(4)
         if req.bounty_id:
-            branch_name = f"agent/{trusted_agent_id}/bounty_{req.bounty_id}"
+            branch_name = f"agent/{trusted_agent_id}/bounty_{req.bounty_id}-{suffix}"
         else:
             ts = int(time.time())
-            branch_name = f"agent/{trusted_agent_id}/dev_{ts}"
+            branch_name = f"agent/{trusted_agent_id}/dev_{ts}-{suffix}"
         ensure_safe_ref(branch_name)
 
         # Create and switch to the new branch
         subprocess.run(["git", "checkout", "-b", branch_name], cwd=work_dir, check=True, capture_output=True)
+
+        # Collect traceability metadata available before commit
+        parent_sha: Optional[str] = None
+        parent_result = subprocess.run(["git", "rev-parse", "HEAD"], cwd=work_dir, capture_output=True, text=True)
+        if parent_result.returncode == 0:
+            parsed_parent = parent_result.stdout.strip()
+            if parsed_parent and parsed_parent != "HEAD":
+                parent_sha = parsed_parent
+        trace_timestamp = datetime.now(timezone.utc).isoformat()
+
+        # --- Automated Verification (P1 MVP) ---
+        v_exit_code = None
+        v_stdout = None
+
+        if req.bounty_id:
+            bounty = session.get(Bounty, req.bounty_id)
+            if not bounty:
+                raise HTTPException(status_code=404, detail=f"Bounty {req.bounty_id} not found")
+
+            # [Task Board] Ownership Verification
+            if not bounty.assignee or bounty.assignee != trusted_agent_id:
+                raise HTTPException(status_code=403, detail=f"Forbidden: Task {req.bounty_id} is locked by Agent {bounty.assignee}")
+            if bounty.status not in {"in_progress", "submitted", "claimed"}:
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"Bounty {req.bounty_id} is not in progress (status={bounty.status}).",
+                )
+
+            # [Blind-Spot 2] Cost Control: Max Steps
+            if bounty.current_steps >= bounty.max_steps:
+                raise HTTPException(
+                    status_code=403,
+                    detail=f"Bounty {req.bounty_id} has exceeded the execution step limit ({bounty.max_steps}).",
+                )
+
+            # [Blind-Spot 2] Rough Cost Check
+            est_cost = ExecutionGuard.estimate_cost(is_new_session=True)
+            if not budget_tracker.check_and_record(est_cost):
+                raise HTTPException(status_code=402, detail="Daily platform budget exceeded. Try again tomorrow.")
+
+            # Move bounty to submitted before git side effects; rollback on downstream failures
+            from agent_auth.services.bounty_fsm import transition
+            from persistence import BountyStatus
+
+            updated, err = transition(
+                session,
+                bounty.id,
+                BountyStatus.SUBMITTED.value,
+                ctx={"actor_type": "agent", "actor_id": trusted_agent_id, "agent_id": trusted_agent_id},
+            )
+            if err:
+                raise HTTPException(status_code=409, detail=err)
+            bounty_transitioned = True
+
+            refreshed_bounty = session.get(Bounty, bounty.id)
+            if refreshed_bounty:
+                refreshed_bounty.current_steps = max(0, (refreshed_bounty.current_steps or 0) + 1)
+                session.add(refreshed_bounty)
+                session.commit()
+                session.refresh(refreshed_bounty)
+                bounty = refreshed_bounty
 
         # Build TraceCommit JSON
         trace_commit = {
@@ -166,6 +260,8 @@ async def api_commit(
                 "agent_id": trusted_agent_id,
                 "model_name": req.model_name,
             },
+            "parent_sha": parent_sha,
+            "timestamp": trace_timestamp,
         }
 
         # Validate TraceCommit schema and logic before committing
@@ -201,105 +297,65 @@ async def api_commit(
         if result.returncode != 0:
             # Avoid leaking git stderr to clients
             logger.error("[commit] git push failed: %s", (result.stderr[:2000] if result.stderr else ""))
-            return {"success": False, "error": "Git push failed"}
+            raise HTTPException(status_code=502, detail="Git push failed")
 
-        # --- Automated Verification (P1 MVP) ---
-        v_exit_code = None
-        v_stdout = None
-
-        if req.bounty_id:
-            bounty = session.get(Bounty, req.bounty_id)
-            if bounty:
-                # [Task Board] Ownership Verification
-                if not bounty.assignee or bounty.assignee != trusted_agent_id:
-                    raise HTTPException(status_code=403, detail=f"Forbidden: Task {req.bounty_id} is locked by Agent {bounty.assignee}")
-                if bounty.status not in {"in_progress", "submitted", "claimed"}:
-                    raise HTTPException(
-                        status_code=409,
-                        detail=f"Bounty {req.bounty_id} is not in progress (status={bounty.status}).",
-                    )
-
-                # [Blind-Spot 2] Cost Control: Max Steps
-                if bounty.current_steps >= bounty.max_steps:
-                    raise HTTPException(
-                        status_code=403,
-                        detail=f"Bounty {req.bounty_id} has exceeded the execution step limit ({bounty.max_steps}).",
-                    )
-
-                # [Blind-Spot 2] Rough Cost Check
-                est_cost = ExecutionGuard.estimate_cost(is_new_session=True)
-                if not budget_tracker.check_and_record(est_cost):
-                    raise HTTPException(status_code=402, detail="Daily platform budget exceeded. Try again tomorrow.")
-
-                # 先进行状态流转（成功后再计步）
-                from agent_auth.services.bounty_fsm import transition
-                from persistence import BountyStatus
-
-                updated, err = transition(
-                    session,
-                    bounty.id,
-                    BountyStatus.SUBMITTED.value,
-                    ctx={"actor_type": "agent", "actor_id": trusted_agent_id, "agent_id": trusted_agent_id},
-                )
-                if err:
-                    raise HTTPException(status_code=409, detail=err)
-                # 成功提交后再递增步骤（防止无效重试占用配额）
-                bounty.current_steps = max(0, (bounty.current_steps or 0) + 1)
-                session.add(bounty)
-                session.commit()
-                session.refresh(bounty)
-
-                verification_mode = (bounty.verification_mode or "auto").lower()
-                test_cmd = bounty.test_command or "pytest"
-                if verification_mode == "auto":
-                    sb = get_sandbox(request)
-                    if sb is None:
-                        raise HTTPException(status_code=503, detail="Sandbox is disabled")
-                    logger.info("[automation] Running validation for Bounty %s: %s", bounty.id, test_cmd)
-                    try:
-                        async with execution_semaphore:
-                            # Use a temporary worktree cloned from the bare repo for running tests
-                            verify_work_dir = tempfile.mkdtemp(prefix="agenthub_auto_verify_")
-                            try:
-                                subprocess.run(["git", "clone", bare_repo_path, verify_work_dir], check=True, capture_output=True)
-                                v_exit_code, v_stdout = sb.run_tests(verify_work_dir, test_cmd)
-                            finally:
-                                shutil.rmtree(verify_work_dir, ignore_errors=True)
-                    except Exception as e:
-                        v_exit_code, v_stdout = -1, f"Execution failed under semaphore: {str(e)}"
-                elif verification_mode == "human":
-                    v_exit_code, v_stdout = None, "Human verification required"
-                elif verification_mode == "external":
-                    v_exit_code, v_stdout = None, "External CI verification required"
-                else:
-                    v_exit_code, v_stdout = -1, f"Unknown verification_mode: {verification_mode}"
+        if bounty:
+            verification_mode = (bounty.verification_mode or "auto").lower()
+            test_cmd = bounty.test_command or "pytest"
+            if verification_mode == "auto":
+                sb = get_sandbox(request)
+                if sb is None:
+                    raise HTTPException(status_code=503, detail="Sandbox is disabled")
+                logger.info("[automation] Running validation for Bounty %s: %s", bounty.id, test_cmd)
+                try:
+                    async with execution_semaphore:
+                        # Use a temporary worktree cloned from the bare repo for running tests
+                        verify_work_dir = tempfile.mkdtemp(prefix="agenthub_auto_verify_")
+                        try:
+                            subprocess.run(["git", "clone", bare_repo_path, verify_work_dir], check=True, capture_output=True)
+                            v_exit_code, v_stdout = sb.run_tests(verify_work_dir, test_cmd)
+                        finally:
+                            shutil.rmtree(verify_work_dir, ignore_errors=True)
+                except Exception as e:
+                    v_exit_code, v_stdout = -1, f"Execution failed under semaphore: {str(e)}"
+            elif verification_mode == "human":
+                v_exit_code, v_stdout = None, "Human verification required"
+            elif verification_mode == "external":
+                v_exit_code, v_stdout = None, "External CI verification required"
+            else:
+                v_exit_code, v_stdout = -1, f"Unknown verification_mode: {verification_mode}"
 
         # Save record to history
-        try:
-            # Capture SHA
-            sha_result = subprocess.run(["git", "rev-parse", "HEAD"], cwd=work_dir, capture_output=True, text=True)
-            sha = sha_result.stdout.strip() if sha_result.returncode == 0 else None
+        # Capture SHA
+        sha_result = subprocess.run(["git", "rev-parse", "HEAD"], cwd=work_dir, capture_output=True, text=True)
+        sha = sha_result.stdout.strip() if sha_result.returncode == 0 else None
+        persisted_trace_json = {**trace_commit}
+        if sha:
+            persisted_trace_json["commit_sha"] = sha
 
-            # [Blind-Spot 1] Human-in-the-loop: status='pending'
-            record = CommitRecord(
-                repo_name=repo_name,
-                commit_sha=sha,
-                agent_id=req.agent_id,
-                bounty_id=req.bounty_id,
-                branch_name=branch_name if "branch_name" in locals() else None,
-                status="pending",
-                model_name=req.model_name,
-                intent_category=req.intent_category,
-                intent_description=req.intent_description,
-                diff_summary=req.diff_summary,
-                trace_json=trace_commit,
-                verification_exit_code=v_exit_code,
-                verification_stdout=v_stdout[:5000] if v_stdout else None,
-            )
+        # [Blind-Spot 1] Human-in-the-loop: status='pending'
+        record = CommitRecord(
+            repo_name=repo_name,
+            commit_sha=sha,
+            agent_id=req.agent_id,
+            bounty_id=req.bounty_id,
+            branch_name=branch_name if "branch_name" in locals() else None,
+            status="pending",
+            model_name=req.model_name,
+            intent_category=req.intent_category,
+            intent_description=req.intent_description,
+            diff_summary=req.diff_summary,
+            trace_json=persisted_trace_json,
+            verification_exit_code=v_exit_code,
+            verification_stdout=v_stdout[:5000] if v_stdout else None,
+        )
+        try:
             session.add(record)
             session.commit()
         except Exception as db_err:
-            logger.error("Failed to record commit history: %s", db_err)
+            session.rollback()
+            logger.exception("[commit] failed to persist commit record after git push: %s", db_err)
+            raise HTTPException(status_code=500, detail="Commit persisted to git, but failed to record history")
 
         # Sync task tree to repository after submission
         try:
@@ -321,15 +377,20 @@ async def api_commit(
         }
 
     except subprocess.CalledProcessError as e:
+        rollback_bounty_transition()
+
         # Avoid leaking raw stderr to clients
         err_msg = e.stderr.decode(errors="replace")[:2000] if getattr(e, "stderr", None) else str(e)
         logger.error("[commit] git operation failed: %s", err_msg)
-        return {"success": False, "error": "Git operation failed"}
+        raise HTTPException(status_code=500, detail="Git operation failed")
     except HTTPException:
+        rollback_bounty_transition()
         raise  # Re-raise HTTP exceptions (403, 404, etc.)
     except Exception as e:
+        rollback_bounty_transition()
+
         logger.exception("[commit] unexpected error: %s: %s", type(e).__name__, e)
-        raise HTTPException(status_code=500, detail=f"Internal error: {str(e)}")
+        raise HTTPException(status_code=500, detail="Internal server error")
     finally:
         # Cleanup
         shutil.rmtree(work_dir, ignore_errors=True)
@@ -382,13 +443,19 @@ def get_commit_detail(
 
 
 @router.get("/api/v1/commits/pending/verification")
-def list_pending_verifications(repo_name: Optional[str] = None, session: Session = Depends(get_session)):
+def list_pending_verifications(
+    repo_name: Optional[str] = None,
+    session: Session = Depends(get_session),
+    identity: Any = Depends(require_active_identity),
+):
     """List commits pending manual/external verification."""
     statement = select(CommitRecord, Bounty).where(CommitRecord.bounty_id == Bounty.id)
     statement = statement.where(CommitRecord.status == "pending")
     statement = statement.where(Bounty.verification_mode.in_(["human", "external"]))
     if repo_name:
         statement = statement.where(CommitRecord.repo_name == repo_name)
+
+    include_stdout = bool(getattr(identity, "role", "").lower() in {"executor", "tester", "architect"})
     rows = session.exec(statement).all()
     results = []
     for record, bounty in rows:
@@ -398,7 +465,7 @@ def list_pending_verifications(repo_name: Optional[str] = None, session: Session
             "bounty_id": record.bounty_id,
             "verification_mode": bounty.verification_mode,
             "verification_exit_code": record.verification_exit_code,
-            "verification_stdout": record.verification_stdout,
+            "verification_stdout": record.verification_stdout if include_stdout else None,
             "diff_summary": record.diff_summary,
             "agent_id": record.agent_id,
         })

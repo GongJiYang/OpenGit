@@ -1,6 +1,7 @@
-import shlex
 import re
-from typing import List
+import shlex
+from typing import List, Sequence
+
 
 class ExecutionGuard:
     """
@@ -8,10 +9,15 @@ class ExecutionGuard:
     Handles command validation, parameter filtering, and log sanitization.
     """
 
-    ALLOWED_COMMANDS = {"pytest", "npm", "python", "ls", "cat", "mkdir", "touch", "rm"}
+    # Keep this allowlist aligned with API validation strategy.
+    ALLOWED_TEST_COMMANDS = {"pytest", "python", "python3", "tox", "nose"}
+    # Backward-compatible alias for existing callers.
+    ALLOWED_COMMANDS = ALLOWED_TEST_COMMANDS
 
     # Strictly prohibited patterns to prevent shell escapes and high-risk operations
     PROHIBITED_PATTERNS = {";", "&", "|", ">", "<", "`", "$", "sudo", "chmod", "chown"}
+
+    _ALLOWED_PYTHON_MODULES = {"pytest", "unittest", "nose", "tox"}
 
     @staticmethod
     def verify_command(command_str: str) -> List[str]:
@@ -19,7 +25,7 @@ class ExecutionGuard:
         Parses and validates a command string.
         Returns a list of tokens if valid, otherwise raises a ValueError.
         """
-        if not command_str:
+        if not command_str or not command_str.strip():
             raise ValueError("Command cannot be empty")
 
         # 1. Check for prohibited patterns before parsing
@@ -34,21 +40,54 @@ class ExecutionGuard:
             raise ValueError(f"Failed to parse command: {str(e)}")
 
         if not tokens:
-             raise ValueError("Parsed command is empty")
+            raise ValueError("Parsed command is empty")
 
         # 3. Whitelist check for the base command
         base_cmd = tokens[0]
-        if base_cmd not in ExecutionGuard.ALLOWED_COMMANDS:
-            raise ValueError(f"Command '{base_cmd}' is not in the whitelist: {ExecutionGuard.ALLOWED_COMMANDS}")
+        if base_cmd not in ExecutionGuard.ALLOWED_TEST_COMMANDS:
+            raise ValueError(
+                f"Command '{base_cmd}' is not in the whitelist: {sorted(ExecutionGuard.ALLOWED_TEST_COMMANDS)}"
+            )
 
-        # 4. Specific validation for common commands
-        if base_cmd == "rm" and len(tokens) > 1:
-             # Prevent rm -rf / or other dangerous deletions
-             for t in tokens[1:]:
-                 if t.startswith("/") or ".." in t:
-                     raise ValueError("Absolute paths or parent directory escapes are not allowed in 'rm'")
+        # 4. Additional hardening for python invocations
+        if base_cmd in {"python", "python3"}:
+            ExecutionGuard._validate_python_tokens(tokens)
 
         return tokens
+
+    @staticmethod
+    def _validate_python_tokens(tokens: Sequence[str]) -> None:
+        # Keep backward compatibility for existing records using base command only ("python").
+        if len(tokens) == 1:
+            return
+
+        second = tokens[1]
+
+        # Block obvious arbitrary-code execution path
+        if second == "-c":
+            raise ValueError("Inline python execution is not allowed")
+
+        # Allow only test-oriented modules
+        if second == "-m":
+            if len(tokens) < 3:
+                raise ValueError("python -m requires a module name")
+            module_name = tokens[2]
+            if module_name not in ExecutionGuard._ALLOWED_PYTHON_MODULES:
+                raise ValueError(
+                    f"python -m only allows: {sorted(ExecutionGuard._ALLOWED_PYTHON_MODULES)}"
+                )
+            return
+
+        # Other flags are denied by default
+        if second.startswith("-"):
+            raise ValueError("Unsupported python flags")
+
+        # Script execution is allowed only for local relative python files
+        if second.startswith("/") or ".." in second:
+            raise ValueError("Absolute paths or parent directory escapes are not allowed for python scripts")
+
+        if not second.endswith(".py"):
+            raise ValueError("python/python3 can only run .py scripts or -m with approved test modules")
 
     @staticmethod
     def sanitize_output(output: str, max_length: int = 200) -> str:

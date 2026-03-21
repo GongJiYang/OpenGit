@@ -67,3 +67,11 @@ htmlcov/
 graph.json
 .devbox/
 .nx/
+
+# intentgraph artifacts
+.intentgraph/cache.json
+.intentgraph/full.json
+
+# api-gateway test repo artifacts
+apps/api-gateway/data/repos/traceability/
+apps/api-gateway/data/repos/traceability-*/

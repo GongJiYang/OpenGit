@@ -19,7 +19,7 @@ Security:
 
 import secrets
 from datetime import datetime, timedelta
-from typing import List, Optional
+from typing import Any, List, Optional
 from uuid import UUID
 
 import bcrypt
@@ -45,10 +45,12 @@ from ..models.runner import (
     RunnerPoolType,
     RunnerShareGrant,
 )
-from ..models.platform import User
+from ..models import Agent
+from ..models.platform import MembershipStatus, RepoMember, User, UserRole
 from ..database import get_db
 from ..services.verification import VerificationService
 from ..services.user_auth import get_current_user
+from dependencies.auth import require_active_identity
 from schemas.runner import (
     EndpointInfoResponse,
     ServiceReadyRequest,
@@ -62,14 +64,52 @@ from schemas.runner import (
 
 router = APIRouter(prefix="/runners", tags=["Runners"])
 
-def _parse_user_id_header(user_id: Optional[str]) -> Optional[UUID]:
-    """Parse X-User-Id header to UUID."""
+
+def _is_authorized_job_identity(identity: Any, job: ComputeJob, session: Session) -> bool:
+    """Authorize identity to read job/service endpoint data."""
+    if hasattr(identity, "status"):
+        # Agent principal from API key
+        raw_agent_id = getattr(identity, "id", None)
+        if not raw_agent_id:
+            return False
+
+        try:
+            agent_id = raw_agent_id if isinstance(raw_agent_id, UUID) else UUID(str(raw_agent_id))
+        except (TypeError, ValueError):
+            return False
+
+        agent = session.get(Agent, agent_id)
+        if not agent:
+            return False
+
+        role = (agent.role or "").lower()
+        if role in {"tester", "executor", "architect"}:
+            return True
+
+        if job.requester_agent_id and str(job.requester_agent_id) == str(agent_id):
+            return True
+
+        if not job.repo_id:
+            return False
+
+        membership = session.exec(
+            select(RepoMember).where(
+                RepoMember.repo_id == job.repo_id,
+                RepoMember.agent_id == agent_id,
+                RepoMember.status == MembershipStatus.ACTIVE,
+            )
+        ).first()
+        return membership is not None
+
+    # Human user from JWT
+    user_id = getattr(identity, "id", None)
     if not user_id:
-        return None
-    try:
-        return UUID(user_id)
-    except ValueError:
-        return None
+        return False
+
+    if getattr(identity, "role", None) == UserRole.ADMIN:
+        return True
+
+    return bool(job.requester_user_id and str(job.requester_user_id) == str(user_id))
 
 
 def _runner_can_accept_job(runner: Runner, job: ComputeJob, session: Session) -> bool:
@@ -175,7 +215,7 @@ def require_internal_token(
 
 @router.post("/generate-token", response_model=GenerateTokenResponse)
 async def generate_runner_token(
-    user_id: UUID = Header(..., alias="X-User-Id", description="User ID from JWT"),
+    user: User = Depends(get_current_user),
     session: Session = Depends(get_db)
 ):
     """
@@ -187,7 +227,7 @@ async def generate_runner_token(
     token_hash = _hash_token(token)
 
     runner_token = RunnerToken(
-        user_id=user_id,
+        user_id=user.id,
         token=token,
         token_hash=token_hash,
         expires_at=datetime.utcnow() + timedelta(hours=24),
@@ -613,22 +653,10 @@ async def report_service_ready(
 @router.get("", response_model=List[RunnerResponse])
 async def list_my_runners(
     session: Session = Depends(get_db),
-    user_id: Optional[str] = Header(None, alias="X-User-Id")
+    user: User = Depends(get_current_user),
 ):
-    """
-    List all runners owned by the authenticated user.
-
-    Accepts either:
-    - X-User-Id header (UUID) for demo/testing
-    - Authorization Bearer token (JWT) for production
-    """
-    actual_user_id = _parse_user_id_header(user_id)
-
-    # If no valid user_id, return empty list (unauthenticated)
-    if not actual_user_id:
-        return []
-
-    statement = select(Runner).where(Runner.owner_user_id == actual_user_id)
+    """List all runners owned by the authenticated user."""
+    statement = select(Runner).where(Runner.owner_user_id == user.id)
     runners = session.exec(statement).all()
     return [RunnerResponse.model_validate(r) for r in runners]
 
@@ -636,7 +664,7 @@ async def list_my_runners(
 @router.delete("/{runner_id}")
 async def delete_runner(
     runner_id: UUID,
-    user_id: UUID = Header(..., description="User ID from JWT"),
+    user: User = Depends(get_current_user),
     session: Session = Depends(get_db)
 ):
     """Delete a runner (soft disable)."""
@@ -644,7 +672,7 @@ async def delete_runner(
 
     if not runner:
         raise HTTPException(status_code=404, detail="Runner not found")
-    if runner.owner_user_id != user_id:
+    if runner.owner_user_id != user.id:
         raise HTTPException(status_code=403, detail="Not your runner")
 
     runner.status = RunnerStatus.DISABLED
@@ -660,7 +688,7 @@ async def delete_runner(
 async def update_runner_repos(
     runner_id: UUID,
     req: UpdateRepoBindingRequest,
-    user_id: Optional[str] = Header(None, alias="X-User-Id"),
+    user: User = Depends(get_current_user),
     session: Session = Depends(get_db)
 ):
     """
@@ -669,15 +697,10 @@ async def update_runner_repos(
     - is_global=True: Runner serves all repos (ignores allowed_repo_ids)
     - is_global=False: Runner only serves repos in allowed_repo_ids
     """
-    actual_user_id = _parse_user_id_header(user_id)
-
-    if not actual_user_id:
-        raise HTTPException(status_code=401, detail="Authentication required")
-
     runner = session.get(Runner, runner_id)
     if not runner:
         raise HTTPException(status_code=404, detail="Runner not found")
-    if runner.owner_user_id != actual_user_id:
+    if runner.owner_user_id != user.id:
         raise HTTPException(status_code=403, detail="Not your runner")
 
     # Update bindings
@@ -706,18 +729,14 @@ async def update_runner_repos(
 @router.get("/{runner_id}/shares", response_model=List[RunnerShareGrantResponse])
 async def list_runner_shares(
     runner_id: UUID,
-    user_id: Optional[str] = Header(None, alias="X-User-Id"),
+    user: User = Depends(get_current_user),
     session: Session = Depends(get_db)
 ):
     """List share grants of a runner. Owner only."""
-    actual_user_id = _parse_user_id_header(user_id)
-    if not actual_user_id:
-        raise HTTPException(status_code=401, detail="Authentication required")
-
     runner = session.get(Runner, runner_id)
     if not runner:
         raise HTTPException(status_code=404, detail="Runner not found")
-    if runner.owner_user_id != actual_user_id:
+    if runner.owner_user_id != user.id:
         raise HTTPException(status_code=403, detail="Not your runner")
 
     grants = session.exec(
@@ -732,18 +751,14 @@ async def list_runner_shares(
 async def upsert_runner_share(
     runner_id: UUID,
     req: UpsertRunnerShareGrantRequest,
-    user_id: Optional[str] = Header(None, alias="X-User-Id"),
+    user: User = Depends(get_current_user),
     session: Session = Depends(get_db)
 ):
     """Create or update a share grant for a runner. Owner only."""
-    actual_user_id = _parse_user_id_header(user_id)
-    if not actual_user_id:
-        raise HTTPException(status_code=401, detail="Authentication required")
-
     runner = session.get(Runner, runner_id)
     if not runner:
         raise HTTPException(status_code=404, detail="Runner not found")
-    if runner.owner_user_id != actual_user_id:
+    if runner.owner_user_id != user.id:
         raise HTTPException(status_code=403, detail="Not your runner")
 
     if req.grantee_user_id == runner.owner_user_id:
@@ -763,7 +778,7 @@ async def upsert_runner_share(
         grant = RunnerShareGrant(
             runner_id=runner_id,
             grantee_user_id=req.grantee_user_id,
-            granted_by_user_id=actual_user_id,
+            granted_by_user_id=user.id,
             can_execute=req.can_execute,
         )
         session.add(grant)
@@ -782,18 +797,14 @@ async def upsert_runner_share(
 async def delete_runner_share(
     runner_id: UUID,
     grantee_user_id: UUID,
-    user_id: Optional[str] = Header(None, alias="X-User-Id"),
+    user: User = Depends(get_current_user),
     session: Session = Depends(get_db)
 ):
     """Delete a share grant for a runner. Owner only."""
-    actual_user_id = _parse_user_id_header(user_id)
-    if not actual_user_id:
-        raise HTTPException(status_code=401, detail="Authentication required")
-
     runner = session.get(Runner, runner_id)
     if not runner:
         raise HTTPException(status_code=404, detail="Runner not found")
-    if runner.owner_user_id != actual_user_id:
+    if runner.owner_user_id != user.id:
         raise HTTPException(status_code=403, detail="Not your runner")
 
     grant = session.exec(
@@ -815,19 +826,14 @@ async def delete_runner_share(
 async def add_runner_repo(
     runner_id: UUID,
     repo_id: UUID,
-    user_id: Optional[str] = Header(None, alias="X-User-Id"),
+    user: User = Depends(get_current_user),
     session: Session = Depends(get_db)
 ):
     """Add a single repository to runner's allowed list."""
-    actual_user_id = _parse_user_id_header(user_id)
-
-    if not actual_user_id:
-        raise HTTPException(status_code=401, detail="Authentication required")
-
     runner = session.get(Runner, runner_id)
     if not runner:
         raise HTTPException(status_code=404, detail="Runner not found")
-    if runner.owner_user_id != actual_user_id:
+    if runner.owner_user_id != user.id:
         raise HTTPException(status_code=403, detail="Not your runner")
 
     repo_id_str = str(repo_id)
@@ -852,19 +858,14 @@ async def add_runner_repo(
 async def remove_runner_repo(
     runner_id: UUID,
     repo_id: UUID,
-    user_id: Optional[str] = Header(None, alias="X-User-Id"),
+    user: User = Depends(get_current_user),
     session: Session = Depends(get_db)
 ):
     """Remove a single repository from runner's allowed list."""
-    actual_user_id = _parse_user_id_header(user_id)
-
-    if not actual_user_id:
-        raise HTTPException(status_code=401, detail="Authentication required")
-
     runner = session.get(Runner, runner_id)
     if not runner:
         raise HTTPException(status_code=404, detail="Runner not found")
-    if runner.owner_user_id != actual_user_id:
+    if runner.owner_user_id != user.id:
         raise HTTPException(status_code=403, detail="Not your runner")
 
     repo_id_str = str(repo_id)
@@ -885,7 +886,7 @@ async def remove_runner_repo(
     }
 
 
-@router.get("/{runner_id}", response_model=RunnerResponse)
+@router.get("/{runner_id:uuid}", response_model=RunnerResponse)
 async def get_runner_info(
     runner_id: UUID,
     session: Session = Depends(get_db),
@@ -910,8 +911,8 @@ async def list_compute_jobs(
     status: Optional[str] = None,
     limit: int = 50,
     offset: int = 0,
-    user_id: str = Header(None, alias="X-User-Id", description="Optional user ID for auth"),
-    session: Session = Depends(get_db)
+    session: Session = Depends(get_db),
+    _: Any = Depends(require_active_identity),
 ):
     """
     List compute jobs for testing interface.
@@ -1011,13 +1012,17 @@ async def get_runner_jobs(
 @router.get("/jobs/{job_id}", response_model=ComputeJobResponse)
 async def get_job_status(
     job_id: UUID,
-    session: Session = Depends(get_db)
+    session: Session = Depends(get_db),
+    identity: Any = Depends(require_active_identity),
 ):
     """Get status of a compute job."""
     job = session.get(ComputeJob, job_id)
 
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
+
+    if not _is_authorized_job_identity(identity, job, session):
+        raise HTTPException(status_code=403, detail="Forbidden")
 
     return ComputeJobResponse.model_validate(job)
 
@@ -1114,7 +1119,8 @@ async def get_pending_audits(
 @router.get("/jobs/{job_id}/service-status", response_model=ServiceStatusResponse)
 async def get_service_status(
     job_id: UUID,
-    session: Session = Depends(get_db)
+    session: Session = Depends(get_db),
+    identity: Any = Depends(require_active_identity),
 ):
     """
     Get the current status of a service deployment.
@@ -1133,6 +1139,9 @@ async def get_service_status(
     job = session.get(ComputeJob, job_id)
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
+
+    if not _is_authorized_job_identity(identity, job, session):
+        raise HTTPException(status_code=403, detail="Forbidden")
 
     # Determine if service is ready for testing
     is_ready = (
@@ -1181,7 +1190,7 @@ async def get_service_status(
         job_id=job.id,
         status=job.status.value,
         service_endpoint=job.service_endpoint if is_ready else None,
-        access_token=job.access_token if is_ready else None,
+        access_token=None,
         token_expires_at=job.token_expires_at if is_ready else None,
         token_expires_in_seconds=expires_in,
         runner_id=job.runner_id,
@@ -1194,8 +1203,8 @@ async def get_service_status(
 @router.get("/jobs/{job_id}/endpoint", response_model=EndpointInfoResponse)
 async def get_service_endpoint(
     job_id: UUID,
-    user_id: str = Header(..., alias="X-User-Id", description="User ID for auth"),
-    session: Session = Depends(get_db)
+    session: Session = Depends(get_db),
+    identity: Any = Depends(require_active_identity),
 ):
     """
     Get the service endpoint info for testing.
@@ -1209,6 +1218,9 @@ async def get_service_endpoint(
     job = session.get(ComputeJob, job_id)
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
+
+    if not _is_authorized_job_identity(identity, job, session):
+        raise HTTPException(status_code=403, detail="Forbidden")
 
     # Check if service is ready
     if not job.service_endpoint:

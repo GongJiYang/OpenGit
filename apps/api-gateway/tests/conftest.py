@@ -26,6 +26,13 @@ from agent_auth.models import Agent, AgentStatus  # noqa: E402
 from agent_auth.utils import API_KEY_PREFIX, API_KEY_LENGTH, get_api_key_prefix  # noqa: E402
 
 
+@pytest.fixture(autouse=True)
+def _clear_dependency_overrides():
+    app.dependency_overrides.clear()
+    yield
+    app.dependency_overrides.clear()
+
+
 @pytest.fixture(scope="session", autouse=True)
 def _setup_db():
     # Create DB/Tables once per test session
