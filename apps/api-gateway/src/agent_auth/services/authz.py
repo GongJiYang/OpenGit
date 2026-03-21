@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Optional
+from uuid import UUID
+
 from sqlmodel import Session, select
 
 from ..models import Agent
@@ -43,10 +45,16 @@ def require_repo_member(auth_session: Session, repo_name: str, agent_id: str, ro
     repo = auth_session.exec(select(Repo).where(Repo.full_name == repo_name)).first()
     if not repo:
         return False
+
+    try:
+        agent_uuid = UUID(agent_id)
+    except ValueError:
+        return False
+
     membership = auth_session.exec(
         select(RepoMember).where(
             RepoMember.repo_id == repo.id,
-            RepoMember.agent_id == agent_id,
+            RepoMember.agent_id == agent_uuid,
             RepoMember.status == MembershipStatus.ACTIVE,
         )
     ).first()

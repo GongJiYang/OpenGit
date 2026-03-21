@@ -10,7 +10,7 @@ API endpoints for multi-agent collaboration:
 
 from typing import Optional
 from uuid import UUID
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Header, status
 from sqlmodel import Session
 
 from schemas.collaboration import (
@@ -23,6 +23,7 @@ from schemas.collaboration import (
 )
 from ..database import get_db
 from ..services.collaboration_service import CollaborationService
+from ..services.authz import authenticate_api_key
 
 router = APIRouter(prefix="/collaboration", tags=["collaboration"])
 
@@ -296,12 +297,40 @@ async def get_agent_reviews(
 
 @router.get("/reviews/reviewer/{reviewer_id}")
 async def get_reviews_for_reviewer(
-    reviewer_id: UUID,
-    service: CollaborationService = Depends(get_collaboration_service)
+    reviewer_id: str,
+    service: CollaborationService = Depends(get_collaboration_service),
+    session: Session = Depends(get_db),
+    x_api_key: Optional[str] = Header(None, alias="X-API-Key"),
 ):
-    """Get reviews awaiting a specific reviewer."""
-    reviews = service.get_reviews_to_review(reviewer_id)
-    return {"reviewer_id": str(reviewer_id), "reviews": reviews}
+    """Get reviews awaiting a specific reviewer. Supports UUID or 'me'."""
+    resolved_reviewer_id: Optional[UUID] = None
+
+    if reviewer_id == "me":
+        if not x_api_key:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="X-API-Key is required for reviewer_id='me'",
+            )
+
+        principal = authenticate_api_key(session, x_api_key)
+        if not principal:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid API key or credentials",
+            )
+
+        try:
+            resolved_reviewer_id = UUID(principal.id)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid reviewer identity")
+    else:
+        try:
+            resolved_reviewer_id = UUID(reviewer_id)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid reviewer_id")
+
+    reviews = service.get_reviews_to_review(resolved_reviewer_id)
+    return {"reviewer_id": str(resolved_reviewer_id), "reviews": reviews}
 
 
 # ==================== Status Endpoints ====================

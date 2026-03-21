@@ -1,9 +1,11 @@
 from typing import Any, Optional
+from uuid import UUID
 
 from fastapi import Depends, Header, HTTPException, status
 from sqlmodel import Session
 
 from agent_auth.deps import get_auth_session
+from agent_auth.models import Agent
 from agent_auth.services.user_auth import UserAuthService
 
 
@@ -22,6 +24,19 @@ def require_agent(
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Agent is suspended")
     if principal.status != "claimed":
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Agent is not claimed")
+
+    # Enrich principal with persisted agent role for role-based checks in routers
+    agent_uuid: Optional[UUID] = None
+    try:
+        agent_uuid = UUID(principal.id)
+    except (TypeError, ValueError):
+        agent_uuid = None
+
+    if agent_uuid is not None:
+        agent = auth_session.get(Agent, agent_uuid)
+        if agent:
+            principal.role = agent.role
+
     return principal
 
 

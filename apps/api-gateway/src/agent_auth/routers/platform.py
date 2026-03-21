@@ -285,32 +285,6 @@ async def create_repo(
     return service.build_repo_response(repo, agent.id, user)
 
 
-@repo_router.get("/{repo_id}", response_model=RepoResponse)
-async def get_repo(
-    repo_id: UUID,
-    session: Session = Depends(get_db),
-    user: Optional[User] = Depends(lambda: None),
-):
-    """Get repository info."""
-    from ..models.platform import Repo
-
-    repo = session.get(Repo, repo_id)
-    if not repo:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Repo not found")
-
-    service = RepoService(session)
-    agent_id = None
-    user_id = user.id if user else None
-    if user:
-        try:
-            agent, _ = _get_bound_agent_or_403(user, session)
-            agent_id = agent.id
-        except HTTPException:
-            pass
-
-    return service.build_repo_response(repo, agent_id, user_id)
-
-
 @repo_router.post("/{repo_id}/join")
 async def join_repo(
     repo_id: UUID,
@@ -412,9 +386,9 @@ async def list_repo_members(
     return result
 
 
-@repo_router.get("/{repo_id}/jobs")
+@repo_router.get("/{repo_ref:path}/jobs")
 async def get_repo_jobs(
-    repo_id: UUID,
+    repo_ref: str,
     status_filter: Optional[str] = None,
     limit: int = 50,
     offset: int = 0,
@@ -428,18 +402,26 @@ async def get_repo_jobs(
     - limit: Max number of jobs to return (default 50, max 100)
     - offset: Pagination offset
     """
-    from ..models.platform import Repo
     from ..models.runner import ComputeJob, ComputeJobStatus, ComputeJobResponse
 
-    # Verify repo exists
-    repo = session.get(Repo, repo_id)
-    if not repo:
+    service = RepoService(session)
+
+    repo = None
+    try:
+        repo = service.get_repo_by_id(UUID(repo_ref))
+    except ValueError:
+        pass
+
+    if repo is None:
+        repo = service.get_repo_by_full_name(repo_ref)
+
+    if repo is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Repo not found")
 
     # Build query
     limit = min(limit, 100)  # Cap at 100
     statement = select(ComputeJob).where(
-        ComputeJob.repo_id == repo_id
+        ComputeJob.repo_id == repo.id
     ).order_by(ComputeJob.created_at.desc())
 
     # Apply status filter
@@ -456,6 +438,39 @@ async def get_repo_jobs(
     jobs = session.exec(statement).all()
 
     return [ComputeJobResponse.model_validate(job) for job in jobs]
+
+
+@repo_router.get("/{repo_ref:path}", response_model=RepoResponse)
+async def get_repo(
+    repo_ref: str,
+    session: Session = Depends(get_db),
+    user: Optional[User] = Depends(get_current_user_optional),
+):
+    """Get repository info by UUID or full_name."""
+    service = RepoService(session)
+
+    repo = None
+    try:
+        repo = service.get_repo_by_id(UUID(repo_ref))
+    except ValueError:
+        pass
+
+    if repo is None:
+        repo = service.get_repo_by_full_name(repo_ref)
+
+    if repo is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Repo not found")
+
+    agent_id = None
+    user_id = user.id if user else None
+    if user:
+        try:
+            agent, _ = _get_bound_agent_or_403(user, session)
+            agent_id = agent.id
+        except HTTPException:
+            pass
+
+    return service.build_repo_response(repo, agent_id, user_id)
 
 
 # Combine routers

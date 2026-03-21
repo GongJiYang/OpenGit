@@ -3,11 +3,13 @@ import logging
 import os
 from typing import Any, List, Optional, Tuple, Set
 from datetime import datetime
+from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Header, status
 from sqlmodel import Session, select
 
 from agent_auth.deps import get_auth_session
+from agent_auth.services.repo_service import RepoService
 from core.middleware import limiter
 from core.security import STORE_ROOT, get_secure_repo_path
 from core.settings import get_settings
@@ -33,6 +35,36 @@ router = APIRouter()
 logger = logging.getLogger(__name__)
 
 ALLOWED_TEST_COMMANDS = ["pytest", "python", "python3", "tox", "nose"]
+
+
+def _resolve_or_create_repo_for_bounty(
+    auth_session: Session,
+    repo_name: str,
+    requested_repo_id: Optional[str],
+) -> tuple[str, Optional[str]]:
+    """Resolve repo by name and keep repo_name/repo_id consistent on bounty records."""
+    service = RepoService(auth_session)
+
+    repo = service.get_repo_by_full_name(repo_name)
+    if repo is None:
+        repo = service.get_or_create_repo(full_name=repo_name)
+
+    canonical_repo_id = repo.id
+
+    if requested_repo_id:
+        try:
+            requested_repo_uuid = UUID(requested_repo_id)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid repo_id")
+
+        if requested_repo_uuid != canonical_repo_id:
+            raise HTTPException(
+                status_code=400,
+                detail="repo_id does not match repo_name",
+            )
+
+    # Bounty persistence schema stores repo_id as string in this service layer
+    return repo.full_name, str(canonical_repo_id)
 
 
 @router.get("/api/v1/bounties")
@@ -112,10 +144,16 @@ def create_bounty(
         except Exception:
             raise HTTPException(status_code=400, detail=f"Invalid role: {bounty.required_role}")
 
+    resolved_repo_name, resolved_repo_id = _resolve_or_create_repo_for_bounty(
+        auth_session=auth_session,
+        repo_name=repo_name,
+        requested_repo_id=bounty.repo_id,
+    )
+
     # Repo membership/ownership check (must be repo member or owner)
     from agent_auth.services.authz import require_repo_member
 
-    allowed = require_repo_member(auth_session, repo_name, agent.id)
+    allowed = require_repo_member(auth_session, resolved_repo_name, agent.id)
     if not allowed:
         raise HTTPException(status_code=403, detail="Forbidden: Not a member of this repository")
 
@@ -135,8 +173,8 @@ def create_bounty(
         description=description,
         reward=bounty.reward,
         status="open",
-        repo_name=repo_name,
-        repo_id=bounty.repo_id,
+        repo_name=resolved_repo_name,
+        repo_id=resolved_repo_id,
         required_role=bounty.required_role.value if isinstance(bounty.required_role, RepoRole) else bounty.required_role,
         assignee=None,
         parent_id=None,
@@ -276,6 +314,7 @@ def create_decomposed_bounties(
     request: Request,
     req: DecomposedBountyRequest,
     session: Session = Depends(get_session),
+    auth_session: Session = Depends(get_auth_session),
     agent: Any = Depends(require_agent),
 ):
     """
@@ -292,10 +331,17 @@ def create_decomposed_bounties(
     if agent.role.lower() != "architect":
         raise HTTPException(status_code=403, detail="Forbidden: Only Architect agents can create decomposed bounties.")
 
-    # Validate repo exists
+    # Validate repo exists in filesystem
     repo_path = get_secure_repo_path(req.repo_name)
     if not os.path.exists(repo_path):
         raise HTTPException(status_code=404, detail=f"Repo '{req.repo_name}' not found")
+
+    # Resolve/create repo registry record and enforce repo_id consistency
+    resolved_repo_name, resolved_repo_id = _resolve_or_create_repo_for_bounty(
+        auth_session=auth_session,
+        repo_name=req.repo_name,
+        requested_repo_id=req.repo_id,
+    )
 
     all_bounties: List[Bounty] = []
     client_to_server_id: dict = {}
@@ -315,8 +361,8 @@ def create_decomposed_bounties(
         bounty, cid = _flatten_task_tree(
             node=node,
             parent_id=parent_id,
-            repo_name=req.repo_name,
-            repo_id=req.repo_id,
+            repo_name=resolved_repo_name,
+            repo_id=resolved_repo_id,
             client_to_server_id=client_to_server_id,
             all_bounties=all_bounties,
         )
@@ -371,7 +417,7 @@ def create_decomposed_bounties(
     # Sync task tree to repository
     try:
         tree_service = GitTreeService(session, STORE_ROOT)
-        tree_service.sync_repo_task_tree(req.repo_name, agent.id)
+        tree_service.sync_repo_task_tree(resolved_repo_name, agent.id)
     except Exception as e:
         logger.warning("Failed to sync task tree: %s", e)
 
