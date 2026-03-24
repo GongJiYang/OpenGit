@@ -1,14 +1,16 @@
+import hashlib
+import json
 import logging
 import os
+import re
 from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
 MEM0_PROVIDER_ALIAS = "langchain"
 DEFAULT_MEM0_DIR = os.path.abspath("./agenthub_data/mem0/runtime")
-os.makedirs(DEFAULT_MEM0_DIR, exist_ok=True)
-os.environ.setdefault("MEM0_DIR", DEFAULT_MEM0_DIR)
-os.environ.setdefault("MEM0_TELEMETRY", "False")
+DEFAULT_MEM0_TELEMETRY = "False"
+_ROLE_SAFE_RE = re.compile(r"[^a-zA-Z0-9_-]+")
 
 try:
     from mem0 import Memory
@@ -99,6 +101,9 @@ class MemoryService:
     - Missing optional dependencies won't crash the API.
     - Missing API keys disable memory features with an explicit reason.
     - Dev environments fall back to a local Qdrant path under `agenthub_data/`.
+
+    Initialization is lazy so env updates after import can take effect without
+    process restart.
     """
 
     _memory_cache: Dict[str, Any] = {}
@@ -108,6 +113,17 @@ class MemoryService:
         self.memory = None
         self.enabled = False
         self.disabled_reason: Optional[str] = None
+        self._active_cache_key: Optional[str] = None
+
+        self.history_db_path = ""
+        self.runtime_root = ""
+        self.local_qdrant_root = ""
+        self.runtime_dir = ""
+        self.local_qdrant_path = ""
+
+        self._refresh_runtime_paths()
+
+    def _refresh_runtime_paths(self) -> None:
         self.history_db_path = os.getenv(
             "MEM0_HISTORY_DB_PATH",
             os.path.abspath("./agenthub_data/mem0/history.db"),
@@ -120,24 +136,10 @@ class MemoryService:
         self.runtime_dir = self._resolve_runtime_dir()
         self.local_qdrant_path = self._resolve_local_qdrant_path()
 
-        if Memory is None:
-            self.disabled_reason = "mem0ai is not installed"
-            return
+    def _is_initialized(self) -> bool:
+        return self.memory is not None and self.enabled
 
-        zhipu_api_key = os.getenv("ZHIPUAI_API_KEY")
-        if not zhipu_api_key:
-            self.disabled_reason = "ZHIPUAI_API_KEY is not configured"
-            return
-
-        self._register_custom_providers()
-
-        qdrant_url = os.getenv("QDRANT_URL")
-        qdrant_api_key = os.getenv("QDRANT_API_KEY")
-
-        os.makedirs(os.path.dirname(self.history_db_path), exist_ok=True)
-        os.makedirs(self.runtime_dir, exist_ok=True)
-        os.makedirs(self.local_qdrant_path, exist_ok=True)
-
+    def _build_mem0_config(self, zhipu_api_key: str, qdrant_url: Optional[str], qdrant_api_key: Optional[str]) -> Dict[str, Any]:
         vector_store_config: Dict[str, Any] = {
             "collection_name": self.collection_name,
             "embedding_model_dims": 1024,
@@ -150,14 +152,7 @@ class MemoryService:
             vector_store_config["path"] = self.local_qdrant_path
             vector_store_config["on_disk"] = True
 
-        cache_key = self._cache_key(qdrant_url)
-        cached_memory = self._memory_cache.get(cache_key)
-        if cached_memory is not None:
-            self.memory = cached_memory
-            self.enabled = True
-            return
-
-        config = {
+        return {
             "vector_store": {
                 "provider": "qdrant",
                 "config": vector_store_config,
@@ -179,16 +174,67 @@ class MemoryService:
             "history_db_path": self.history_db_path,
         }
 
+    def _set_defaults_for_init(self) -> None:
+        os.makedirs(DEFAULT_MEM0_DIR, exist_ok=True)
+        os.environ.setdefault("MEM0_DIR", DEFAULT_MEM0_DIR)
+        os.environ.setdefault("MEM0_TELEMETRY", DEFAULT_MEM0_TELEMETRY)
+
+    def initialize(self, force_refresh: bool = False) -> bool:
+        if self._is_initialized() and not force_refresh:
+            return True
+
+        self.memory = None
+        self.enabled = False
+        self.disabled_reason = None
+        self._active_cache_key = None
+
+        self._set_defaults_for_init()
+        self._refresh_runtime_paths()
+
+        if Memory is None:
+            self.disabled_reason = "mem0ai is not installed"
+            return False
+
+        zhipu_api_key = os.getenv("ZHIPUAI_API_KEY")
+        if not zhipu_api_key:
+            self.disabled_reason = "ZHIPUAI_API_KEY is not configured"
+            return False
+
+        self._register_custom_providers()
+
+        qdrant_url = os.getenv("QDRANT_URL")
+        qdrant_api_key = os.getenv("QDRANT_API_KEY")
+
+        os.makedirs(os.path.dirname(self.history_db_path), exist_ok=True)
+        os.makedirs(self.runtime_dir, exist_ok=True)
+        os.makedirs(self.local_qdrant_path, exist_ok=True)
+
+        config = self._build_mem0_config(zhipu_api_key, qdrant_url, qdrant_api_key)
+        cache_key = self._cache_key(config)
+        if not force_refresh:
+            cached_memory = self._memory_cache.get(cache_key)
+            if cached_memory is not None:
+                self.memory = cached_memory
+                self.enabled = True
+                self._active_cache_key = cache_key
+                return True
+
         try:
             self._set_mem0_runtime_dir()
             self.memory = Memory.from_config(config)
             self.enabled = True
+            self._active_cache_key = cache_key
             self._memory_cache[cache_key] = self.memory
             logger.info("Mem0 memory service initialized using ZhipuAI + Qdrant")
+            return True
         except Exception as exc:
             self.disabled_reason = str(exc)
             self.memory = None
             logger.exception("Mem0 initialization failed")
+            return False
+
+    def refresh(self) -> bool:
+        return self.initialize(force_refresh=True)
 
     def _register_custom_providers(self) -> None:
         if not LlmFactory or not EmbedderFactory:
@@ -213,28 +259,63 @@ class MemoryService:
             "qdrant_path": None if qdrant_url and qdrant_url != ":memory:" else self.local_qdrant_path,
         }
 
-    def add_memory(self, agent_id: str, content: str, metadata: Optional[dict] = None):
-        if not self.memory:
+    def _ensure_ready(self) -> bool:
+        return self.initialize(force_refresh=False)
+
+    @staticmethod
+    def _normalize_role(role: Optional[str]) -> str:
+        if not role:
+            return "default"
+        normalized = _ROLE_SAFE_RE.sub("_", role.strip().lower()).strip("_")
+        return normalized or "default"
+
+    def _memory_actor_id(self, agent_id: str, role: Optional[str]) -> str:
+        return f"{agent_id}::role::{self._normalize_role(role)}"
+
+    def add_memory(
+        self,
+        agent_id: str,
+        content: str,
+        metadata: Optional[dict] = None,
+        role: Optional[str] = None,
+    ):
+        if not self._ensure_ready() or not self.memory:
             return None
+
+        normalized_role = self._normalize_role(role)
+        effective_metadata = dict(metadata or {})
+        effective_metadata.setdefault("memory_role", normalized_role)
+
         return self.memory.add(
             content,
-            agent_id=agent_id,
-            metadata=metadata or {},
+            agent_id=self._memory_actor_id(agent_id, normalized_role),
+            metadata=effective_metadata,
         )
 
-    def get_memories(self, agent_id: str, query: Optional[str] = None, limit: int = 5) -> List[Dict[str, Any]]:
-        if not self.memory:
+    def get_memories(
+        self,
+        agent_id: str,
+        query: Optional[str] = None,
+        limit: int = 5,
+        role: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        if not self._ensure_ready() or not self.memory:
             return []
+        normalized_role = self._normalize_role(role)
         try:
-            result = self.memory.search(query or "", agent_id=agent_id, limit=limit)
+            result = self.memory.search(
+                query or "",
+                agent_id=self._memory_actor_id(agent_id, normalized_role),
+                limit=limit,
+            )
         except Exception:
             logger.exception("Mem0 search failed")
             return []
         return self._normalize_search_results(result)
 
-    def delete_all_memories(self, agent_id: str):
-        if self.memory:
-            self.memory.delete_all(agent_id=agent_id)
+    def delete_all_memories(self, agent_id: str, role: Optional[str] = None):
+        if self._ensure_ready() and self.memory:
+            self.memory.delete_all(agent_id=self._memory_actor_id(agent_id, role))
 
     def _normalize_search_results(self, result: Any) -> List[Dict[str, Any]]:
         if isinstance(result, dict):
@@ -262,9 +343,33 @@ class MemoryService:
         ).strip("_") or "default"
         return os.path.join(self.local_qdrant_root, safe_collection)
 
-    def _cache_key(self, qdrant_url: Optional[str]) -> str:
-        remote_target = qdrant_url if qdrant_url and qdrant_url != ":memory:" else self.local_qdrant_path
-        return f"{self.collection_name}|{remote_target}|{self.history_db_path}"
+    @staticmethod
+    def _fingerprint_secret(value: Optional[str]) -> str:
+        if not value:
+            return ""
+        return hashlib.sha256(value.encode("utf-8")).hexdigest()[:16]
+
+    def _cache_key(self, config: Dict[str, Any]) -> str:
+        vector_store = (config or {}).get("vector_store", {})
+        llm = (config or {}).get("llm", {})
+        embedder = (config or {}).get("embedder", {})
+
+        key_payload = {
+            "collection_name": self.collection_name,
+            "history_db_path": self.history_db_path,
+            "runtime_dir": self.runtime_dir,
+            "vector_store_provider": vector_store.get("provider"),
+            "vector_store_config": vector_store.get("config", {}),
+            "llm_provider": llm.get("provider"),
+            "llm_model": (llm.get("config") or {}).get("model"),
+            "llm_api_key_fp": self._fingerprint_secret((llm.get("config") or {}).get("api_key")),
+            "embedder_provider": embedder.get("provider"),
+            "embedder_model": (embedder.get("config") or {}).get("model"),
+            "embedder_api_key_fp": self._fingerprint_secret((embedder.get("config") or {}).get("api_key")),
+        }
+
+        canonical = json.dumps(key_payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
     def _resolve_runtime_dir(self) -> str:
         safe_collection = "".join(
@@ -280,4 +385,15 @@ class MemoryService:
             mem0_setup_module.mem0_dir = self.runtime_dir
 
 
-memory_service = MemoryService()
+_memory_service_singleton: Optional[MemoryService] = None
+
+
+def get_memory_service() -> MemoryService:
+    global _memory_service_singleton
+    if _memory_service_singleton is None:
+        _memory_service_singleton = MemoryService()
+    return _memory_service_singleton
+
+
+# Backward-compatible handle for existing imports.
+memory_service = get_memory_service()

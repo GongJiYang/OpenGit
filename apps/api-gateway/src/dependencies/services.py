@@ -2,7 +2,7 @@ from typing import Optional
 
 from fastapi import HTTPException, Request
 
-from agenthub_execution_vmm.sandbox import SubprocessSandbox
+from agenthub_execution_vmm.sandbox import Sandbox
 from agenthub_git_core.repo_manager import RepoManager
 from agenthub_semantic_store.indexer import VectorIndexer
 
@@ -18,5 +18,5 @@ def get_indexer(request: Request) -> Optional[VectorIndexer]:
     return getattr(request.app.state, "indexer", None)
 
 
-def get_sandbox(request: Request) -> Optional[SubprocessSandbox]:
+def get_sandbox(request: Request) -> Optional[Sandbox]:
     return getattr(request.app.state, "sandbox", None)

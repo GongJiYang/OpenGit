@@ -353,9 +353,19 @@ class AuditLog(SQLModel, table=True):
     original_exit_code: Optional[int] = Field(default=None)
     original_passed: Optional[bool] = Field(default=None)
 
+    # Original execution fingerprint (must match during audit)
+    original_test_command: Optional[str] = Field(default=None, max_length=500)
+    original_code_commit: Optional[str] = Field(default=None, max_length=64)
+    original_env_fingerprint: Optional[str] = Field(default=None, max_length=128)
+
     # Audited result (from trusted infra)
     audited_stdout: Optional[str] = Field(default=None, sa_column=Column(Text))
     audited_exit_code: Optional[int] = Field(default=None)
+
+    # Audited execution fingerprint submitted by audit worker
+    audited_test_command: Optional[str] = Field(default=None, max_length=500)
+    audited_code_commit: Optional[str] = Field(default=None, max_length=64)
+    audited_env_fingerprint: Optional[str] = Field(default=None, max_length=128)
 
     # Audit result
     status: str = Field(default="pending", description="pending, running, completed")

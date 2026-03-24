@@ -1,5 +1,8 @@
 from typing import Dict
 
+import skills.api_router as skills_api_router
+
+
 def test_start_sync_ok(client, auth_headers):
     # allow list_templates
     res = client.post("/api/v1/skills/start", json={"name": "list_templates", "mode": "sync", "args": {}}, headers=auth_headers)
@@ -38,18 +41,40 @@ def test_start_sync_timeout(client, monkeypatch, auth_headers):
 
 
 def test_start_sync_circuit_breaker(client, monkeypatch, auth_headers):
-    # Open circuit after consecutive failures (simulate by using a non-existing skill)
+    # Configure deterministic CB behavior for this test only.
     monkeypatch.setenv("SKILLS_ALLOWLIST", "does_not_exist")
-    # first call forbidden
-    res1 = client.post("/api/v1/skills/start", json={"name": "does_not_exist", "mode": "sync", "args": {}}, headers=auth_headers)
-    assert res1.status_code in (403, 200)  # allowlist forbids, or if allowed then returns error envelope
-    # flip allowlist to permit the name to push errors into CB window
+    monkeypatch.setattr(skills_api_router, "_CB_ENABLED", True)
+    monkeypatch.setattr(skills_api_router, "_CB_WINDOW", 3)
+    monkeypatch.setattr(skills_api_router, "_CB_FAIL_RATE", 0.5)
+    monkeypatch.setattr(skills_api_router, "_CB_OPEN_SECS", 5)
+    skills_api_router._CB_RECENT.clear()
+    skills_api_router._CB_OPEN_UNTIL.clear()
+
+    # Allowlist hit must be rejected deterministically.
+    res1 = client.post(
+        "/api/v1/skills/start",
+        json={"name": "list_templates", "mode": "sync", "args": {}},
+        headers=auth_headers,
+    )
+    assert res1.status_code == 403
+
+    # Now allow does_not_exist so repeated failed envelopes feed CB window.
     monkeypatch.setenv("SKILLS_ALLOWLIST", "does_not_exist, list_templates")
-    # trigger multiple failures to open circuit
-    for _ in range(5):
-        r = client.post("/api/v1/skills/start", json={"name": "does_not_exist", "mode": "sync", "args": {}}, headers=auth_headers)
-        # when not found, our code path returns HTTP 200 but ok=False
+    for _ in range(3):
+        r = client.post(
+            "/api/v1/skills/start",
+            json={"name": "does_not_exist", "mode": "sync", "args": {}},
+            headers=auth_headers,
+        )
         assert r.status_code == 200
-    # now circuit may open; next call should be 503
-    r2 = client.post("/api/v1/skills/start", json={"name": "does_not_exist", "mode": "sync", "args": {}}, headers=auth_headers)
-    assert r2.status_code in (200, 503)  # depending on window timing
+        body = r.json()
+        assert body["ok"] is False
+
+    # Window is full with failures; CB must be open now.
+    r2 = client.post(
+        "/api/v1/skills/start",
+        json={"name": "does_not_exist", "mode": "sync", "args": {}},
+        headers=auth_headers,
+    )
+    assert r2.status_code == 503
+    assert r2.json().get("detail") == "Circuit open for skill; please retry later"

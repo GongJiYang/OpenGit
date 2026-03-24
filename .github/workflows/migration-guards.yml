@@ -40,7 +40,21 @@ jobs:
             alembic sqlalchemy sqlmodel \
             pydantic pydantic-settings qdrant-client zhipuai mem0ai \
             gitpython passlib bcrypt apscheduler aiohttp python-jose[cryptography] \
-            email-validator
+            email-validator pytest
+
+      - name: Run api-gateway security regression subset
+        env:
+          PYTHONPATH: ${{ github.workspace }}/packages/protocol/src:${{ github.workspace }}/services/git-core/src:${{ github.workspace }}/services/semantic-store/src:${{ github.workspace }}/services/execution-vmm/src:${{ github.workspace }}/apps/api-gateway/src
+        run: |
+          pytest -q \
+            tests/test_security_failfast.py \
+            tests/test_wechat_webhook_signature.py \
+            tests/test_wechat_claim_expiration.py \
+            tests/test_jwt_secret_guard.py \
+            tests/test_bind_agent_claim_flow_integrity.py \
+            tests/test_oauth_router_mount.py \
+            tests/test_oauth_state_stateless.py \
+            tests/test_claim_confirm_atomicity.py
 
       - name: Ensure single Alembic head and no branches
         run: |

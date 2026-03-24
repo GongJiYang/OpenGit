@@ -50,7 +50,7 @@ services:
       - DATABASE_URL=postgresql+psycopg2://agenthub:agenthub@postgres:5432/agenthub
       - AUTH_DATABASE_URL=postgresql+psycopg2://agenthub:agenthub@postgres:5432/agenthub
       - ZHIPUAI_API_KEY=${ZHIPUAI_API_KEY}
-      - QDRANT_URL=${QDRANT_URL:-:memory:}
+      - QDRANT_URL=${QDRANT_URL:-./agenthub_data/qdrant}
     volumes:
       # Persist Repos and Vectors
       - ./agenthub_data:/app/apps/api-gateway/agenthub_data

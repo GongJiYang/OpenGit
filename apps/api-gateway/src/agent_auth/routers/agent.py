@@ -7,10 +7,13 @@ All endpoints (except register) require API Key authentication.
 
 import json
 import os
+import time
+from collections import defaultdict, deque
 from datetime import datetime
+from threading import Lock
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, status, Header
+from fastapi import APIRouter, Depends, HTTPException, status, Header, Request
 from sqlmodel import Session, select
 
 from ..models import (
@@ -36,6 +39,8 @@ from ..utils import (
 )
 from ..utils.heartbeat_cache import get_heartbeat_cache
 from ..database import get_db
+from core.middleware import limiter
+from core.settings import get_settings
 
 router = APIRouter(prefix="/api/v1/agents", tags=["Agent"])
 
@@ -54,6 +59,9 @@ VALID_ROLES = set(ROLE_PROMPT_MAP.keys())
 
 # Prompt directory (relative to this file's parent's parent's src/prompts)
 PROMPT_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "prompts")
+
+_register_name_attempts = defaultdict(deque)
+_register_name_attempts_lock = Lock()
 
 
 def validate_role(role: str) -> str:
@@ -85,6 +93,31 @@ def load_role_prompt(role: str) -> Optional[str]:
     return None
 
 
+def _enforce_register_name_rate_limit(client_ip: str, normalized_name: str) -> None:
+    settings = get_settings()
+    max_attempts = settings.agent_register_name_max_attempts
+    window_seconds = settings.agent_register_name_window_seconds
+
+    if max_attempts <= 0 or window_seconds <= 0:
+        return
+
+    now = time.time()
+    bucket_key = f"{client_ip}:{normalized_name.lower()}"
+
+    with _register_name_attempts_lock:
+        attempts = _register_name_attempts[bucket_key]
+        while attempts and (now - attempts[0]) > window_seconds:
+            attempts.popleft()
+
+        if len(attempts) >= max_attempts:
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail="Too many registration attempts for this agent name. Please retry later.",
+            )
+
+        attempts.append(now)
+
+
 # ============== Database Session Dependency ==============
 
 def get_session():
@@ -94,38 +127,27 @@ def get_session():
 
 # ============== API Key Authentication ==============
 
-async def get_current_agent(
-    x_api_key: str = Header(..., alias="X-API-Key", description="Agent API Key"),
-    session: Session = Depends(get_session)
+async def _authenticate_agent_by_api_key(
+    x_api_key: str,
+    session: Session,
 ) -> Agent:
-    """
-    Validate API Key and return the authenticated agent.
-
-    Raises:
-        HTTPException: 401 if API key is invalid or agent not found
-    """
     if not x_api_key:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Missing API Key. Include X-API-Key header."
         )
 
-    # Validate API key format early (consistency with main.py)
     if not is_valid_api_key_format(x_api_key):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid API Key format."
         )
 
-    # Get prefix for lookup
     key_prefix = get_api_key_prefix(x_api_key)
-
-    # Find agent by prefix, then verify hash (supports multiple agents)
     statement = select(Agent).where(Agent.api_key_prefix == key_prefix)
     agents = session.exec(statement).all()
     agent = next((a for a in agents if verify_api_key(x_api_key, a.api_key_hash)), None)
 
-    # Backward compatibility for legacy prefix format
     if not agent:
         legacy_prefix = get_legacy_api_key_prefix(x_api_key)
         if legacy_prefix != key_prefix:
@@ -139,7 +161,6 @@ async def get_current_agent(
             detail="Invalid API Key."
         )
 
-    # Check if agent is suspended
     if agent.status == AgentStatus.SUSPENDED:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -148,14 +169,38 @@ async def get_current_agent(
 
     return agent
 
-async def get_claimed_agent(
-    agent: Agent = Depends(get_current_agent)
+
+async def get_current_agent(
+    x_api_key: str = Header(..., alias="X-API-Key", description="Agent API Key"),
+    session: Session = Depends(get_session)
 ) -> Agent:
+    """
+    Validate API Key and return a claimed authenticated agent.
+
+    Raises:
+        HTTPException: 401 if API key is invalid or agent not found
+        HTTPException: 403 if agent is suspended or not claimed
+    """
+    agent = await _authenticate_agent_by_api_key(x_api_key=x_api_key, session=session)
     if agent.status != AgentStatus.CLAIMED:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Agent is not claimed. Complete the claim process to continue."
         )
+    return agent
+
+
+async def get_registered_agent(
+    x_api_key: str = Header(..., alias="X-API-Key", description="Agent API Key"),
+    session: Session = Depends(get_session)
+) -> Agent:
+    """Validate API key for any non-suspended registered agent."""
+    return await _authenticate_agent_by_api_key(x_api_key=x_api_key, session=session)
+
+
+async def get_claimed_agent(
+    agent: Agent = Depends(get_current_agent)
+) -> Agent:
     return agent
 
 # ============== Registration Endpoint ==============
@@ -174,8 +219,10 @@ async def get_claimed_agent(
     The `claim_url` should be provided to your human owner for verification.
     """,
 )
+@limiter.limit(lambda: get_settings().agent_register_rate_limit)
 async def register_agent(
-    request: AgentRegisterRequest,
+    request: Request,
+    payload: AgentRegisterRequest,
     session: Session = Depends(get_session)
 ) -> AgentRegisterResponse:
     """
@@ -186,7 +233,11 @@ async def register_agent(
     - Sets initial status to PENDING
     """
     # Sanitize inputs
-    name = sanitize_agent_name(request.name)
+    name = sanitize_agent_name(payload.name)
+    role = validate_role(payload.role)
+
+    client_ip = request.client.host if request.client else "unknown"
+    _enforce_register_name_rate_limit(client_ip=client_ip, normalized_name=name)
 
     # Generate credentials
     api_key = generate_api_key()
@@ -200,20 +251,20 @@ async def register_agent(
 
     # Serialize metadata
     metadata_json = None
-    if request.profile:
-        metadata_json = json.dumps(request.profile)
+    if payload.profile:
+        metadata_json = json.dumps(payload.profile)
 
     # Create agent record
     agent = Agent(
         name=name,
-        model_name=request.model_name,
+        model_name=payload.model_name,
         api_key_hash=api_key_hash,
         api_key_prefix=api_key_prefix,
         claim_code=claim_code,
         claim_url=claim_url,
         claim_expires_at=claim_expires_at,
         status=AgentStatus.PENDING,
-        role=request.role,
+        role=role,
         metadata_json=metadata_json,
     )
 
@@ -330,7 +381,7 @@ async def get_current_agent_info(
     description="Generate a new claim URL if the previous one expired.",
 )
 async def regenerate_claim_url(
-    agent: Agent = Depends(get_current_agent),
+    agent: Agent = Depends(get_registered_agent),
     session: Session = Depends(get_session)
 ) -> dict:
     """

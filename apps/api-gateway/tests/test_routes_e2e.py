@@ -79,12 +79,26 @@ def test_e2e_claim_submit_blackbox_revert_flow(client: TestClient, db_engine, au
             "files": {"README.md": "Hello from e2e\n"},
             "intent_description": "impl",
             "intent_category": "feat",
+            "intent_vector": [0.0],
             "diff_summary": "add README",
             "reasoning_trace": ["submit via authenticated agent"],
+            "rejected_alternatives": ["commit directly to default branch"],
             "bounty_id": bounty_id,
         }
         commit_res = client.post(f"/api/v1/repos/{repo_name}/commit", json=req, headers=auth_headers)
         assert commit_res.status_code == 200, commit_res.text
+        commit_payload = commit_res.json()
+        assert commit_payload["success"] is True
+        assert commit_payload["repo"] == repo_name
+        assert commit_payload["agent"] == agent_id
+        assert commit_payload["files_committed"] == ["README.md"]
+        assert isinstance(commit_payload.get("sha"), str) and len(commit_payload["sha"]) == 40
+        assert commit_payload["verification"]["exit_code"] is None
+        assert commit_payload["verification"]["passed"] is None
+        assert commit_payload["verification"]["execution_mode"] == "shared_local"
+        assert commit_payload["verification"]["execution_mode_source"] == "default"
+        assert commit_payload["task_tree_sync"]["attempted"] is True
+        assert commit_payload["task_tree_sync"]["status"] in {"synced", "failed", "pending"}
 
         with Session(db_engine) as s:
             rec = s.exec(
@@ -94,6 +108,10 @@ def test_e2e_claim_submit_blackbox_revert_flow(client: TestClient, db_engine, au
             ).first()
             assert rec is not None
             commit_id = rec.id
+            assert rec.commit_sha == commit_payload["sha"]
+            assert rec.agent_id == agent_id
+            assert rec.bounty_id == bounty_id
+            assert rec.status == "pending"
 
         # Without identity, blackbox endpoint must be protected
         no_auth_res = client.post(
@@ -105,5 +123,6 @@ def test_e2e_claim_submit_blackbox_revert_flow(client: TestClient, db_engine, au
             },
         )
         assert no_auth_res.status_code == 401
+        assert (no_auth_res.json().get("detail") or "") == "Valid X-API-Key or Bearer Token required"
     finally:
         shutil.rmtree(bare_path, ignore_errors=True)

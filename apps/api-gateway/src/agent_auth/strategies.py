@@ -1,7 +1,10 @@
 from abc import ABC, abstractmethod
+
 from pydantic import BaseModel
+
 from .repository import AgentRepository
 from .models import AgentStatus
+from .utils import is_claim_expired
 
 class ClaimResult(BaseModel):
     """Unified result for claim operations."""
@@ -33,6 +36,9 @@ class WeChatClaimStrategy(BaseClaimStrategy):
 
         if agent.status == AgentStatus.CLAIMED:
             return ClaimResult(success=False, message="该 Agent 已被成功认领。")
+
+        if is_claim_expired(agent.claim_expires_at):
+            return ClaimResult(success=False, message="认领码已过期，请让 Agent 重新生成认领链接。")
 
         # 2. Update status and bind OpenID
         try:

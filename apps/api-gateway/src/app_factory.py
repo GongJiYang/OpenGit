@@ -5,8 +5,9 @@ import logging
 import subprocess
 import tempfile
 import shutil
+from uuid import UUID
 from typing import Any, List, Optional
-from fastapi import Body, Depends, FastAPI, HTTPException, Request
+from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -14,6 +15,9 @@ from pydantic import BaseModel as _BaseModel  # noqa: F401
 # from agent_auth.services.workitem_service import WorkItemService  # imported where used
 from agenthub_execution_vmm.guard import ExecutionGuard
 from sqlmodel import Session, select
+
+from agent_auth.models import Agent
+from agent_auth.models.platform import UserAgentBinding
 from core.middleware import limiter, setup_rate_limit_and_middlewares
 from core.settings import get_settings
 
@@ -31,14 +35,15 @@ sys.path.append(os.path.abspath(os.path.join(BASE_DIR, "../../../")))
 from core.lifespan import lifespan
 from dependencies.services import get_indexer, get_sandbox
 from core.security import get_secure_repo_path
-from agent_auth.routers import agent_router, claim_router, wechat_router
+from agent_auth.routers import agent_router, claim_router, oauth_router, wechat_router
 from meta import meta_router
 from agent_auth.deps import get_auth_session
+from agent_auth.services.memory_service import get_memory_service
 # get_auth_engine removed from public surface; use app-level engine if needed
 # from agent_auth.models import Agent, AgentStatus  # internal; avoid direct use
 # from agent_auth.utils import get_api_key_prefix, get_legacy_api_key_prefix, is_valid_api_key_format  # internal; avoid direct use
 # from agent_auth.validators import get_validator  # avoid internal import; TODO: expose via facade if needed
-from dependencies.auth import require_agent
+from dependencies.auth import require_active_identity, require_agent
 from persistence import Bounty, PlatformPR, get_session
 from routers.bounties import router as bounties_router
 from routers.commits import router as commits_router
@@ -48,7 +53,6 @@ from routers.system import router as system_router
 from schemas.repos import CreateRepoRequest
 from schemas.search import SearchResponse
 from schemas.workitems import WorkItemListResponse
-# from agent_auth.services.memory_service import memory_service  # TODO: expose via facade if external usage required
 
 logger = logging.getLogger(__name__)
 # ... (rest of imports)
@@ -67,8 +71,6 @@ app = FastAPI(title="AgentHub API", version="0.1.0", lifespan=lifespan)
 
 # Bounty model is now imported from persistence.py
 
-
-ALLOWED_TEST_COMMANDS = sorted(ExecutionGuard.ALLOWED_TEST_COMMANDS)
 
 # --- Routes ---
 
@@ -126,6 +128,8 @@ async def get_role_prompt(
     agent_id: Optional[str] = None,
     query: Optional[str] = None,
     raw: bool = False,
+    principal: Any = Depends(require_active_identity),
+    auth_session: Session = Depends(get_auth_session),
 ):
     """Return the system prompt for a given role, optionally injecting agent memories."""
     role = role_name.lower().strip()
@@ -145,16 +149,47 @@ async def get_role_prompt(
     if not os.path.exists(prompt_path):
         raise HTTPException(status_code=404, detail="Role prompt not found")
 
+    principal_id = str(getattr(principal, "id", ""))
+    principal_kind = getattr(principal, "kind", None)
+
+    target_agent_id = agent_id
+    if target_agent_id is None and principal_kind == "agent":
+        target_agent_id = principal_id
+
+    if target_agent_id:
+        if principal_kind == "agent":
+            if principal_id != target_agent_id:
+                raise HTTPException(status_code=403, detail="Forbidden: cannot access other agent memories")
+        else:
+            target_agent: Optional[Agent] = None
+            try:
+                target_agent = auth_session.get(Agent, UUID(target_agent_id))
+            except ValueError:
+                raise HTTPException(status_code=400, detail="Invalid agent_id")
+
+            if not target_agent:
+                raise HTTPException(status_code=404, detail="Agent not found")
+
+            binding = auth_session.exec(
+                select(UserAgentBinding).where(UserAgentBinding.agent_id == target_agent.id)
+            ).first()
+            owner_user_id = str(binding.user_id) if binding else None
+
+            if owner_user_id != principal_id:
+                raise HTTPException(status_code=403, detail="Forbidden: cannot access other agent memories")
+
     if raw:
         return FileResponse(prompt_path, media_type="text/markdown")
 
     with open(prompt_path, "r", encoding="utf-8") as f:
         prompt = f.read()
 
-    # Inject Historical Memories if agent_id is provided
-    if agent_id:
-        # TODO: use memory facade; temporary no-op until exposed
-        memories = []
+    if target_agent_id:
+        memories = get_memory_service().get_memories(
+            target_agent_id,
+            query=query,
+            role=role,
+        )
         if memories:
             memory_context = "\n\n### 🧠 RELEVANT HISTORICAL EXPERIENCE\n"
             for i, mem in enumerate(memories):
@@ -193,12 +228,23 @@ def list_repos(request: Request):
 @app.post("/api/v1/repos")
 @app.post("/repos")
 @limiter.limit("10/minute")
-def create_repo(request: Request, req: CreateRepoRequest, agent: Any = Depends(require_agent)):
+def create_repo(
+    request: Request,
+    req: CreateRepoRequest,
+    agent: Any = Depends(require_agent),
+    x_idempotency_key: Optional[str] = Header(default=None, alias="X-Idempotency-Key"),
+    x_request_id: Optional[str] = Header(default=None, alias="X-Request-ID"),
+):
     """Creates a new AgentHub repository with Protocol Hooks."""
     # Security validation
     get_secure_repo_path(req.name)
     try:
-        path = request.app.state.repo_manager.create_repo(req.name)
+        path = request.app.state.repo_manager.create_repo(
+            req.name,
+            actor_id=str(getattr(agent, "id", "unknown")),
+            idempotency_token=x_idempotency_key,
+            request_id=x_request_id,
+        )
         return {"id": req.name, "path": path, "status": "created"}
     except Exception as e:
         # Avoid leaking internal error details to clients
@@ -212,18 +258,35 @@ def index_code(
     request: Request,
     repo_name: str,
     file_path: str,
-    content: str = Body(..., media_type="text/plain"),
     agent: Any = Depends(require_agent),
 ):
     """
-    Manually index code content.
+    Index repository file content from HEAD only.
     """
-    get_secure_repo_path(repo_name)
+    from core.security import validate_blob_path
+
+    repo_path = get_secure_repo_path(repo_name)
+    validate_blob_path(file_path)
+
     parser = getattr(request.app.state, "parser", None)
     idx = get_indexer(request)
     if not parser or not idx:
         return {"indexed_chunks": 0}
+
+    if not os.path.exists(repo_path):
+        raise HTTPException(status_code=404, detail="Repo not found")
+
+    try:
+        content = subprocess.check_output(
+            ["git", "show", f"HEAD:{file_path}"],
+            cwd=repo_path,
+            stderr=subprocess.PIPE,
+        ).decode()
+    except subprocess.CalledProcessError:
+        raise HTTPException(status_code=404, detail="File not found in repository HEAD")
+
     chunks = parser.parse(content)
+    idx.clear_file_index(repo_name, file_path)
     for c in chunks:
         idx.index_chunk(repo_name, file_path, c)
     return {"indexed_chunks": len(chunks)}
@@ -231,7 +294,15 @@ def index_code(
 
 @app.get("/api/v1/search", response_model=List[SearchResponse])
 @app.get("/search", response_model=List[SearchResponse])
-def search_code(request: Request, query: str, repo_id: Optional[str] = None, limit: int = 3, offset: int = 0):
+def search_code(
+    request: Request,
+    query: str,
+    repo_name: Optional[str] = None,
+    limit: int = 3,
+    offset: int = 0,
+    strict: bool = False,
+    principal: Any = Depends(require_active_identity),
+):
     """Semantic search for code chunks."""
     if limit < 1:
         raise HTTPException(status_code=400, detail="limit must be >= 1")
@@ -240,11 +311,25 @@ def search_code(request: Request, query: str, repo_id: Optional[str] = None, lim
     if offset < 0:
         raise HTTPException(status_code=400, detail="offset must be >= 0")
 
+    _ = principal
     fetch_limit = min(limit + offset, 50)
     idx = get_indexer(request)
     if not idx:
+        if strict:
+            raise HTTPException(status_code=503, detail="Semantic search is disabled")
         return []
-    results = idx.search(query, limit=fetch_limit, repo_id=repo_id)
+    results = idx.search(query, limit=fetch_limit, repo_name=repo_name)
+    status_getter = getattr(idx, "get_last_search_status", None)
+    search_status = status_getter() if callable(status_getter) else {"ok": True, "unavailable": False}
+    if search_status.get("unavailable"):
+        if strict:
+            detail = {
+                "message": "Semantic search backend unavailable",
+                "error_code": search_status.get("error_code"),
+                "reason": search_status.get("reason"),
+            }
+            raise HTTPException(status_code=503, detail=detail)
+        return []
     results = results[offset : offset + limit] if offset else results[:limit]
     response = []
     for r in results:
@@ -264,25 +349,39 @@ def search_code(request: Request, query: str, repo_id: Optional[str] = None, lim
 @limiter.limit("10/minute")
 def verify_repo(request: Request, repo_name: str, cmd: str = "pytest", agent: Any = Depends(require_agent)):
     """Trigger the Sandbox to run tests on a repo (with command validation)."""
-    # Simple whitelist check for the base command
-    # Ensures only authorized test runners are executed
-    base_cmd = cmd.split()[0] if cmd else ""
-    if base_cmd not in ALLOWED_TEST_COMMANDS:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Command '{base_cmd}' is not allowed. Supported: {ALLOWED_TEST_COMMANDS}",
-        )
+    normalized_cmd = (cmd or "pytest").strip()
+    try:
+        tokens = ExecutionGuard.verify_command(normalized_cmd)
+    except ValueError as ve:
+        raise HTTPException(status_code=400, detail=str(ve))
 
     bare_repo_path = get_secure_repo_path(repo_name)
+    settings = get_settings()
+    sandbox_provider = settings.normalized_sandbox_provider
+    if sandbox_provider == "subprocess" and settings.normalized_security_mode == "strict":
+        raise HTTPException(status_code=503, detail="Subprocess sandbox is not allowed in strict security mode")
+    if sandbox_provider == "subprocess" and not settings.app_allow_insecure_subprocess_sandbox:
+        raise HTTPException(
+            status_code=503,
+            detail="Subprocess sandbox requires APP_ALLOW_INSECURE_SUBPROCESS_SANDBOX=true in warn mode",
+        )
+    if sandbox_provider == "runner":
+        raise HTTPException(
+            status_code=409,
+            detail="Local verify endpoint is unavailable when APP_SANDBOX_PROVIDER=runner",
+        )
+    if sandbox_provider != "subprocess":
+        raise HTTPException(status_code=503, detail="Sandbox is disabled")
+
     sb = get_sandbox(request)
     if not sb:
-        raise HTTPException(status_code=503, detail="Sandbox is disabled")
+        raise HTTPException(status_code=503, detail="Subprocess sandbox is not initialized")
 
     # Clone bare repo to a temporary working directory so tests have a worktree
     work_dir = tempfile.mkdtemp(prefix="agenthub_verify_")
     try:
         subprocess.run(["git", "clone", bare_repo_path, work_dir], check=True, capture_output=True)
-        exit_code, output = sb.run_tests(work_dir, cmd)
+        exit_code, output = sb.run_tests(work_dir, " ".join(tokens))
     finally:
         shutil.rmtree(work_dir, ignore_errors=True)
 
@@ -290,7 +389,7 @@ def verify_repo(request: Request, repo_name: str, cmd: str = "pytest", agent: An
         "repo": repo_name,
         "exit_code": exit_code,
         "passed": exit_code == 0,
-        "logs": output[:1000],
+        "logs": ExecutionGuard.sanitize_output(output, max_length=1000),
     }
 
 
@@ -391,6 +490,7 @@ def create_app() -> FastAPI:
     # routers
     app.include_router(agent_router)
     app.include_router(claim_router)
+    app.include_router(oauth_router)
     app.include_router(wechat_router)
     app.include_router(meta_router)
     app.include_router(bounties_router)

@@ -5,14 +5,18 @@ Handles GitHub OAuth flow for agent claiming.
 """
 
 import os
-from datetime import datetime, timedelta
+import time
+from datetime import datetime
 from urllib.parse import urlencode
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, status, Query
 from fastapi.responses import RedirectResponse
+from jose import JWTError, jwt
+from sqlalchemy import and_, update
 from sqlmodel import Session, select
 
+from core.settings import get_settings
 from ..models import Agent, AgentStatus
 from ..utils import generate_oauth_state_token, is_claim_expired
 from ..database import get_db
@@ -25,9 +29,9 @@ GITHUB_CLIENT_ID = os.getenv("GITHUB_CLIENT_ID", "")
 GITHUB_CLIENT_SECRET = os.getenv("GITHUB_CLIENT_SECRET", "")
 GITHUB_REDIRECT_URI = os.getenv("GITHUB_REDIRECT_URI", "http://localhost:8000/api/v1/oauth/github/callback")
 
-# In-memory state store (use Redis in production)
-_oauth_states: dict[str, dict] = {}
+# Stateless OAuth state token TTL
 OAUTH_STATE_TTL_SECONDS = int(os.getenv("OAUTH_STATE_TTL_SECONDS", "600"))
+OAUTH_STATE_TOKEN_TYPE = "oauth_claim_state"
 
 
 # ============== Database Session ==============
@@ -35,6 +39,61 @@ OAUTH_STATE_TTL_SECONDS = int(os.getenv("OAUTH_STATE_TTL_SECONDS", "600"))
 def get_session():
     """Get database session."""
     yield from get_db()
+
+
+def _encode_oauth_state(agent_id: str, claim_code: str) -> str:
+    settings = get_settings()
+    secret = settings.effective_jwt_secret
+    if not secret:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="OAuth state signing secret is not configured",
+        )
+
+    now_ts = int(time.time())
+    payload = {
+        "typ": OAUTH_STATE_TOKEN_TYPE,
+        "aid": agent_id,
+        "cc": claim_code,
+        "iat": now_ts,
+        "exp": now_ts + OAUTH_STATE_TTL_SECONDS,
+        "jti": generate_oauth_state_token(),
+    }
+    return jwt.encode(payload, secret, algorithm="HS256")
+
+
+def _decode_oauth_state(state_token: str) -> dict:
+    settings = get_settings()
+    secret = settings.effective_jwt_secret
+    if not secret:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="OAuth state signing secret is not configured",
+        )
+
+    try:
+        payload = jwt.decode(state_token, secret, algorithms=["HS256"])
+    except JWTError:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid or expired OAuth state.",
+        )
+
+    if payload.get("typ") != OAUTH_STATE_TOKEN_TYPE:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid OAuth state.",
+        )
+
+    agent_id = payload.get("aid")
+    claim_code = payload.get("cc")
+    if not agent_id or not claim_code:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid OAuth state.",
+        )
+
+    return payload
 
 
 # ============== GitHub OAuth Endpoints ==============
@@ -79,15 +138,8 @@ async def github_auth_start(
             detail="Claim link has expired. Please request a new one."
         )
 
-    # Generate state token
-    state_token = generate_oauth_state_token()
-
-    # Store state with claim info
-    _oauth_states[state_token] = {
-        "agent_id": str(agent.id),
-        "claim_code": claim_code,
-        "created_at": datetime.utcnow().isoformat(),
-    }
+    # Generate signed stateless state token
+    state_token = _encode_oauth_state(str(agent.id), claim_code)
 
     # Build GitHub authorization URL
     params = {
@@ -119,30 +171,12 @@ async def github_auth_callback(
     3. Fetch user info from GitHub
     4. Complete agent claiming
     """
-    # Validate state
-    if state not in _oauth_states:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Invalid or expired OAuth state."
-        )
-
-    state_data = _oauth_states.pop(state)
-    try:
-        created_at = datetime.fromisoformat(state_data.get("created_at", ""))
-        if datetime.utcnow() - created_at > timedelta(seconds=OAUTH_STATE_TTL_SECONDS):
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="OAuth state expired."
-            )
-    except ValueError:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Invalid OAuth state."
-        )
+    # Validate and decode signed state
+    state_data = _decode_oauth_state(state)
 
     # Get agent
     from uuid import UUID
-    agent_id = UUID(state_data["agent_id"])
+    agent_id = UUID(state_data["aid"])
     statement = select(Agent).where(Agent.id == agent_id)
     agent = session.exec(statement).first()
 
@@ -150,6 +184,24 @@ async def github_auth_callback(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Agent not found."
+        )
+
+    if agent.claim_code != state_data["cc"]:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid OAuth state."
+        )
+
+    if agent.status == AgentStatus.CLAIMED:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Agent is already claimed."
+        )
+
+    if is_claim_expired(agent.claim_expires_at):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Claim link has expired. Please request a new one."
         )
 
     # Exchange code for access token
@@ -213,22 +265,45 @@ async def github_auth_callback(
             detail="Could not retrieve verified email from GitHub."
         )
 
-    # Update agent with owner info
-    agent.status = AgentStatus.CLAIMED
-    agent.owner_email = primary_email.lower()
-    agent.owner_github_id = str(user_data.get("id", ""))
-    agent.owner_github_login = user_data.get("login", "")
-    agent.claimed_at = datetime.utcnow()
+    now = datetime.utcnow()
+    normalized_email = primary_email.lower()
+    normalized_github_id = str(user_data.get("id", ""))
+    normalized_github_login = user_data.get("login", "")
 
-    session.add(agent)
+    # Atomically transition non-claimed agent to claimed exactly once
+    agent_update = session.exec(
+        update(Agent)
+        .where(
+            and_(
+                Agent.id == agent.id,
+                Agent.claim_code == state_data["cc"],
+                Agent.status != AgentStatus.CLAIMED,
+                Agent.claim_expires_at >= now,
+            )
+        )
+        .values(
+            status=AgentStatus.CLAIMED,
+            owner_email=normalized_email,
+            owner_github_id=normalized_github_id,
+            owner_github_login=normalized_github_login,
+            claimed_at=now,
+        )
+    )
+
+    if agent_update.rowcount != 1:
+        session.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Agent is already claimed."
+        )
+
     session.commit()
-    session.refresh(agent)
 
     return {
         "success": True,
         "message": f"Agent '{agent.name}' has been successfully claimed!",
         "agent_id": str(agent.id),
         "agent_name": agent.name,
-        "owner_github": agent.owner_github_login,
-        "owner_email": agent.owner_email,
+        "owner_github": normalized_github_login,
+        "owner_email": normalized_email,
     }

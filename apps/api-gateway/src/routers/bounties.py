@@ -10,6 +10,7 @@ from sqlmodel import Session, select
 
 from agent_auth.deps import get_auth_session
 from agent_auth.services.repo_service import RepoService
+from agenthub_execution_vmm.guard import ExecutionGuard
 from core.middleware import limiter
 from core.security import STORE_ROOT, get_secure_repo_path
 from core.settings import get_settings
@@ -34,7 +35,6 @@ from schemas.bounties import (
 router = APIRouter()
 logger = logging.getLogger(__name__)
 
-ALLOWED_TEST_COMMANDS = ["pytest", "python", "python3", "tox", "nose"]
 
 
 def _resolve_or_create_repo_for_bounty(
@@ -162,10 +162,12 @@ def create_bounty(
     if verification_mode not in ["auto", "human", "external"]:
         raise HTTPException(status_code=400, detail="Invalid verification_mode")
 
-    # test_command whitelist (base command only)
-    base_cmd = (bounty.test_command or "pytest").split()[0]
-    if base_cmd not in ALLOWED_TEST_COMMANDS:
-        raise HTTPException(status_code=400, detail=f"Command '{base_cmd}' is not allowed. Supported: {ALLOWED_TEST_COMMANDS}")
+    # test_command policy (full command validation)
+    normalized_test_command = (bounty.test_command or "pytest").strip()
+    try:
+        tokens = ExecutionGuard.verify_command(normalized_test_command)
+    except ValueError as ve:
+        raise HTTPException(status_code=400, detail=str(ve))
 
     # Construct server-side Bounty with safe defaults
     new_bounty = Bounty(
@@ -189,7 +191,7 @@ def create_bounty(
         context_files=[],
         target_files=[],
         acceptance_criteria=None,
-        test_command=base_cmd,
+        test_command=" ".join(tokens),
         verification_mode=verification_mode,
     )
 
@@ -236,9 +238,11 @@ def decompose_task(
                 dto.required_role = RepoRole(str(dto.required_role).lower())
             except Exception:
                 raise HTTPException(status_code=400, detail=f"Invalid role: {dto.required_role}")
-        base_cmd = (dto.test_command or "pytest").split()[0]
-        if base_cmd not in ALLOWED_TEST_COMMANDS:
-            raise HTTPException(status_code=400, detail=f"Command '{base_cmd}' is not allowed. Supported: {ALLOWED_TEST_COMMANDS}")
+        normalized_test_command = (dto.test_command or "pytest").strip()
+        try:
+            tokens = ExecutionGuard.verify_command(normalized_test_command)
+        except ValueError as ve:
+            raise HTTPException(status_code=400, detail=str(ve))
 
         # Server-side construction with safe defaults
         st = Bounty(
@@ -262,7 +266,7 @@ def decompose_task(
             context_files=[],
             target_files=[],
             acceptance_criteria=None,
-            test_command=base_cmd,
+            test_command=" ".join(tokens),
             verification_mode=(dto.verification_mode or "auto"),
         )
         session.add(st)
@@ -358,6 +362,19 @@ def create_decomposed_bounties(
                 raise HTTPException(status_code=400, detail=f"Duplicate client_id detected: '{cid}'")
             seen_client_ids.add(cid)
 
+        verification_mode = (node.verification_mode or get_settings().default_verification_mode).lower()
+        if verification_mode not in ["auto", "human", "external"]:
+            raise HTTPException(status_code=400, detail="Invalid verification_mode")
+
+        normalized_test_command = (node.test_command or "pytest").strip()
+        try:
+            tokens = ExecutionGuard.verify_command(normalized_test_command)
+        except ValueError as ve:
+            raise HTTPException(status_code=400, detail=str(ve))
+
+        node.test_command = " ".join(tokens)
+        node.verification_mode = verification_mode
+
         bounty, cid = _flatten_task_tree(
             node=node,
             parent_id=parent_id,
@@ -414,12 +431,27 @@ def create_decomposed_bounties(
     for bounty in all_bounties:
         session.refresh(bounty)
 
+    task_tree_sync = {
+        "attempted": True,
+        "status": "pending",
+        "error": None,
+    }
+
     # Sync task tree to repository
     try:
         tree_service = GitTreeService(session, STORE_ROOT)
         tree_service.sync_repo_task_tree(resolved_repo_name, agent.id)
+        task_tree_sync["status"] = "synced"
     except Exception as e:
-        logger.warning("Failed to sync task tree: %s", e)
+        err = str(e)[:500]
+        task_tree_sync["status"] = "failed"
+        task_tree_sync["error"] = err
+        logger.warning(
+            "[bounties][decomposed] task tree sync failed repo=%s agent=%s error=%s",
+            resolved_repo_name,
+            str(agent.id),
+            err,
+        )
 
     bounty_dicts = [
         {
@@ -438,6 +470,7 @@ def create_decomposed_bounties(
         total_created=len(all_bounties),
         bounties=bounty_dicts,
         dependency_map=client_to_server_id,
+        task_tree_sync=task_tree_sync,
     )
 
 
@@ -486,7 +519,12 @@ def resolve_bounty_dependencies(bounty_id: str, session: Session) -> int:
                 tree_service = GitTreeService(session, STORE_ROOT)
                 tree_service.sync_repo_task_tree(bounty.repo_name)
             except Exception as e:
-                logger.warning("Failed to sync task tree during dependency resolution: %s", e)
+                logger.warning(
+                    "[bounties][dependency-resolution] task tree sync failed repo=%s bounty_id=%s error=%s",
+                    bounty.repo_name,
+                    bounty.id,
+                    str(e)[:500],
+                )
 
     # Case 2: ready_for_preparation bounties (with or without assignee)
     preparable_bounties = session.exec(

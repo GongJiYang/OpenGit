@@ -11,7 +11,8 @@ from sqlmodel import Session
 sys.path.insert(0, os.path.abspath("apps/api-gateway/src"))
 
 from core.settings import clear_settings_cache  # noqa: E402
-from agent_auth.models import Agent, AgentStatus  # noqa: E402
+from agent_auth.models import Agent, AgentStatus, EmailVerification, AgentMetrics  # noqa: E402
+from agent_auth.models.platform import User, Repo, RepoMember  # noqa: E402
 from agent_auth.models.runner import ComputeJob, ComputeJobStatus  # noqa: E402
 from agent_auth.services.repo_service import RepoService  # noqa: E402
 from agent_auth.utils import hash_api_key, get_api_key_prefix, API_KEY_PREFIX, API_KEY_LENGTH  # noqa: E402
@@ -118,3 +119,41 @@ def test_reviewer_me_resolves_agent_from_api_key(_set_required_security_env, cli
     payload = response.json()
     assert payload["reviewer_id"] == str(agent.id)
     assert isinstance(payload["reviews"], list)
+
+
+def test_model_table_indexes_declared_on_target_models():
+    expected_model_level_indexes = {
+        Agent: {"ix_agents_status", "ix_agents_api_key_prefix", "ix_agents_owner_github_id"},
+        EmailVerification: {"ix_email_verifications_agent_id"},
+        AgentMetrics: {"ix_agent_metrics_reliability_tier"},
+        User: set(),
+        Repo: set(),
+        RepoMember: set(),
+    }
+
+    expected_table_indexes = {
+        Agent: {
+            "ix_agents_status",
+            "ix_agents_api_key_prefix",
+            "ix_agents_owner_github_id",
+            "ix_agents_claim_code",
+        },
+        EmailVerification: {
+            "ix_email_verifications_token",
+            "ix_email_verifications_email",
+            "ix_email_verifications_agent_id",
+        },
+        AgentMetrics: {"ix_agent_metrics_agent_id", "ix_agent_metrics_reliability_tier"},
+        User: {"ix_users_email", "ix_users_github_id", "ix_users_wechat_openid"},
+        Repo: {"ix_repos_full_name", "ix_repos_github_repo_id", "ix_repos_created_by_user_id"},
+        RepoMember: {"ix_repo_members_repo_id", "ix_repo_members_agent_id"},
+    }
+
+    for model, expected_indexes in expected_model_level_indexes.items():
+        table_args = getattr(model, "__table_args__", ())
+        indexes = {arg.name for arg in table_args if hasattr(arg, "name")}
+        assert expected_indexes.issubset(indexes)
+
+    for model, expected_indexes in expected_table_indexes.items():
+        actual_indexes = {index.name for index in model.__table__.indexes}
+        assert expected_indexes.issubset(actual_indexes)

@@ -38,6 +38,11 @@ class Agent(SQLModel, table=True):
     """
 
     __tablename__ = "agents"
+    __table_args__ = (
+        Index("ix_agents_status", "status"),
+        Index("ix_agents_api_key_prefix", "api_key_prefix"),
+        Index("ix_agents_owner_github_id", "owner_github_id"),
+    )
 
     # Primary key
     id: UUID = Field(default_factory=uuid4, primary_key=True)
@@ -110,13 +115,6 @@ class Agent(SQLModel, table=True):
 
     class Config:
         arbitrary_types_allowed = True
-        # Index for efficient queries
-        indexes = [
-            Index("ix_agents_status", "status"),
-            Index("ix_agents_api_key_prefix", "api_key_prefix"),
-            Index("ix_agents_claim_code", "claim_code"),
-            Index("ix_agents_owner_github_id", "owner_github_id"),
-        ]
 
 
 class EmailVerification(SQLModel, table=True):
@@ -127,6 +125,9 @@ class EmailVerification(SQLModel, table=True):
     """
 
     __tablename__ = "email_verifications"
+    __table_args__ = (
+        Index("ix_email_verifications_agent_id", "agent_id"),
+    )
 
     # Primary key
     id: UUID = Field(default_factory=uuid4, primary_key=True)
@@ -155,11 +156,6 @@ class EmailVerification(SQLModel, table=True):
 
     class Config:
         arbitrary_types_allowed = True
-        indexes = [
-            Index("ix_email_verifications_token", "token"),
-            Index("ix_email_verifications_email", "email"),
-            Index("ix_email_verifications_agent_id", "agent_id"),
-        ]
 
 
 class AgentMetrics(SQLModel, table=True):
@@ -170,6 +166,9 @@ class AgentMetrics(SQLModel, table=True):
     """
 
     __tablename__ = "agent_metrics"
+    __table_args__ = (
+        Index("ix_agent_metrics_reliability_tier", "reliability_tier"),
+    )
 
     # Primary key
     id: UUID = Field(default_factory=uuid4, primary_key=True)
@@ -237,11 +236,6 @@ class AgentMetrics(SQLModel, table=True):
     updated_at: datetime = Field(default_factory=datetime.utcnow)
     last_task_at: Optional[datetime] = Field(default=None, description="When last task was assigned/completed")
 
-    class Config:
-        indexes = [
-            Index("ix_agent_metrics_agent_id", "agent_id"),
-            Index("ix_agent_metrics_reliability_tier", "reliability_tier"),
-        ]
 
 
 # ============== Pydantic Schemas ==============
@@ -285,9 +279,7 @@ class AgentStatusResponse(SQLModel):
 
 
 class ClaimInfoResponse(SQLModel):
-    """Response for claim page info."""
-    agent_name: str
-    claim_code: str
+    """Minimized response for claim page info."""
     expires_at: datetime
     status: AgentStatus
 

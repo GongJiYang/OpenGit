@@ -1,12 +1,14 @@
+import json
 import os
 import secrets
 import sys
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from typing import Dict
 
 import bcrypt
 import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy import inspect
 from sqlmodel import Session
 
 # Ensure src is importable
@@ -22,15 +24,36 @@ os.environ["DATABASE_URL"] = f"sqlite:///{TEST_DB_PATH}"
 from core.settings import clear_settings_cache  # noqa: E402
 from persistence import create_db_and_tables, get_engine  # noqa: E402
 from main import app  # noqa: E402
+from core.middleware import limiter  # noqa: E402
 from agent_auth.models import Agent, AgentStatus  # noqa: E402
 from agent_auth.utils import API_KEY_PREFIX, API_KEY_LENGTH, get_api_key_prefix  # noqa: E402
+import routers.commits as commits_router  # noqa: E402
+import skills.api_router as skills_api_router  # noqa: E402
 
 
 @pytest.fixture(autouse=True)
 def _clear_dependency_overrides():
     app.dependency_overrides.clear()
+    if hasattr(limiter, "_storage") and hasattr(limiter._storage, "reset"):
+        limiter._storage.reset()
+
+    # Reset in-memory circuit-breaker state between tests to avoid cross-test coupling.
+    skills_api_router._CB_RECENT.clear()
+    skills_api_router._CB_OPEN_UNTIL.clear()
+
+    # Reset daily budget tracker state to avoid cross-test coupling via shared JSON file.
+    commits_router.budget_tracker._ensure_file()
+    with open(commits_router.budget_tracker.path, "w", encoding="utf-8") as f:
+        json.dump({"date": str(date.today()), "spent": 0.0}, f)
+
     yield
+
     app.dependency_overrides.clear()
+    if hasattr(limiter, "_storage") and hasattr(limiter._storage, "reset"):
+        limiter._storage.reset()
+
+    skills_api_router._CB_RECENT.clear()
+    skills_api_router._CB_OPEN_UNTIL.clear()
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -40,6 +63,18 @@ def _setup_db():
         os.remove(TEST_DB_PATH)
     create_db_and_tables()
     yield
+
+
+@pytest.fixture(autouse=True)
+def _isolate_db_tables(db_engine):
+    # Keep schema, clear table rows between tests for deterministic isolation.
+    with db_engine.begin() as conn:
+        conn.exec_driver_sql("PRAGMA foreign_keys=OFF")
+        inspector = inspect(conn)
+        table_names = inspector.get_table_names()
+        for table_name in table_names:
+            conn.exec_driver_sql(f'DELETE FROM "{table_name}"')
+        conn.exec_driver_sql("PRAGMA foreign_keys=ON")
 
 
 @pytest.fixture(scope="session")

@@ -1,4 +1,45 @@
 #!/bin/sh
-# AgentHub Hook Wrapper
-# Uses system python3 for now. In prod, use the venv python.
-python3 /Users/x/OpenGit/services/git-core/src/agenthub_git_core/hook_logic.py
+# AgentHub Hook Wrapper (runtime-resolved)
+set -eu
+
+resolve_python() {
+  if [ -n "${AGENTHUB_HOOK_PYTHON:-}" ]; then
+    printf '%s' "${AGENTHUB_HOOK_PYTHON}"
+    return 0
+  fi
+  if command -v python3 >/dev/null 2>&1; then
+    printf '%s' "python3"
+    return 0
+  fi
+  if command -v python >/dev/null 2>&1; then
+    printf '%s' "python"
+    return 0
+  fi
+  return 1
+}
+
+PYTHON_BIN="$(resolve_python || true)"
+if [ -z "${PYTHON_BIN}" ]; then
+  echo "❌ REJECTED: Python runtime not found for AgentHub hook." >&2
+  exit 1
+fi
+
+run_hook_module() {
+  exec "${PYTHON_BIN}" -m agenthub_git_core.hook_logic
+}
+
+if "${PYTHON_BIN}" -c "import importlib.util,sys;sys.exit(0 if importlib.util.find_spec('agenthub_git_core.hook_logic') else 1)" >/dev/null 2>&1; then
+  run_hook_module
+fi
+
+if [ -n "${AGENTHUB_GIT_CORE_SRC:-}" ]; then
+  EXTRA_PYTHONPATH="${AGENTHUB_GIT_CORE_SRC}"
+  if [ -n "${AGENTHUB_PROTOCOL_SRC:-}" ]; then
+    EXTRA_PYTHONPATH="${EXTRA_PYTHONPATH}:${AGENTHUB_PROTOCOL_SRC}"
+  fi
+  export PYTHONPATH="${EXTRA_PYTHONPATH}${PYTHONPATH:+:${PYTHONPATH}}"
+  run_hook_module
+fi
+
+echo "❌ REJECTED: hook runtime unavailable. Install agenthub-git-core package or set AGENTHUB_GIT_CORE_SRC (and AGENTHUB_PROTOCOL_SRC when needed)." >&2
+exit 1

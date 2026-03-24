@@ -75,6 +75,9 @@ class SubmitAuditResultRequest(BaseModel):
     audit_id: UUID
     audited_stdout: str
     audited_exit_code: int
+    audited_test_command: str = Field(..., max_length=500)
+    audited_code_commit: Optional[str] = Field(default=None, max_length=64)
+    audited_env_fingerprint: Optional[str] = Field(default=None, max_length=128)
 
 
 class ServiceStatusResponse(BaseModel):

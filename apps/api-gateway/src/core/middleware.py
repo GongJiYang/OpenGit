@@ -13,10 +13,6 @@ limiter = Limiter(key_func=get_remote_address)
 MAX_REQUEST_SIZE = 20 * 1024 * 1024  # 20MB
 
 
-class _RequestTooLargeError(Exception):
-    pass
-
-
 def _payload_too_large_response() -> JSONResponse:
     return JSONResponse(
         status_code=413,
@@ -26,32 +22,63 @@ def _payload_too_large_response() -> JSONResponse:
 
 async def limit_request_size_mw(request: Request, call_next):
     content_length = request.headers.get("content-length")
+    transfer_encoding = (request.headers.get("transfer-encoding") or "").lower()
+
+    if content_length and "chunked" in transfer_encoding:
+        return JSONResponse(status_code=400, content={"detail": "Invalid request framing headers"})
+
     if content_length:
         try:
-            if int(content_length) > MAX_REQUEST_SIZE:
-                return _payload_too_large_response()
+            parsed_length = int(content_length)
         except (TypeError, ValueError):
-            # Ignore malformed header and enforce size via streamed body accounting.
-            pass
+            return JSONResponse(status_code=400, content={"detail": "Invalid Content-Length header"})
+
+        if parsed_length < 0:
+            return JSONResponse(status_code=400, content={"detail": "Invalid Content-Length header"})
+
+        if parsed_length > MAX_REQUEST_SIZE:
+            return _payload_too_large_response()
 
     total_received = 0
     original_receive = request._receive
+    buffered_messages = []
 
-    async def limited_receive():
-        nonlocal total_received
+    while True:
         message = await original_receive()
-        if message.get("type") == "http.request":
-            total_received += len(message.get("body") or b"")
+        message_type = message.get("type")
+
+        if message_type == "http.request":
+            body = message.get("body") or b""
+            total_received += len(body)
             if total_received > MAX_REQUEST_SIZE:
-                raise _RequestTooLargeError
-        return message
+                return _payload_too_large_response()
 
-    request._receive = limited_receive
+            buffered_messages.append(
+                {
+                    "type": "http.request",
+                    "body": body,
+                    "more_body": bool(message.get("more_body", False)),
+                }
+            )
+            if not message.get("more_body", False):
+                break
+            continue
 
-    try:
-        return await call_next(request)
-    except _RequestTooLargeError:
-        return _payload_too_large_response()
+        buffered_messages.append(message)
+        if message_type == "http.disconnect":
+            break
+
+    message_iter = iter(buffered_messages)
+
+    async def replay_receive():
+        try:
+            return next(message_iter)
+        except StopIteration:
+            return {"type": "http.request", "body": b"", "more_body": False}
+
+    request._receive = replay_receive
+
+    return await call_next(request)
 
 
 async def tracing_mw(request: Request, call_next):

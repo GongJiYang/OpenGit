@@ -6,7 +6,8 @@ build-backend = "hatchling.build"
 name = "agenthub-execution-vmm"
 version = "0.1.0"
 dependencies = [
-    "agenthub-protocol"
+    "agenthub-protocol",
+    "redis>=5.0.0"
 ]
 requires-python = ">=3.10"
 

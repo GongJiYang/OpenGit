@@ -31,6 +31,11 @@ class Sandbox(ABC):
         """Terminates a persistent session."""
         pass
 
+    @abstractmethod
+    def is_session_alive(self, session_id: str) -> bool:
+        """Returns whether the session is healthy and usable."""
+        pass
+
 class SubprocessSandbox(Sandbox):
     """
     MVP Sandbox that runs commands locally in a subprocess.
@@ -79,3 +84,11 @@ class SubprocessSandbox(Sandbox):
     def close_session(self, session_id: str):
         """No-op for local."""
         pass
+
+    def is_session_alive(self, session_id: str) -> bool:
+        """Best-effort liveness check for local sessions."""
+        if not session_id:
+            return False
+        if session_id == "local_global":
+            return True
+        return os.path.exists(session_id)

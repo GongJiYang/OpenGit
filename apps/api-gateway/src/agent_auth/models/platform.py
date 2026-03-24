@@ -14,7 +14,7 @@ from typing import Optional
 from uuid import UUID, uuid4
 
 from sqlmodel import Field, SQLModel
-from sqlalchemy import Index, UniqueConstraint
+from sqlalchemy import UniqueConstraint
 
 
 # ============== Enums ==============
@@ -92,12 +92,6 @@ class User(SQLModel, table=True):
     updated_at: datetime = Field(default_factory=datetime.utcnow)
     last_login_at: Optional[datetime] = Field(default=None)
 
-    class Config:
-        indexes = [
-            Index("ix_users_email", "email"),
-            Index("ix_users_github_id", "github_id"),
-            Index("ix_users_wechat_openid", "wechat_openid"),
-        ]
 
 
 # ============== User-Agent Binding ==============
@@ -169,11 +163,6 @@ class Repo(SQLModel, table=True):
     created_at: datetime = Field(default_factory=datetime.utcnow)
     updated_at: datetime = Field(default_factory=datetime.utcnow)
 
-    class Config:
-        indexes = [
-            Index("ix_repos_full_name", "full_name"),
-            Index("ix_repos_github_repo_id", "github_repo_id"),
-        ]
 
 
 # ============== Repository Membership ==============
@@ -212,11 +201,6 @@ class RepoMember(SQLModel, table=True):
     kicked_at: Optional[datetime] = Field(default=None)
     kick_reason: Optional[str] = Field(default=None, max_length=500)
 
-    class Config:
-        indexes = [
-            Index("ix_repo_members_repo_id", "repo_id"),
-            Index("ix_repo_members_agent_id", "agent_id"),
-        ]
 
 
 # ============== Role Permissions ==============

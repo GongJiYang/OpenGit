@@ -1,4 +1,3 @@
-import asyncio
 import hashlib
 import hmac
 import json
@@ -10,27 +9,34 @@ import subprocess
 import tempfile
 import time
 from datetime import date, datetime, timezone
-from typing import Any, Optional
+from typing import Any, Optional, Tuple
+from uuid import UUID
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from sqlmodel import Session, select
 
 from agenthub_execution_vmm.guard import ExecutionGuard
 from agenthub_protocol.path_utils import ensure_safe_path
+from agenthub_protocol.schemas import TRACE_COMMIT_PROTOCOL_VERSION
+from agenthub_protocol.signing import (
+    compute_binding_hash,
+    compute_diff_hash_from_patch,
+    compute_reasoning_hash,
+    get_trace_signing_secret,
+    sign_trace_commit,
+)
 from agenthub_protocol.validator import TraceValidator
 from core.middleware import limiter
 from core.security import STORE_ROOT, ensure_safe_ref, get_secure_repo_path
+from core.settings import get_settings
 from dependencies.auth import require_active_identity, require_agent
-from dependencies.services import get_sandbox
 from git_tree_service import GitTreeService
 from persistence import Bounty, CommitRecord, get_session
-from schemas.commits import BlackboxReport, CommitRequest, VerificationRequest
+from schemas.commits import BlackboxReport, CommitRequest, CommitResponse, VerificationRequest
+from agent_auth.models.runner import ComputeJob, ComputeJobStatus, ExecutionMode, RepoExecutionConfig
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
-
-MAX_CONCURRENT_RUNS = int(os.getenv("MAX_CONCURRENT_RUNS", "3"))
-execution_semaphore = asyncio.Semaphore(MAX_CONCURRENT_RUNS)
 
 
 class DailyBudgetTracker:
@@ -94,6 +100,42 @@ class DailyBudgetTracker:
 budget_tracker = DailyBudgetTracker(limit=10.0)
 
 
+def _resolve_execution_mode(
+    session: Session,
+    bounty: Bounty,
+    sandbox_provider: str,
+) -> Tuple[ExecutionMode, str, Optional[UUID]]:
+    """Resolve execution mode with explicit precedence and transparency source."""
+    selected_execution_mode = ExecutionMode.SHARED_LOCAL
+    source = "default"
+    repo_uuid: Optional[UUID] = None
+
+    if bounty.repo_id:
+        try:
+            repo_uuid = UUID(str(bounty.repo_id))
+        except (TypeError, ValueError):
+            repo_uuid = None
+            logger.warning("[automation] invalid bounty.repo_id for execution config lookup: %s", bounty.repo_id)
+
+    if repo_uuid:
+        try:
+            repo_exec_config = session.exec(
+                select(RepoExecutionConfig).where(RepoExecutionConfig.repo_id == repo_uuid)
+            ).first()
+        except Exception:
+            repo_exec_config = None
+
+        if repo_exec_config:
+            selected_execution_mode = repo_exec_config.execution_mode
+            source = "repo_execution_config"
+
+    if source != "repo_execution_config" and sandbox_provider == "runner":
+        selected_execution_mode = ExecutionMode.SELF_HOSTED
+        source = "sandbox_provider"
+
+    return selected_execution_mode, source, repo_uuid
+
+
 @router.post("/api/v1/repos/{repo_name}/commit")
 @router.post("/repos/{repo_name}/commit")
 @limiter.limit("10/minute")
@@ -103,12 +145,17 @@ async def api_commit(
     req: CommitRequest,
     session: Session = Depends(get_session),
     agent: Any = Depends(require_agent),
-):
+) -> CommitResponse:
     """
     Submit code via API (no git client needed).
     Creates files and commits to the bare repo.
     """
     trusted_agent_id = str(agent.id)
+    trusted_agent_uuid: Optional[UUID] = None
+    try:
+        trusted_agent_uuid = UUID(trusted_agent_id)
+    except (TypeError, ValueError):
+        logger.warning("[commit] trusted agent id is not a valid UUID: %s", trusted_agent_id)
     if trusted_agent_id != req.agent_id:
         raise HTTPException(status_code=403, detail="Agent ID mismatch")
     bare_repo_path = get_secure_repo_path(repo_name)
@@ -119,6 +166,7 @@ async def api_commit(
     work_dir = tempfile.mkdtemp(prefix="agenthub_commit_")
     bounty = None
     bounty_transitioned = False
+    estimated_timeout_seconds = 300
 
     def rollback_bounty_transition() -> None:
         nonlocal bounty, bounty_transitioned
@@ -168,16 +216,25 @@ async def api_commit(
         # Stage all changes
         subprocess.run(["git", "add", "-A"], cwd=work_dir, check=True, capture_output=True)
 
-        # Determine Branch Name (Level isolation) with high-entropy suffix
-        suffix = secrets.token_hex(4)
-        if req.bounty_id:
-            branch_name = f"agent/{trusted_agent_id}/bounty_{req.bounty_id}-{suffix}"
-        else:
+        def allocate_branch_name() -> str:
+            suffix = secrets.token_hex(8)
+            if req.bounty_id:
+                return f"agent/{trusted_agent_id}/bounty_{req.bounty_id}-{suffix}"
             ts = int(time.time())
-            branch_name = f"agent/{trusted_agent_id}/dev_{ts}-{suffix}"
-        ensure_safe_ref(branch_name)
+            return f"agent/{trusted_agent_id}/dev_{ts}-{suffix}"
 
-        # Create and switch to the new branch
+        def is_branch_conflict(stderr: str) -> bool:
+            lowered = (stderr or "").lower()
+            return (
+                "non-fast-forward" in lowered
+                or "failed to push some refs" in lowered
+                or "cannot lock ref" in lowered
+                or "already exists" in lowered
+            )
+
+        # Determine branch name and create branch
+        branch_name = allocate_branch_name()
+        ensure_safe_ref(branch_name)
         subprocess.run(["git", "checkout", "-b", branch_name], cwd=work_dir, check=True, capture_output=True)
 
         # Collect traceability metadata available before commit
@@ -192,6 +249,7 @@ async def api_commit(
         # --- Automated Verification (P1 MVP) ---
         v_exit_code = None
         v_stdout = None
+        verification_mode: Optional[str] = None
 
         if req.bounty_id:
             bounty = session.get(Bounty, req.bounty_id)
@@ -215,7 +273,15 @@ async def api_commit(
                 )
 
             # [Blind-Spot 2] Rough Cost Check
-            est_cost = ExecutionGuard.estimate_cost(is_new_session=True)
+            estimated_timeout_seconds = max(300, min(12 * 3600, (bounty.estimated_hours or 1) * 3600))
+            est_cost = ExecutionGuard.estimate_cost(
+                is_new_session=True,
+                command_count=1,
+                timeout_seconds=estimated_timeout_seconds,
+                command_str=bounty.test_command or "pytest",
+                sandbox_provider=get_settings().normalized_sandbox_provider,
+                cpu_cores=None,
+            )
             if not budget_tracker.check_and_record(est_cost):
                 raise HTTPException(status_code=402, detail="Daily platform budget exceeded. Try again tomorrow.")
 
@@ -241,13 +307,31 @@ async def api_commit(
                 session.refresh(refreshed_bounty)
                 bounty = refreshed_bounty
 
+        tree_hash_result = subprocess.run(["git", "write-tree"], cwd=work_dir, check=True, capture_output=True, text=True)
+        tree_hash = tree_hash_result.stdout.strip()
+
+        diff_patch_result = subprocess.run(
+            ["git", "diff", "--cached", "--binary", "--full-index"],
+            cwd=work_dir,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        diff_patch = diff_patch_result.stdout
+        diff_hash = compute_diff_hash_from_patch(diff_patch)
+        reasoning_hash = compute_reasoning_hash(req.reasoning_trace)
+
         # Build TraceCommit JSON
         trace_commit = {
+            "protocol_version": TRACE_COMMIT_PROTOCOL_VERSION,
+            "tree_hash": tree_hash,
+            "diff_hash": diff_hash,
+            "reasoning_hash": reasoning_hash,
             "diff_summary": req.diff_summary,
             "reasoning_trace": req.reasoning_trace,
-            "rejected_alternatives": [],
+            "rejected_alternatives": req.rejected_alternatives,
             "context_snapshot": {
-                "file_paths": list(req.files.keys()),
+                "file_paths": sorted(list(req.files.keys())),
                 "doc_references": [],
                 "env_vars_accessed": [],
                 "library_versions": {},
@@ -255,6 +339,7 @@ async def api_commit(
             "intent": {
                 "description": req.intent_description,
                 "category": req.intent_category,
+                "vector": req.intent_vector,
             },
             "author": {
                 "agent_id": trusted_agent_id,
@@ -263,10 +348,25 @@ async def api_commit(
             "parent_sha": parent_sha,
             "timestamp": trace_timestamp,
         }
+        trace_commit["binding_hash"] = compute_binding_hash(trace_commit)
+
+        signing_secret = get_trace_signing_secret()
+        if not signing_secret:
+            raise HTTPException(status_code=500, detail="Trace signing secret is not configured")
+
+        trace_commit["signature"] = sign_trace_commit(
+            trace_commit,
+            signing_secret,
+            agent_id=trusted_agent_id,
+        )
 
         # Validate TraceCommit schema and logic before committing
         try:
-            TraceValidator.validate_commit(trace_commit)
+            TraceValidator.validate_commit(
+                trace_commit,
+                require_parent_sha=bool(parent_sha),
+                require_timezone_aware_timestamp=True,
+            )
         except ValueError as ve:
             raise HTTPException(status_code=400, detail=str(ve))
 
@@ -286,52 +386,144 @@ async def api_commit(
             },
         )
 
-        # Push specific branch to bare repo
-        result = subprocess.run([
-            "git",
-            "push",
-            "origin",
-            branch_name,
-        ], cwd=work_dir, capture_output=True, text=True)
+        # Push branch to bare repo (retry on branch-name conflict)
+        max_push_attempts = 3
+        for attempt in range(max_push_attempts):
+            result = subprocess.run([
+                "git",
+                "push",
+                "origin",
+                branch_name,
+            ], cwd=work_dir, capture_output=True, text=True)
 
-        if result.returncode != 0:
+            if result.returncode == 0:
+                break
+
+            if attempt < max_push_attempts - 1 and is_branch_conflict(result.stderr):
+                old_branch_name = branch_name
+                branch_name = allocate_branch_name()
+                ensure_safe_ref(branch_name)
+                subprocess.run(["git", "branch", "-m", branch_name], cwd=work_dir, check=True, capture_output=True)
+                logger.warning(
+                    "[commit] push branch conflict, retrying with new branch name: %s -> %s",
+                    old_branch_name,
+                    branch_name,
+                )
+                continue
+
             # Avoid leaking git stderr to clients
             logger.error("[commit] git push failed: %s", (result.stderr[:2000] if result.stderr else ""))
             raise HTTPException(status_code=502, detail="Git push failed")
 
+        queue_runner_job = False
+        runner_job_repo_id: Optional[UUID] = None
+        runner_job_test_cmd: Optional[str] = None
+        runner_job_id: Optional[str] = None
+        resolved_execution_mode: Optional[ExecutionMode] = None
+        execution_mode_source: Optional[str] = None
+
         if bounty:
             verification_mode = (bounty.verification_mode or "auto").lower()
             test_cmd = bounty.test_command or "pytest"
+            sandbox_provider = get_settings().normalized_sandbox_provider
+            resolved_execution_mode, execution_mode_source, runner_job_repo_id = _resolve_execution_mode(
+                session=session,
+                bounty=bounty,
+                sandbox_provider=sandbox_provider,
+            )
+
             if verification_mode == "auto":
-                sb = get_sandbox(request)
-                if sb is None:
-                    raise HTTPException(status_code=503, detail="Sandbox is disabled")
-                logger.info("[automation] Running validation for Bounty %s: %s", bounty.id, test_cmd)
-                try:
-                    async with execution_semaphore:
-                        # Use a temporary worktree cloned from the bare repo for running tests
-                        verify_work_dir = tempfile.mkdtemp(prefix="agenthub_auto_verify_")
-                        try:
-                            subprocess.run(["git", "clone", bare_repo_path, verify_work_dir], check=True, capture_output=True)
-                            v_exit_code, v_stdout = sb.run_tests(verify_work_dir, test_cmd)
-                        finally:
-                            shutil.rmtree(verify_work_dir, ignore_errors=True)
-                except Exception as e:
-                    v_exit_code, v_stdout = -1, f"Execution failed under semaphore: {str(e)}"
+                if resolved_execution_mode == ExecutionMode.SELF_HOSTED:
+                    queue_runner_job = True
+                    runner_job_test_cmd = test_cmd
+                    v_exit_code, v_stdout = None, (
+                        "Runner-based verification required: auto verification is delegated to runner polling"
+                    )
+                    logger.info(
+                        "[automation] selected runner verification mode bounty=%s provider=%s mode=%s source=%s cmd=%s",
+                        bounty.id,
+                        sandbox_provider,
+                        resolved_execution_mode.value,
+                        execution_mode_source,
+                        test_cmd,
+                    )
+                elif resolved_execution_mode == ExecutionMode.YOLO_MODE:
+                    v_exit_code, v_stdout = None, (
+                        "YOLO mode enabled: automated verification is skipped and submission is routed to human review"
+                    )
+                    logger.info(
+                        "[automation] selected yolo verification mode bounty=%s provider=%s mode=%s source=%s cmd=%s",
+                        bounty.id,
+                        sandbox_provider,
+                        resolved_execution_mode.value,
+                        execution_mode_source,
+                        test_cmd,
+                    )
+                else:
+                    v_exit_code, v_stdout = None, (
+                        "Auto verification deferred: local sandbox verification is disabled"
+                    )
+                    logger.info(
+                        "[automation] deferred auto verification for bounty=%s provider=%s mode=%s source=%s cmd=%s",
+                        bounty.id,
+                        sandbox_provider,
+                        resolved_execution_mode.value,
+                        execution_mode_source,
+                        test_cmd,
+                    )
             elif verification_mode == "human":
                 v_exit_code, v_stdout = None, "Human verification required"
             elif verification_mode == "external":
                 v_exit_code, v_stdout = None, "External CI verification required"
             else:
-                v_exit_code, v_stdout = -1, f"Unknown verification_mode: {verification_mode}"
+                raise HTTPException(status_code=500, detail="Invalid bounty verification_mode")
 
         # Save record to history
         # Capture SHA
         sha_result = subprocess.run(["git", "rev-parse", "HEAD"], cwd=work_dir, capture_output=True, text=True)
-        sha = sha_result.stdout.strip() if sha_result.returncode == 0 else None
+        if sha_result.returncode != 0:
+            raise HTTPException(status_code=500, detail="Failed to resolve commit SHA")
+        sha = sha_result.stdout.strip()
+        if not sha:
+            raise HTTPException(status_code=500, detail="Failed to resolve commit SHA")
         persisted_trace_json = {**trace_commit}
         if sha:
             persisted_trace_json["commit_sha"] = sha
+            persisted_trace_json["binding_hash"] = compute_binding_hash(persisted_trace_json)
+            persisted_trace_json["signature"] = sign_trace_commit(
+                persisted_trace_json,
+                signing_secret,
+                agent_id=trusted_agent_id,
+            )
+
+        try:
+            validated_trace = TraceValidator.validate_commit(
+                persisted_trace_json,
+                expected_commit_sha=sha,
+                require_commit_sha=True,
+                require_parent_sha=bool(parent_sha),
+                require_timezone_aware_timestamp=True,
+            )
+        except ValueError as ve:
+            raise HTTPException(status_code=500, detail=f"Invalid persisted TraceCommit: {ve}")
+
+        quality_warnings = TraceValidator.check_quality(validated_trace)
+        if quality_warnings:
+            persisted_trace_json["quality_warnings"] = quality_warnings
+
+        if bounty and resolved_execution_mode:
+            persisted_trace_json["execution_policy"] = {
+                "mode": resolved_execution_mode.value,
+                "source": execution_mode_source,
+                "verification_mode": verification_mode,
+                "runner_job_queued": queue_runner_job,
+            }
+
+        task_tree_sync = {
+            "attempted": True,
+            "status": "pending",
+            "error": None,
+        }
 
         # [Blind-Spot 1] Human-in-the-loop: status='pending'
         record = CommitRecord(
@@ -352,37 +544,117 @@ async def api_commit(
         try:
             session.add(record)
             session.commit()
+            session.refresh(record)
         except Exception as db_err:
             session.rollback()
             logger.exception("[commit] failed to persist commit record after git push: %s", db_err)
-            raise HTTPException(status_code=500, detail="Commit persisted to git, but failed to record history")
+            raise HTTPException(status_code=502, detail="Commit persisted to git, but failed to record history")
+
+        if queue_runner_job:
+            env_fingerprint = {
+                "repo_name": repo_name,
+                "branch_name": branch_name,
+                "trace_commit_sha": sha,
+            }
+            compute_job = ComputeJob(
+                bounty_id=str(bounty.id),
+                repo_id=runner_job_repo_id,
+                submission_id=str(record.id),
+                execution_mode=ExecutionMode.SELF_HOSTED,
+                requester_user_id=None,
+                requester_agent_id=trusted_agent_uuid,
+                requester_type="agent",
+                test_command=runner_job_test_cmd or "pytest",
+                code_url=None,
+                code_branch=branch_name,
+                code_commit=sha,
+                env_vars=env_fingerprint,
+                timeout_seconds=estimated_timeout_seconds,
+                status=ComputeJobStatus.PENDING,
+            )
+            try:
+                session.add(compute_job)
+                session.commit()
+                session.refresh(compute_job)
+                runner_job_id = str(compute_job.id)
+                logger.info(
+                    "[automation] queued runner compute job bounty=%s commit_id=%s job_id=%s mode=%s cmd=%s",
+                    bounty.id,
+                    record.id,
+                    compute_job.id,
+                    compute_job.execution_mode.value,
+                    runner_job_test_cmd,
+                )
+            except Exception as runner_job_err:
+                session.rollback()
+                logger.exception("[commit] failed to create runner compute job after commit persist: %s", runner_job_err)
+                raise HTTPException(status_code=502, detail="Commit recorded, but failed to enqueue runner compute job")
 
         # Sync task tree to repository after submission
         try:
             tree_service = GitTreeService(session, STORE_ROOT)
             tree_service.sync_repo_task_tree(repo_name, trusted_agent_id)
+            task_tree_sync["status"] = "synced"
+            persisted_trace_json["task_tree_sync"] = {"status": "synced"}
+            persisted_trace_json["binding_hash"] = compute_binding_hash(persisted_trace_json)
+            persisted_trace_json["signature"] = sign_trace_commit(
+                persisted_trace_json,
+                signing_secret,
+                agent_id=trusted_agent_id,
+            )
+            record.trace_json = persisted_trace_json
+            session.add(record)
+            session.commit()
         except Exception as e:
-            logger.warning("Failed to sync task tree after commit: %s", e)
+            err = str(e)[:500]
+            task_tree_sync["status"] = "failed"
+            task_tree_sync["error"] = err
+            persisted_trace_json["task_tree_sync"] = {"status": "failed", "error": err}
+            persisted_trace_json["binding_hash"] = compute_binding_hash(persisted_trace_json)
+            persisted_trace_json["signature"] = sign_trace_commit(
+                persisted_trace_json,
+                signing_secret,
+                agent_id=trusted_agent_id,
+            )
+            try:
+                record.trace_json = persisted_trace_json
+                session.add(record)
+                session.commit()
+            except Exception as persist_err:
+                session.rollback()
+                logger.warning("[commit] failed to persist task tree sync failure: %s", persist_err)
+            logger.warning("[commit] task tree sync failed repo=%s agent=%s error=%s", repo_name, trusted_agent_id, err)
 
-        return {
-            "success": True,
-            "repo": repo_name,
-            "files_committed": list(req.files.keys()),
-            "agent": req.agent_id,
-            "sha": sha if "sha" in locals() else None,
-            "verification": {
+        return CommitResponse(
+            success=True,
+            repo=repo_name,
+            files_committed=list(req.files.keys()),
+            agent=req.agent_id,
+            sha=sha if "sha" in locals() else None,
+            quality_warnings=quality_warnings,
+            verification={
                 "exit_code": v_exit_code,
                 "passed": v_exit_code == 0 if v_exit_code is not None else None,
+                "runner_job_id": runner_job_id,
+                "execution_mode": resolved_execution_mode.value if resolved_execution_mode else None,
+                "execution_mode_source": execution_mode_source,
             },
-        }
+            task_tree_sync=task_tree_sync,
+        )
 
     except subprocess.CalledProcessError as e:
         rollback_bounty_transition()
 
         # Avoid leaking raw stderr to clients
-        err_msg = e.stderr.decode(errors="replace")[:2000] if getattr(e, "stderr", None) else str(e)
+        stderr = getattr(e, "stderr", None)
+        if isinstance(stderr, (bytes, bytearray)):
+            err_msg = stderr.decode(errors="replace")[:2000]
+        elif isinstance(stderr, str):
+            err_msg = stderr[:2000]
+        else:
+            err_msg = str(e)
         logger.error("[commit] git operation failed: %s", err_msg)
-        raise HTTPException(status_code=500, detail="Git operation failed")
+        raise HTTPException(status_code=502, detail="Git operation failed")
     except HTTPException:
         rollback_bounty_transition()
         raise  # Re-raise HTTP exceptions (403, 404, etc.)

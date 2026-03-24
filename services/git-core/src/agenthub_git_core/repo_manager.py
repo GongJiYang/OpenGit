@@ -1,9 +1,14 @@
+import logging
 import os
+import secrets
 import shutil
 import stat
 import subprocess
 import sys
+from typing import Optional
 
+
+logger = logging.getLogger(__name__)
 
 def _load_ensure_safe_path():
     """Load protocol path utility with monorepo path fallback."""
@@ -16,14 +21,108 @@ def _load_ensure_safe_path():
 
     return ensure_safe_path
 
+
+def _build_runtime_hook_wrapper() -> str:
+    return """#!/bin/sh
+# AgentHub Hook Wrapper (runtime-resolved)
+set -eu
+
+resolve_python() {
+  if [ -n "${AGENTHUB_HOOK_PYTHON:-}" ]; then
+    printf '%s' "${AGENTHUB_HOOK_PYTHON}"
+    return 0
+  fi
+  if command -v python3 >/dev/null 2>&1; then
+    printf '%s' "python3"
+    return 0
+  fi
+  if command -v python >/dev/null 2>&1; then
+    printf '%s' "python"
+    return 0
+  fi
+  return 1
+}
+
+PYTHON_BIN="$(resolve_python || true)"
+if [ -z "${PYTHON_BIN}" ]; then
+  echo "❌ REJECTED: Python runtime not found for AgentHub hook." >&2
+  exit 1
+fi
+
+run_hook_module() {
+  exec "${PYTHON_BIN}" -m agenthub_git_core.hook_logic
+}
+
+if "${PYTHON_BIN}" -c "import importlib.util,sys;sys.exit(0 if importlib.util.find_spec('agenthub_git_core.hook_logic') else 1)" >/dev/null 2>&1; then
+  run_hook_module
+fi
+
+if [ -n "${AGENTHUB_GIT_CORE_SRC:-}" ]; then
+  EXTRA_PYTHONPATH="${AGENTHUB_GIT_CORE_SRC}"
+  if [ -n "${AGENTHUB_PROTOCOL_SRC:-}" ]; then
+    EXTRA_PYTHONPATH="${EXTRA_PYTHONPATH}:${AGENTHUB_PROTOCOL_SRC}"
+  fi
+  export PYTHONPATH="${EXTRA_PYTHONPATH}${PYTHONPATH:+:${PYTHONPATH}}"
+  run_hook_module
+fi
+
+echo "❌ REJECTED: hook runtime unavailable. Install agenthub-git-core package or set AGENTHUB_GIT_CORE_SRC (and AGENTHUB_PROTOCOL_SRC when needed)." >&2
+exit 1
+"""
+
+
 class RepoManager:
     def __init__(self, storage_root: str):
         self.storage_root = os.path.abspath(storage_root)
         os.makedirs(self.storage_root, exist_ok=True)
         self._ensure_safe_path = _load_ensure_safe_path()
 
-    def create_repo(self, repo_name: str) -> str:
+    @staticmethod
+    def _new_operation_id() -> str:
+        return secrets.token_hex(8)
+
+    @staticmethod
+    def _normalize_idempotency_token(token: Optional[str]) -> Optional[str]:
+        if token is None:
+            return None
+        cleaned = token.strip()
+        return cleaned or None
+
+    @staticmethod
+    def _idempotency_marker_path(repo_path: str) -> str:
+        return os.path.join(repo_path, "hooks", ".agenthub-create-idempotency-token")
+
+    @classmethod
+    def _write_idempotency_marker(cls, repo_path: str, token: Optional[str]) -> None:
+        if not token:
+            return
+        marker_path = cls._idempotency_marker_path(repo_path)
+        os.makedirs(os.path.dirname(marker_path), exist_ok=True)
+        with open(marker_path, "w", encoding="utf-8") as marker_file:
+            marker_file.write(token)
+
+    @classmethod
+    def _read_idempotency_marker(cls, repo_path: str) -> Optional[str]:
+        marker_path = cls._idempotency_marker_path(repo_path)
+        if not os.path.exists(marker_path):
+            return None
+        with open(marker_path, "r", encoding="utf-8") as marker_file:
+            return marker_file.read().strip() or None
+
+    def create_repo(
+        self,
+        repo_name: str,
+        *,
+        actor_id: str = "unknown",
+        idempotency_token: Optional[str] = None,
+        request_id: Optional[str] = None,
+    ) -> str:
         """Initialize a bare git repo and install the AgentHub hook."""
+        op_id = self._new_operation_id()
+        idem_token = self._normalize_idempotency_token(idempotency_token)
+        actor = actor_id or "unknown"
+        req_id = request_id or "-"
+
         try:
             repo_path_obj = self._ensure_safe_path(
                 self.storage_root,
@@ -32,47 +131,131 @@ class RepoManager:
             )
             repo_path = str(repo_path_obj)
         except ValueError as e:
+            logger.warning(
+                "[repo_manager][create_repo][rejected] op_id=%s request_id=%s actor=%s repo=%s reason=%s",
+                op_id,
+                req_id,
+                actor,
+                repo_name,
+                str(e),
+            )
             raise ValueError(str(e))
+
         # Enforce simple naming: single level and .git suffix
         if "/" in repo_name or "\\" in repo_name:
+            logger.warning(
+                "[repo_manager][create_repo][rejected] op_id=%s request_id=%s actor=%s repo=%s reason=nested-path",
+                op_id,
+                req_id,
+                actor,
+                repo_name,
+            )
             raise ValueError("Invalid repository name: nested paths are not allowed")
         if not repo_name.endswith(".git"):
+            logger.warning(
+                "[repo_manager][create_repo][rejected] op_id=%s request_id=%s actor=%s repo=%s reason=missing-dot-git",
+                op_id,
+                req_id,
+                actor,
+                repo_name,
+            )
             raise ValueError("Invalid repository name: must end with .git")
 
         if os.path.exists(repo_path):
+            if idem_token:
+                existing_token = self._read_idempotency_marker(repo_path)
+                if existing_token and existing_token == idem_token:
+                    logger.info(
+                        "[repo_manager][create_repo][idempotent-hit] op_id=%s request_id=%s actor=%s repo=%s",
+                        op_id,
+                        req_id,
+                        actor,
+                        repo_name,
+                    )
+                    return repo_path
+            logger.warning(
+                "[repo_manager][create_repo][rejected] op_id=%s request_id=%s actor=%s repo=%s reason=already-exists",
+                op_id,
+                req_id,
+                actor,
+                repo_name,
+            )
             raise ValueError("Repository already exists")
+
+        logger.info(
+            "[repo_manager][create_repo][start] op_id=%s request_id=%s actor=%s repo=%s",
+            op_id,
+            req_id,
+            actor,
+            repo_name,
+        )
 
         subprocess.run(["git", "init", "--bare", repo_path], check=True, capture_output=True)
         try:
-            self.install_hook(repo_path)
+            self.install_hook(repo_path, actor_id=actor, request_id=req_id, op_id=op_id)
+            self._write_idempotency_marker(repo_path, idem_token)
         except Exception as e:
             shutil.rmtree(repo_path, ignore_errors=True)
+            logger.exception(
+                "[repo_manager][create_repo][rollback] op_id=%s request_id=%s actor=%s repo=%s error=%s",
+                op_id,
+                req_id,
+                actor,
+                repo_name,
+                str(e),
+            )
             raise RuntimeError(f"Failed to install hook: {e}")
+
+        logger.info(
+            "[repo_manager][create_repo][success] op_id=%s request_id=%s actor=%s repo=%s path=%s",
+            op_id,
+            req_id,
+            actor,
+            repo_name,
+            repo_path,
+        )
         return repo_path
 
-    def install_hook(self, repo_path: str):
-        """Symlink or write the hook script."""
-        hook_path = os.path.join(repo_path, "hooks", "pre-receive")
+    def install_hook(
+        self,
+        repo_path: str,
+        *,
+        actor_id: str = "system",
+        request_id: Optional[str] = None,
+        op_id: Optional[str] = None,
+    ):
+        """Install runtime-resilient pre-receive hook wrapper."""
+        hooks_dir = os.path.join(repo_path, "hooks")
+        os.makedirs(hooks_dir, exist_ok=True)
+        hook_path = os.path.join(hooks_dir, "pre-receive")
 
-        # We need to find the absolute path to our hook_logic.py
-        # Use dynamic path relative to this file
-        base_dir = os.path.dirname(os.path.abspath(__file__))
-        script_path = os.path.join(base_dir, "hook_logic.py")
-
-        # Use sys.executable to ensure we use the same virtualenv
-        python_executable = sys.executable
-
-        hook_content = f"""#!/bin/sh
-# AgentHub Hook Wrapper
-# Using verified python path: {python_executable}
-"{python_executable}" "{script_path}"
-"""
-        with open(hook_path, "w") as f:
-            f.write(hook_content)
+        with open(hook_path, "w", encoding="utf-8") as f:
+            f.write(_build_runtime_hook_wrapper())
 
         st = os.stat(hook_path)
         os.chmod(hook_path, st.st_mode | stat.S_IEXEC)
-        print(f"🪝 Hook installed at {hook_path}")
+        logger.info(
+            "[repo_manager][install_hook] op_id=%s request_id=%s actor=%s repo_path=%s hook=%s",
+            op_id or "-",
+            request_id or "-",
+            actor_id or "unknown",
+            repo_path,
+            hook_path,
+        )
+
+    def refresh_existing_hooks(self) -> int:
+        """Reinstall pre-receive wrapper for all existing repositories."""
+        refreshed = 0
+        if not os.path.isdir(self.storage_root):
+            return refreshed
+
+        for entry in os.scandir(self.storage_root):
+            if not entry.is_dir() or not entry.name.endswith(".git"):
+                continue
+            self.install_hook(entry.path)
+            refreshed += 1
+
+        return refreshed
 
 if __name__ == "__main__":
     # Test creation

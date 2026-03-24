@@ -124,6 +124,7 @@ def _memory_write_success(skill_name: str, args: Dict[str, Any], result: Dict[st
             action="add",
             content=json.dumps(payload, ensure_ascii=False),
             agent_id=_AGENT.agent_id,
+            role=_AGENT.role,
             metadata={
                 "skill_name": skill_name,
                 "schema_version": 1,

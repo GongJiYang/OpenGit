@@ -18,9 +18,11 @@ def test_determine_actions_uses_explicit_priority_order():
 def test_run_fallback_commands_runs_next_segment_on_failure(monkeypatch):
     manager = HotReloadManager()
     calls = []
+    shells = []
 
     def fake_run(tokens, shell, capture_output, text, cwd=None):
         calls.append(tokens)
+        shells.append(shell)
 
         class Result:
             def __init__(self, returncode):
@@ -37,6 +39,7 @@ def test_run_fallback_commands_runs_next_segment_on_failure(monkeypatch):
     result = manager._run_fallback_commands("first fail || second ok", cwd=".")
     assert result.returncode == 0
     assert calls == [["first", "fail"], ["second", "ok"]]
+    assert shells == [False, False]
 
 
 def test_run_safe_command_uses_shell_false(monkeypatch):

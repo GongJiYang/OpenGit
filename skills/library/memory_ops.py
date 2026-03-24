@@ -10,16 +10,17 @@ from skills.base import Skill
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../../apps/api-gateway/src"))
 
 try:
-    from agent_auth.services.memory_service import memory_service
+    from agent_auth.services.memory_service import get_memory_service
 except ImportError:
     # Fallback/Mock for environments where the service isn't available
-    memory_service = None
+    get_memory_service = None
 
 class PersistentMemoryInput(BaseModel):
     """Parameters for persistent memory operations."""
     action: str = Field(..., description="Action to perform: 'add' or 'search'")
     content: str = Field(..., description="The content to remember or the query to search for")
     agent_id: str = Field(..., description="The unique ID of the agent")
+    role: Optional[str] = Field(None, description="Optional role namespace for memory isolation")
     metadata: Optional[dict] = Field(None, description="Optional metadata for the memory (only for 'add')")
 
 class PersistentMemorySkill(Skill):
@@ -31,16 +32,27 @@ class PersistentMemorySkill(Skill):
     description = "Access long-term memory. Use 'add' to save insights/skills and 'search' to find relevant past experiences."
     input_schema = PersistentMemoryInput
 
-    def execute(self, action: str, content: str, agent_id: str, metadata: dict = None) -> dict:
-        if not memory_service:
+    def execute(
+        self,
+        action: str,
+        content: str,
+        agent_id: str,
+        role: Optional[str] = None,
+        metadata: dict = None,
+    ) -> dict:
+        if not get_memory_service:
             return {"error": "MemoryService not available in current environment"}
 
+        service = get_memory_service()
+
         if action == "add":
-            res = memory_service.add_memory(agent_id, content, metadata)
+            res = service.add_memory(agent_id, content, metadata, role=role)
+            if res is None:
+                return {"status": "error", "message": "Memory save failed", "result": None}
             return {"status": "success", "message": "Memory saved", "result": res}
 
         elif action == "search":
-            memories = memory_service.get_memories(agent_id, content)
+            memories = service.get_memories(agent_id, content, role=role)
             return {
                 "status": "success",
                 "count": len(memories),

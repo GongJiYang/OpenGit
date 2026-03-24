@@ -1,21 +1,66 @@
 import json
 import os
+import re
 import subprocess
 import sys
 
 
-def _load_protocol_runtime():
-    """Load protocol classes with monorepo path fallback."""
-    protocol_path = os.path.abspath(
-        os.path.join(os.path.dirname(__file__), "../../../../packages/protocol/src")
-    )
-    if protocol_path not in sys.path:
-        sys.path.append(protocol_path)
+DEFAULT_PROTECTED_BRANCH_REFS = {"refs/heads/main", "refs/heads/master"}
+PROTECTED_BRANCHES_ENV = "TRACE_COMMIT_PROTECTED_BRANCHES"
+ZERO_SHA = "0000000000000000000000000000000000000000"
+ALLOWED_PUSH_REF_PATTERNS = (
+    re.compile(r"^refs/heads/agent/([^/\s]+)/.+$"),
+    re.compile(r"^refs/heads/system/([^/\s]+)/.+$"),
+)
 
+MAX_PUSH_COMMITS_ENV = "TRACE_COMMIT_MAX_PUSH_COMMITS"
+MAX_PUSH_OBJECTS_ENV = "TRACE_COMMIT_MAX_PUSH_OBJECTS"
+MAX_PUSH_OBJECT_BYTES_ENV = "TRACE_COMMIT_MAX_PUSH_OBJECT_BYTES"
+MAX_PUSH_TOTAL_OBJECT_BYTES_ENV = "TRACE_COMMIT_MAX_PUSH_TOTAL_OBJECT_BYTES"
+MAX_PUSH_QUARANTINE_BYTES_ENV = "TRACE_COMMIT_MAX_PUSH_QUARANTINE_BYTES"
+MAX_REPO_SIZE_BYTES_ENV = "TRACE_COMMIT_MAX_REPO_SIZE_BYTES"
+
+DEFAULT_MAX_PUSH_COMMITS = 200
+DEFAULT_MAX_PUSH_OBJECTS = 10000
+DEFAULT_MAX_PUSH_OBJECT_BYTES = 10 * 1024 * 1024
+DEFAULT_MAX_PUSH_TOTAL_OBJECT_BYTES = 100 * 1024 * 1024
+DEFAULT_MAX_PUSH_QUARANTINE_BYTES = 150 * 1024 * 1024
+DEFAULT_MAX_REPO_SIZE_BYTES = 5 * 1024 * 1024 * 1024
+
+
+def _get_protected_branch_refs():
+    protected_refs = set(DEFAULT_PROTECTED_BRANCH_REFS)
+    raw_value = os.getenv(PROTECTED_BRANCHES_ENV, "")
+    for item in raw_value.split(","):
+        branch = item.strip()
+        if not branch:
+            continue
+        if branch.startswith("refs/heads/"):
+            protected_refs.add(branch)
+        elif not branch.startswith("refs/"):
+            protected_refs.add(f"refs/heads/{branch}")
+    return protected_refs
+
+
+def _load_protocol_runtime():
+    """Load protocol classes from installed/runtime PYTHONPATH only."""
     from agenthub_protocol import TraceCommit
+    from agenthub_protocol.signing import (
+        compute_diff_hash_from_patch,
+        get_trace_signing_secret,
+        is_trace_signature_required,
+        verify_trace_commit_signature,
+    )
     from agenthub_protocol.validator import TraceValidator
 
-    return TraceCommit, TraceValidator
+    return (
+        TraceCommit,
+        TraceValidator,
+        compute_diff_hash_from_patch,
+        get_trace_signing_secret,
+        is_trace_signature_required,
+        verify_trace_commit_signature,
+    )
 
 
 def get_commit_message(commit_sha: str) -> str:
@@ -25,12 +70,140 @@ def get_commit_message(commit_sha: str) -> str:
     return result.stdout.strip()
 
 
+def _extract_ref_actor(ref: str) -> str:
+    for pattern in ALLOWED_PUSH_REF_PATTERNS:
+        match = pattern.match(ref)
+        if match:
+            return match.group(1)
+    raise ValueError(
+        f"Unsupported ref '{ref}'. Allowed refs: refs/heads/agent/<agent_id>/* or refs/heads/system/<actor_id>/*"
+    )
+
+
+def _env_int(name: str, default: int) -> int:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    value = int(raw)
+    if value < 0:
+        raise ValueError(f"Environment variable {name} must be >= 0")
+    return value
+
+
+def _iter_new_commits(old_sha: str, new_sha: str) -> list[str]:
+    rev_range = new_sha if old_sha == ZERO_SHA else f"{old_sha}..{new_sha}"
+    try:
+        return subprocess.check_output(["git", "rev-list", rev_range]).decode().splitlines()
+    except subprocess.CalledProcessError as e:
+        raise ValueError(f"Failed to enumerate commits: {str(e)}")
+
+
+def _collect_push_object_sizes(old_sha: str, new_sha: str) -> tuple[int, int, int]:
+    old = old_sha if old_sha != ZERO_SHA else ""
+    cmd = ["git", "rev-list", "--objects", "--no-object-names", new_sha]
+    if old:
+        cmd.append(f"^{old}")
+    try:
+        object_ids = [line.strip() for line in subprocess.check_output(cmd).decode().splitlines() if line.strip()]
+    except subprocess.CalledProcessError as e:
+        raise ValueError(f"Failed to enumerate pushed objects: {str(e)}")
+
+    if not object_ids:
+        return 0, 0, 0
+
+    max_bytes = 0
+    total_bytes = 0
+    for i in range(0, len(object_ids), 500):
+        chunk = object_ids[i : i + 500]
+        try:
+            sizes_raw = subprocess.check_output(["git", "cat-file", "--batch-check=%(objectsize)"] + chunk).decode().splitlines()
+        except subprocess.CalledProcessError as e:
+            raise ValueError(f"Failed to inspect object sizes: {str(e)}")
+        for size_line in sizes_raw:
+            size_val = int(size_line.strip())
+            total_bytes += size_val
+            if size_val > max_bytes:
+                max_bytes = size_val
+
+    return len(object_ids), max_bytes, total_bytes
+
+
+def _dir_size_bytes(path: str) -> int:
+    total = 0
+    if not path or not os.path.exists(path):
+        return 0
+    for root, _, files in os.walk(path):
+        for filename in files:
+            fp = os.path.join(root, filename)
+            try:
+                total += os.path.getsize(fp)
+            except OSError:
+                continue
+    return total
+
+
+def _enforce_push_size_limits(old_sha: str, new_sha: str, commit_count: int) -> None:
+    max_push_commits = _env_int(MAX_PUSH_COMMITS_ENV, DEFAULT_MAX_PUSH_COMMITS)
+    max_push_objects = _env_int(MAX_PUSH_OBJECTS_ENV, DEFAULT_MAX_PUSH_OBJECTS)
+    max_push_object_bytes = _env_int(MAX_PUSH_OBJECT_BYTES_ENV, DEFAULT_MAX_PUSH_OBJECT_BYTES)
+    max_push_total_object_bytes = _env_int(MAX_PUSH_TOTAL_OBJECT_BYTES_ENV, DEFAULT_MAX_PUSH_TOTAL_OBJECT_BYTES)
+    max_push_quarantine_bytes = _env_int(MAX_PUSH_QUARANTINE_BYTES_ENV, DEFAULT_MAX_PUSH_QUARANTINE_BYTES)
+    max_repo_size_bytes = _env_int(MAX_REPO_SIZE_BYTES_ENV, DEFAULT_MAX_REPO_SIZE_BYTES)
+
+    if max_push_commits and commit_count > max_push_commits:
+        raise ValueError(
+            f"Push commit count {commit_count} exceeds limit {max_push_commits}."
+        )
+
+    object_count, max_object_size, total_object_size = _collect_push_object_sizes(old_sha, new_sha)
+    if max_push_objects and object_count > max_push_objects:
+        raise ValueError(
+            f"Push object count {object_count} exceeds limit {max_push_objects}."
+        )
+    if max_push_object_bytes and max_object_size > max_push_object_bytes:
+        raise ValueError(
+            f"Largest pushed object {max_object_size} bytes exceeds limit {max_push_object_bytes}."
+        )
+    if max_push_total_object_bytes and total_object_size > max_push_total_object_bytes:
+        raise ValueError(
+            f"Total pushed object size {total_object_size} bytes exceeds limit {max_push_total_object_bytes}."
+        )
+
+    quarantine_dir = os.getenv("GIT_QUARANTINE_PATH", "")
+    quarantine_size = _dir_size_bytes(quarantine_dir)
+    if max_push_quarantine_bytes and quarantine_size > max_push_quarantine_bytes:
+        raise ValueError(
+            f"Quarantine pack size {quarantine_size} bytes exceeds limit {max_push_quarantine_bytes}."
+        )
+
+    git_dir = os.getenv("GIT_DIR", "")
+    repo_size = _dir_size_bytes(git_dir)
+    if max_repo_size_bytes and repo_size > max_repo_size_bytes:
+        raise ValueError(
+            f"Repository size {repo_size} bytes exceeds limit {max_repo_size_bytes}."
+        )
+
+
 def validate_push() -> None:
     """
     Standard Git Pre-Receive Hook.
     Reads (old_sha, new_sha, ref_name) from stdin.
     """
-    TraceCommit, TraceValidator = _load_protocol_runtime()
+    (
+        _,
+        TraceValidator,
+        compute_diff_hash_from_patch,
+        get_trace_signing_secret,
+        is_trace_signature_required,
+        verify_trace_commit_signature,
+    ) = _load_protocol_runtime()
+    signature_required = is_trace_signature_required()
+    signing_secret = get_trace_signing_secret()
+    protected_branch_refs = _get_protected_branch_refs()
+
+    if signature_required and not signing_secret:
+        print("❌ REJECTED: Trace signature required but signing secret is not configured.", file=sys.stderr)
+        sys.exit(1)
 
     print("🤖 AgentHub Guard: Inspecting incoming commits...", file=sys.stderr)
 
@@ -42,28 +215,30 @@ def validate_push() -> None:
 
     for line in input_lines:
         old_sha, new_sha, ref = line.split()
-        if not ref.startswith("refs/heads/"):
+        try:
+            ref_actor_id = _extract_ref_actor(ref)
+        except ValueError as ref_err:
+            print(f"❌ REJECTED: {ref_err}", file=sys.stderr)
+            sys.exit(1)
+
+        is_delete = new_sha == ZERO_SHA
+        if ref in protected_branch_refs:
             print(
-                f"❌ REJECTED: Unsupported ref '{ref}'. Only refs/heads/* allowed.",
+                f"❌ REJECTED: Updates or deletes on protected branch '{ref}' are not allowed.",
                 file=sys.stderr,
             )
             sys.exit(1)
 
-        # Skip creating a new branch or deleting one for MVP simplicity
-        # (Real logic would check the whole range)
-        if new_sha == "0000000000000000000000000000000000000000":
-            continue  # Delete branch
+        if is_delete:
+            print(f"🧾 AUDIT: Branch delete requested and allowed for '{ref}'.", file=sys.stderr)
+            continue
 
         # Validate all commits in the push range
-        if old_sha == "0000000000000000000000000000000000000000":
-            rev_range = new_sha
-        else:
-            rev_range = f"{old_sha}..{new_sha}"
-
         try:
-            commits = subprocess.check_output(["git", "rev-list", rev_range]).decode().splitlines()
-        except subprocess.CalledProcessError as e:
-            print(f"❌ REJECTED: Failed to enumerate commits: {str(e)}", file=sys.stderr)
+            commits = _iter_new_commits(old_sha, new_sha)
+            _enforce_push_size_limits(old_sha, new_sha, len(commits))
+        except ValueError as e:
+            print(f"❌ REJECTED: {str(e)}", file=sys.stderr)
             sys.exit(1)
 
         for commit_sha in commits:
@@ -73,8 +248,36 @@ def validate_push() -> None:
                 sys.exit(1)
             try:
                 data = json.loads(msg)
-                TraceValidator.validate_commit(data)
-                trace = TraceCommit(**data)
+                author = data.get("author") if isinstance(data, dict) else None
+                author_agent_id = author.get("agent_id") if isinstance(author, dict) else None
+                if not isinstance(author_agent_id, str) or not author_agent_id.strip():
+                    raise ValueError("Protocol Violation: 'author.agent_id' is missing.")
+                if author_agent_id != ref_actor_id:
+                    raise ValueError("Protocol Violation: branch actor does not match TraceCommit author.agent_id.")
+
+                expected_commit_sha = commit_sha if data.get("commit_sha") else None
+                trace = TraceValidator.validate_commit(
+                    data,
+                    expected_commit_sha=expected_commit_sha,
+                    require_commit_sha=False,
+                    require_parent_sha=False,
+                    require_timezone_aware_timestamp=True,
+                )
+
+                expected_tree_hash = subprocess.check_output(["git", "show", "-s", "--format=%T", commit_sha]).decode().strip()
+                if data.get("tree_hash") != expected_tree_hash:
+                    raise ValueError("Protocol Violation: 'tree_hash' does not match git tree.")
+
+                diff_patch = subprocess.check_output(
+                    ["git", "diff-tree", "--root", "--binary", "--full-index", "-p", "--no-commit-id", commit_sha],
+                ).decode("utf-8", errors="replace")
+                expected_diff_hash = compute_diff_hash_from_patch(diff_patch)
+                if data.get("diff_hash") != expected_diff_hash:
+                    raise ValueError("Protocol Violation: 'diff_hash' does not match git patch.")
+
+                if signature_required:
+                    if not verify_trace_commit_signature(data, signing_secret):
+                        raise ValueError("Protocol Violation: invalid TraceCommit signature.")
                 print(f"✅ Protocol Verified: {trace.diff_summary}", file=sys.stderr)
                 print(f"🧠 Reasoning Trace: {len(trace.reasoning_trace)} steps", file=sys.stderr)
             except json.JSONDecodeError:

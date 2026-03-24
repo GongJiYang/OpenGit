@@ -1,6 +1,8 @@
 import hashlib
 import time
 import xml.etree.ElementTree as ET
+from typing import Optional
+
 from fastapi import APIRouter, Request, Depends, HTTPException
 from fastapi.responses import Response
 from sqlmodel import Session
@@ -14,25 +16,40 @@ router = APIRouter(prefix="/api/v1/wechat", tags=["wechat"])
 
 WECHAT_TOKEN = os.getenv("WECHAT_TOKEN", "agenthub_token")
 
+
+def _validate_wechat_signature(signature: Optional[str], timestamp: Optional[str], nonce: Optional[str]) -> bool:
+    if not signature or not timestamp or not nonce:
+        return False
+    tmp_list = sorted([WECHAT_TOKEN, timestamp, nonce])
+    tmp_str = "".join(tmp_list)
+    hash_str = hashlib.sha1(tmp_str.encode("utf-8")).hexdigest()
+    return hash_str == signature
+
+
 @router.get("/webhook")
 async def wechat_verify(signature: str, timestamp: str, nonce: str, echostr: str):
     """
     Verify WeChat server signature.
     """
-    tmp_list = sorted([WECHAT_TOKEN, timestamp, nonce])
-    tmp_str = "".join(tmp_list)
-    hash_str = hashlib.sha1(tmp_str.encode("utf-8")).hexdigest()
-
-    if hash_str == signature:
+    if _validate_wechat_signature(signature, timestamp, nonce):
         return Response(content=echostr)
     else:
         raise HTTPException(status_code=403, detail="Signature verification failed")
 
 @router.post("/webhook")
-async def wechat_callback(request: Request, db: Session = Depends(get_db)):
+async def wechat_callback(
+    request: Request,
+    signature: Optional[str] = None,
+    timestamp: Optional[str] = None,
+    nonce: Optional[str] = None,
+    db: Session = Depends(get_db),
+):
     """
     Handle WeChat Webhook messages (XML).
     """
+    if not _validate_wechat_signature(signature, timestamp, nonce):
+        raise HTTPException(status_code=403, detail="Signature verification failed")
+
     body = await request.body()
     if not body:
          raise HTTPException(status_code=400, detail="empty body")

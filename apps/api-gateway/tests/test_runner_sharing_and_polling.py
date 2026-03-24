@@ -6,7 +6,7 @@ import bcrypt
 from sqlmodel import Session, select
 
 from agent_auth.models import Agent
-from agent_auth.models.platform import MembershipStatus, Repo, RepoMember, User
+from agent_auth.models.platform import MembershipStatus, Repo, RepoMember, RepoRole, User, UserAgentBinding
 from dependencies.auth import require_active_identity
 from main import app
 from agent_auth.models.runner import (
@@ -263,6 +263,40 @@ def test_runner_jobs_endpoints_require_active_identity(client):
         app.dependency_overrides.pop(require_active_identity, None)
 
 
+def test_runner_job_endpoints_ignore_spoofed_x_user_id_header(client):
+    from persistence import get_engine
+
+    with Session(get_engine()) as session:
+        owner_id = _create_user(session, "owner-x-user-id-spoof")
+        _runner_id, _ = _create_runner(session, owner_id, pool_type=RunnerPoolType.PRIVATE)
+        job_id = _create_job(session, requester_user_id=owner_id)
+
+    spoofed = client.get(
+        f"/api/v1/runners/jobs/{job_id}",
+        headers={"X-User-Id": str(owner_id)},
+    )
+    assert spoofed.status_code == 401
+
+    spoofed_service = client.get(
+        f"/api/v1/runners/jobs/{job_id}/service-status",
+        headers={"X-User-Id": str(owner_id)},
+    )
+    assert spoofed_service.status_code == 401
+
+    spoofed_endpoint = client.get(
+        f"/api/v1/runners/jobs/{job_id}/endpoint",
+        headers={"X-User-Id": str(owner_id)},
+    )
+    assert spoofed_endpoint.status_code == 401
+
+    spoofed_list = client.get(
+        "/api/v1/runners/jobs",
+        params={"offset": 0},
+        headers={"X-User-Id": str(owner_id)},
+    )
+    assert spoofed_list.status_code == 401
+
+
 def test_runner_jobs_list_endpoint_requires_active_identity(client):
     from persistence import get_engine
 
@@ -441,5 +475,156 @@ def test_service_status_hides_access_token_even_when_ready(client):
         assert data["is_ready_for_testing"] is True
         assert data["service_endpoint"] == "https://example.test/service"
         assert data["access_token"] is None
+    finally:
+        app.dependency_overrides.pop(require_active_identity, None)
+
+
+def test_job_endpoints_allow_repo_member_user_identity(client):
+    from persistence import get_engine
+
+    with Session(get_engine()) as session:
+        owner_id = _create_user(session, "owner-repo-member-user")
+        member_user_id = _create_user(session, "member-repo-member-user")
+        member_agent = Agent(
+            name=f"agent-{uuid4().hex[:8]}",
+            model_name="test-model",
+            api_key_hash="hash",
+            api_key_prefix=f"prefix-{uuid4().hex[:6]}",
+            claim_code=f"TC{uuid4().hex[:6].upper()}",
+            claim_url="/claim",
+            claim_expires_at=datetime.utcnow() + timedelta(days=1),
+            status="claimed",
+            role="contributor",
+        )
+        session.add(member_agent)
+        session.commit()
+        session.refresh(member_agent)
+
+        binding = UserAgentBinding(
+            user_id=member_user_id,
+            agent_id=member_agent.id,
+        )
+        session.add(binding)
+
+        repo = Repo(
+            full_name=f"owner/repo-user-member-{uuid4().hex[:8]}",
+            name="repo",
+            owner="owner",
+            created_by_user_id=owner_id,
+        )
+        session.add(repo)
+        session.commit()
+        session.refresh(repo)
+
+        membership = RepoMember(
+            repo_id=repo.id,
+            agent_id=member_agent.id,
+            status=MembershipStatus.ACTIVE,
+        )
+        session.add(membership)
+
+        _runner_id, _ = _create_runner(session, owner_id, pool_type=RunnerPoolType.PRIVATE)
+        job = ComputeJob(
+            bounty_id=f"bounty-{uuid4().hex[:8]}",
+            execution_mode=ExecutionMode.SELF_HOSTED,
+            test_command="pytest",
+            timeout_seconds=300,
+            status=ComputeJobStatus.RUNNING,
+            requester_user_id=owner_id,
+            repo_id=repo.id,
+            service_endpoint="https://example.test/member-service",
+            access_token="member-secret-token",
+            token_expires_at=datetime.utcnow() + timedelta(hours=1),
+        )
+        session.add(job)
+        session.commit()
+        session.refresh(job)
+        job_id = job.id
+
+    app.dependency_overrides[require_active_identity] = lambda: type("MockIdentity", (), {"id": member_user_id, "role": "user"})()
+    try:
+        detail_res = client.get(f"/api/v1/runners/jobs/{job_id}")
+        assert detail_res.status_code == 200
+
+        service_res = client.get(f"/api/v1/runners/jobs/{job_id}/service-status")
+        assert service_res.status_code == 200
+        assert service_res.json()["access_token"] is None
+
+        endpoint_res = client.get(f"/api/v1/runners/jobs/{job_id}/endpoint")
+        assert endpoint_res.status_code == 403
+    finally:
+        app.dependency_overrides.pop(require_active_identity, None)
+
+
+def test_job_endpoint_allows_repo_tester_user_identity(client):
+    from persistence import get_engine
+
+    with Session(get_engine()) as session:
+        owner_id = _create_user(session, "owner-repo-member-tester-user")
+        tester_user_id = _create_user(session, "tester-repo-member-user")
+        tester_agent = Agent(
+            name=f"agent-{uuid4().hex[:8]}",
+            model_name="test-model",
+            api_key_hash="hash",
+            api_key_prefix=f"prefix-{uuid4().hex[:6]}",
+            claim_code=f"TC{uuid4().hex[:6].upper()}",
+            claim_url="/claim",
+            claim_expires_at=datetime.utcnow() + timedelta(days=1),
+            status="claimed",
+            role="tester",
+        )
+        session.add(tester_agent)
+        session.commit()
+        session.refresh(tester_agent)
+
+        binding = UserAgentBinding(
+            user_id=tester_user_id,
+            agent_id=tester_agent.id,
+        )
+        session.add(binding)
+
+        repo = Repo(
+            full_name=f"owner/repo-tester-user-{uuid4().hex[:8]}",
+            name="repo",
+            owner="owner",
+            created_by_user_id=owner_id,
+        )
+        session.add(repo)
+        session.commit()
+        session.refresh(repo)
+
+        membership = RepoMember(
+            repo_id=repo.id,
+            agent_id=tester_agent.id,
+            role=RepoRole.BLACKBOX_TESTER,
+            status=MembershipStatus.ACTIVE,
+        )
+        session.add(membership)
+
+        _runner_id, _ = _create_runner(session, owner_id, pool_type=RunnerPoolType.PRIVATE)
+        job = ComputeJob(
+            bounty_id=f"bounty-{uuid4().hex[:8]}",
+            execution_mode=ExecutionMode.SELF_HOSTED,
+            test_command="pytest",
+            timeout_seconds=300,
+            status=ComputeJobStatus.RUNNING,
+            requester_user_id=owner_id,
+            repo_id=repo.id,
+            service_endpoint="https://example.test/member-service",
+            access_token="member-secret-token",
+            token_expires_at=datetime.utcnow() + timedelta(hours=1),
+        )
+        session.add(job)
+        session.commit()
+        session.refresh(job)
+        job_id = job.id
+
+    app.dependency_overrides[require_active_identity] = lambda: type("MockIdentity", (), {"id": tester_user_id, "role": "user"})()
+    try:
+        endpoint_res = client.get(f"/api/v1/runners/jobs/{job_id}/endpoint")
+        assert endpoint_res.status_code == 200
+        endpoint_body = endpoint_res.json()
+        assert endpoint_body["service_endpoint"] == "https://example.test/member-service"
+        assert endpoint_body["access_token"] == "member-secret-token"
     finally:
         app.dependency_overrides.pop(require_active_identity, None)

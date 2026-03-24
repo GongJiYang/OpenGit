@@ -67,6 +67,7 @@ class DecomposedBountyResponse(BaseModel):
     total_created: int
     bounties: List[dict]
     dependency_map: dict  # {client_id: bounty_id}
+    task_tree_sync: dict
 
 
 class PreparationClaimRequest(BaseModel):

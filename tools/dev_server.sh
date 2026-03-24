@@ -34,6 +34,6 @@ echo "Press Ctrl+C to stop."
 export APP_ENV=${APP_ENV:-development}
 export ALLOW_INSECURE_SANDBOX=${ALLOW_INSECURE_SANDBOX:-1}
 export ZHIPUAI_API_KEY=${ZHIPUAI_API_KEY:-}
-export QDRANT_URL=${QDRANT_URL:-:memory:}
+export QDRANT_URL=${QDRANT_URL:-./agenthub_data/qdrant}
 export DEFAULT_VERIFICATION_MODE=${DEFAULT_VERIFICATION_MODE:-human}
 python3 -m uvicorn main:app --app-dir apps/api-gateway/src --reload --port 8000

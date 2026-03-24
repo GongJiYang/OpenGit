@@ -4,7 +4,7 @@
 """
 import os
 import sys
-from typing import List
+from typing import List, Optional
 
 from pydantic import BaseModel, Field
 
@@ -24,11 +24,22 @@ def _load_solution_kb():
 SolutionKnowledgeBase, SolutionRecord = _load_solution_kb()
 
 
+_shared_solution_kb: Optional[object] = None
+
+
+def _get_shared_solution_kb():
+    global _shared_solution_kb
+    if _shared_solution_kb is None:
+        _shared_solution_kb = SolutionKnowledgeBase()
+    return _shared_solution_kb
+
+
 class SearchSolutionInput(BaseModel):
     """检索解决方案的输入参数"""
     error_type: str = Field(..., description="错误类型，如 TypeError, ImportError, AttributeError")
     error_message: str = Field(..., description="完整的错误消息文本")
     stack_trace: str = Field("", description="栈追踪信息（可选但推荐）")
+    environment: str = Field("", description="当前运行环境信息（可选，用于兼容性重排）")
 
 
 class StoreSolutionInput(BaseModel):
@@ -55,13 +66,14 @@ class SearchSolutionSkill(Skill):
     input_schema = SearchSolutionInput
 
     def __init__(self):
-        self.kb = SolutionKnowledgeBase()
+        self.kb = _get_shared_solution_kb()
 
     def execute(
         self,
         error_type: str,
         error_message: str,
-        stack_trace: str = ""
+        stack_trace: str = "",
+        environment: str = "",
     ) -> dict:
         """
         执行检索
@@ -78,7 +90,9 @@ class SearchSolutionSkill(Skill):
                 }
             }
         """
-        match = self.kb.get_best_match(error_type, error_message, stack_trace)
+        match = self.kb.get_best_match(error_type, error_message, stack_trace, environment=environment)
+        search_status_getter = getattr(self.kb, "get_last_search_status", None)
+        search_status = search_status_getter() if callable(search_status_getter) else {}
 
         if match:
             solution = match["solution"]
@@ -94,10 +108,14 @@ class SearchSolutionSkill(Skill):
                     "confidence": solution.get("confidence", 1.0),
                     "usage_count": solution.get("usage_count", 0),
                     "agent_id": solution.get("agent_id")
-                }
+                },
+                "availability": search_status,
             }
 
-        return {"found": False}
+        return {
+            "found": False,
+            "availability": search_status,
+        }
 
 
 class StoreSolutionSkill(Skill):
@@ -111,7 +129,7 @@ class StoreSolutionSkill(Skill):
     input_schema = StoreSolutionInput
 
     def __init__(self):
-        self.kb = SolutionKnowledgeBase()
+        self.kb = _get_shared_solution_kb()
 
     def execute(
         self,
@@ -148,10 +166,13 @@ class StoreSolutionSkill(Skill):
         )
 
         success = self.kb.store_solution(record)
+        store_status_getter = getattr(self.kb, "get_last_store_status", None)
+        store_status = store_status_getter() if callable(store_status_getter) else {}
 
         return {
             "stored": success,
-            "signature": record.error_signature if success else None
+            "signature": record.error_signature if success else None,
+            "availability": store_status,
         }
 
 
@@ -171,7 +192,7 @@ class BatchSearchSolutionSkill(Skill):
     input_schema = BatchSearchSolutionInput
 
     def __init__(self):
-        self.kb = SolutionKnowledgeBase()
+        self.kb = _get_shared_solution_kb()
         self.search_skill = SearchSolutionSkill()
 
     def execute(self, errors: List[dict]) -> dict:
@@ -221,7 +242,7 @@ class GetSolutionStatsSkill(Skill):
     input_schema = GetSolutionStatsInput
 
     def __init__(self):
-        self.kb = SolutionKnowledgeBase()
+        self.kb = _get_shared_solution_kb()
 
     def execute(self) -> dict:
         return self.kb.get_stats()

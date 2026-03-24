@@ -4,7 +4,7 @@ metadata:
   name: api-gateway-config
 data:
   APP_ENV: "production"
-  QDRANT_URL: ":memory:"
+  QDRANT_URL: "./agenthub_data/qdrant"
   APP_ENABLE_INDEXER: "0"
   APP_ENABLE_SANDBOX: "0"
   RUN_SCHEDULER: "0"

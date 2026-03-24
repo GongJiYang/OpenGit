@@ -1,3 +1,5 @@
+import json
+
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from fastapi.testclient import TestClient
@@ -50,11 +52,57 @@ def test_limit_request_size_rejects_stream_without_content_length():
     assert response.status_code == 413
 
 
-def test_limit_request_size_ignores_malformed_content_length_and_still_allows_small_payload():
+def test_limit_request_size_rejects_malformed_content_length_with_400():
     request = _RequestStub(headers={"content-length": "abc"}, chunks=[b"small"])
 
     async def call_next(req):
-        # Consume streamed body to exercise wrapped receive
+        # Should not be called when header is malformed.
+        return JSONResponse(status_code=200, content={"ok": True})
+
+    import asyncio
+
+    response = asyncio.run(limit_request_size_mw(request, call_next))
+    assert response.status_code == 400
+    assert json.loads(response.body.decode("utf-8"))["detail"] == "Invalid Content-Length header"
+
+
+def test_limit_request_size_rejects_negative_content_length_with_400():
+    request = _RequestStub(headers={"content-length": "-1"}, chunks=[b"small"])
+
+    async def call_next(req):
+        return JSONResponse(status_code=200, content={"ok": True})
+
+    import asyncio
+
+    response = asyncio.run(limit_request_size_mw(request, call_next))
+    assert response.status_code == 400
+    assert json.loads(response.body.decode("utf-8"))["detail"] == "Invalid Content-Length header"
+
+
+def test_limit_request_size_rejects_conflicting_chunked_and_content_length_with_400():
+    request = _RequestStub(
+        headers={"content-length": "10", "transfer-encoding": "chunked"},
+        chunks=[b"small"],
+    )
+
+    async def call_next(req):
+        return JSONResponse(status_code=200, content={"ok": True})
+
+    import asyncio
+
+    response = asyncio.run(limit_request_size_mw(request, call_next))
+    assert response.status_code == 400
+    assert json.loads(response.body.decode("utf-8"))["detail"] == "Invalid request framing headers"
+
+
+
+def test_limit_request_size_checks_cumulative_stream_chunks():
+    request = _RequestStub(
+        headers={},
+        chunks=[b"a" * (MAX_REQUEST_SIZE // 2), b"b" * (MAX_REQUEST_SIZE // 2 + 2)],
+    )
+
+    async def call_next(req):
         while True:
             message = await req._receive()
             if not message.get("more_body"):
@@ -64,7 +112,8 @@ def test_limit_request_size_ignores_malformed_content_length_and_still_allows_sm
     import asyncio
 
     response = asyncio.run(limit_request_size_mw(request, call_next))
-    assert response.status_code == 200
+    assert response.status_code == 413
+
 
 
 def test_integration_returns_413_for_large_json_body():

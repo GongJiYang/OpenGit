@@ -46,7 +46,7 @@ from ..models.runner import (
     RunnerShareGrant,
 )
 from ..models import Agent
-from ..models.platform import MembershipStatus, RepoMember, User, UserRole
+from ..models.platform import MembershipStatus, RepoMember, RepoRole, User, UserAgentBinding, UserRole
 from ..database import get_db
 from ..services.verification import VerificationService
 from ..services.user_auth import get_current_user
@@ -65,40 +65,64 @@ from schemas.runner import (
 router = APIRouter(prefix="/runners", tags=["Runners"])
 
 
+SENSITIVE_ENDPOINT_AGENT_ROLES = {"tester", "executor", "architect"}
+SENSITIVE_ENDPOINT_REPO_ROLES = {
+    RepoRole.BLACKBOX_TESTER.value,
+    RepoRole.EXECUTOR.value,
+    RepoRole.ARCHITECT.value,
+}
+
+
+def _normalize_role(role: Any) -> str:
+    if role is None:
+        return ""
+    if hasattr(role, "value"):
+        return str(role.value).lower()
+    return str(role).lower()
+
+
+def _get_active_repo_member(session: Session, repo_id: Optional[UUID], agent_id: UUID) -> Optional[RepoMember]:
+    if not repo_id:
+        return None
+    return session.exec(
+        select(RepoMember).where(
+            RepoMember.repo_id == repo_id,
+            RepoMember.agent_id == agent_id,
+            RepoMember.status == MembershipStatus.ACTIVE,
+        )
+    ).first()
+
+
+def _resolve_identity_agent_id(identity: Any) -> Optional[UUID]:
+    raw_agent_id = getattr(identity, "id", None)
+    if not raw_agent_id:
+        return None
+    try:
+        return raw_agent_id if isinstance(raw_agent_id, UUID) else UUID(str(raw_agent_id))
+    except (TypeError, ValueError):
+        return None
+
+
 def _is_authorized_job_identity(identity: Any, job: ComputeJob, session: Session) -> bool:
-    """Authorize identity to read job/service endpoint data."""
+    """Authorize identity to read job/service status data."""
     if hasattr(identity, "status"):
         # Agent principal from API key
-        raw_agent_id = getattr(identity, "id", None)
-        if not raw_agent_id:
-            return False
-
-        try:
-            agent_id = raw_agent_id if isinstance(raw_agent_id, UUID) else UUID(str(raw_agent_id))
-        except (TypeError, ValueError):
+        agent_id = _resolve_identity_agent_id(identity)
+        if not agent_id:
             return False
 
         agent = session.get(Agent, agent_id)
         if not agent:
             return False
 
-        role = (agent.role or "").lower()
-        if role in {"tester", "executor", "architect"}:
+        role = _normalize_role(agent.role)
+        if role in SENSITIVE_ENDPOINT_AGENT_ROLES:
             return True
 
         if job.requester_agent_id and str(job.requester_agent_id) == str(agent_id):
             return True
 
-        if not job.repo_id:
-            return False
-
-        membership = session.exec(
-            select(RepoMember).where(
-                RepoMember.repo_id == job.repo_id,
-                RepoMember.agent_id == agent_id,
-                RepoMember.status == MembershipStatus.ACTIVE,
-            )
-        ).first()
+        membership = _get_active_repo_member(session, job.repo_id, agent_id)
         return membership is not None
 
     # Human user from JWT
@@ -106,10 +130,71 @@ def _is_authorized_job_identity(identity: Any, job: ComputeJob, session: Session
     if not user_id:
         return False
 
-    if getattr(identity, "role", None) == UserRole.ADMIN:
+    if _normalize_role(getattr(identity, "role", None)) == UserRole.ADMIN.value:
         return True
 
-    return bool(job.requester_user_id and str(job.requester_user_id) == str(user_id))
+    if job.requester_user_id and str(job.requester_user_id) == str(user_id):
+        return True
+
+    if not job.repo_id:
+        return False
+
+    binding = session.exec(
+        select(UserAgentBinding).where(UserAgentBinding.user_id == user_id)
+    ).first()
+    if not binding:
+        return False
+
+    member = _get_active_repo_member(session, job.repo_id, binding.agent_id)
+    return member is not None
+
+
+def _is_authorized_endpoint_identity(identity: Any, job: ComputeJob, session: Session) -> bool:
+    """Authorize identity to read sensitive service endpoint access tokens."""
+    if hasattr(identity, "status"):
+        agent_id = _resolve_identity_agent_id(identity)
+        if not agent_id:
+            return False
+
+        agent = session.get(Agent, agent_id)
+        if not agent:
+            return False
+
+        role = _normalize_role(agent.role)
+        if role in SENSITIVE_ENDPOINT_AGENT_ROLES:
+            return True
+
+        if job.requester_agent_id and str(job.requester_agent_id) == str(agent_id):
+            return True
+
+        member = _get_active_repo_member(session, job.repo_id, agent_id)
+        if not member:
+            return False
+        return _normalize_role(member.role) in SENSITIVE_ENDPOINT_REPO_ROLES
+
+    user_id = getattr(identity, "id", None)
+    if not user_id:
+        return False
+
+    if _normalize_role(getattr(identity, "role", None)) == UserRole.ADMIN.value:
+        return True
+
+    if job.requester_user_id and str(job.requester_user_id) == str(user_id):
+        return True
+
+    if not job.repo_id:
+        return False
+
+    binding = session.exec(
+        select(UserAgentBinding).where(UserAgentBinding.user_id == user_id)
+    ).first()
+    if not binding:
+        return False
+
+    member = _get_active_repo_member(session, job.repo_id, binding.agent_id)
+    if not member:
+        return False
+    return _normalize_role(member.role) in SENSITIVE_ENDPOINT_REPO_ROLES
 
 
 def _runner_can_accept_job(runner: Runner, job: ComputeJob, session: Session) -> bool:
@@ -520,13 +605,18 @@ async def submit_job_result(
 
     # Check if audit should be triggered
     audit_triggered = False
+    audit_reason = ""
     if job.status in [ComputeJobStatus.COMPLETED, ComputeJobStatus.PARTIAL_PASS]:
-        audit_triggered = VerificationService.should_trigger_audit(runner)
+        audit_triggered, audit_reason = VerificationService.should_trigger_audit(
+            runner=runner,
+            session=session,
+            job=job,
+        )
         if audit_triggered:
             audit = VerificationService.create_audit(
                 session=session,
                 job=job,
-                reason="random" if runner.reputation_score >= 50 else "low_reputation"
+                reason=audit_reason,
             )
             job.is_audited = True
             job.audit_job_id = audit.id
@@ -542,6 +632,8 @@ async def submit_job_result(
         "status": job.status,
         "audit_triggered": audit_triggered,
     }
+    if audit_triggered:
+        response["audit_reason"] = audit_reason
 
     # Add recovery-specific fields
     if job.retry_count > 0:
@@ -1058,7 +1150,13 @@ async def submit_audit_result(
         original_stdout=audit.original_stdout or "",
         original_exit_code=audit.original_exit_code or 0,
         audited_stdout=req.audited_stdout,
-        audited_exit_code=req.audited_exit_code
+        audited_exit_code=req.audited_exit_code,
+        original_test_command=audit.original_test_command,
+        audited_test_command=req.audited_test_command,
+        original_code_commit=audit.original_code_commit,
+        audited_code_commit=req.audited_code_commit,
+        original_env_fingerprint=audit.original_env_fingerprint,
+        audited_env_fingerprint=req.audited_env_fingerprint,
     )
 
     # Apply result
@@ -1068,7 +1166,10 @@ async def submit_audit_result(
         result=result,
         explanation=explanation,
         audited_stdout=req.audited_stdout,
-        audited_exit_code=req.audited_exit_code
+        audited_exit_code=req.audited_exit_code,
+        audited_test_command=req.audited_test_command,
+        audited_code_commit=req.audited_code_commit,
+        audited_env_fingerprint=req.audited_env_fingerprint,
     )
 
     # Update job audit status
@@ -1219,7 +1320,7 @@ async def get_service_endpoint(
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
 
-    if not _is_authorized_job_identity(identity, job, session):
+    if not _is_authorized_endpoint_identity(identity, job, session):
         raise HTTPException(status_code=403, detail="Forbidden")
 
     # Check if service is ready

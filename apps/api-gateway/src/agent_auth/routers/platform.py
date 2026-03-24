@@ -49,6 +49,17 @@ def _get_bound_agent_or_403(user: User, session: Session):
     return agent, auth_service
 
 
+def _is_user_claimed_owner(user: User, agent) -> bool:
+    """Check whether authenticated user matches claimed agent owner identity."""
+    if agent.owner_github_id and user.github_id:
+        return agent.owner_github_id == user.github_id
+    if agent.owner_email and user.email:
+        return agent.owner_email.lower() == user.email.lower()
+    if agent.owner_wechat_openid and user.wechat_openid:
+        return agent.owner_wechat_openid == user.wechat_openid
+    return False
+
+
 # ============== Auth Endpoints ==============
 
 auth_router = APIRouter(prefix="/auth", tags=["Auth"])
@@ -120,18 +131,24 @@ async def update_profile(
 
     # Update password if provided
     if data.new_password and data.current_password:
-        from passlib.context import CryptContext
-        pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+        service = UserAuthService(session)
 
         # Verify current password
-        if not user.password_hash or not pwd_context.verify(data.current_password, user.password_hash):
+        if not user.password_hash or not service.verify_password(data.current_password, user.password_hash):
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Current password is incorrect"
             )
 
+        password_error = service.validate_password_baseline(data.new_password)
+        if password_error:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=password_error,
+            )
+
         # Set new password
-        user.password_hash = pwd_context.hash(data.new_password)
+        user.password_hash = service.hash_password(data.new_password)
 
     session.add(user)
     session.commit()
@@ -151,6 +168,7 @@ async def update_profile(
 @auth_router.post("/bind-agent")
 async def bind_agent(
     agent_id: UUID,
+    claim_code: str,
     x_api_key: str = Header(..., description="Agent API Key to bind"),
     user: User = Depends(get_current_user),
     session: Session = Depends(get_db)
@@ -169,8 +187,20 @@ async def bind_agent(
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid API Key")
     if agent.id != agent_id:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="API Key mismatch")
-    if agent.status == AgentStatus.CLAIMED:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Already claimed")
+    if agent.claim_code != claim_code:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Claim code mismatch")
+
+    if agent.status != AgentStatus.CLAIMED:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Agent must complete claim verification before binding"
+        )
+
+    if not _is_user_claimed_owner(user, agent):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Authenticated user does not match claimed owner"
+        )
 
     # Delegate to service
     service = UserAuthService(session)

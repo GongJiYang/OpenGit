@@ -10,6 +10,7 @@ Handles:
 
 from datetime import datetime, timedelta
 from typing import Optional, Tuple
+import re
 
 from sqlmodel import Session, select
 from passlib.context import CryptContext
@@ -66,6 +67,27 @@ class UserAuthService:
         if len(password_bytes) > 72:
             plain_password = password_bytes[:72].decode('utf-8', errors='ignore')
         return pwd_context.verify(plain_password, hashed_password)
+
+    @staticmethod
+    def validate_password_baseline(password: Optional[str]) -> Optional[str]:
+        """Validate password against minimum security baseline."""
+        settings = get_settings()
+
+        if password is None:
+            return "Password is required"
+        if len(password) < settings.password_min_length:
+            return f"Password must be at least {settings.password_min_length} characters"
+        if len(password) > settings.password_max_length:
+            return f"Password must be at most {settings.password_max_length} characters"
+        if settings.password_require_uppercase and not re.search(r"[A-Z]", password):
+            return "Password must include at least one uppercase letter"
+        if settings.password_require_lowercase and not re.search(r"[a-z]", password):
+            return "Password must include at least one lowercase letter"
+        if settings.password_require_digit and not re.search(r"\d", password):
+            return "Password must include at least one digit"
+        if settings.password_require_special and not re.search(r"[^A-Za-z0-9]", password):
+            return "Password must include at least one special character"
+        return None
 
     # ============== JWT Utilities ==============
 
@@ -216,6 +238,10 @@ class UserAuthService:
         Returns:
             Tuple of (TokenResponse, error_message)
         """
+        password_error = self.validate_password_baseline(data.password)
+        if password_error:
+            return None, password_error
+
         # Check if email exists
         existing = self.get_user_by_email(data.email)
         if existing:
