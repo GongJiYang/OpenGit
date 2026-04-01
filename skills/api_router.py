@@ -135,6 +135,54 @@ def _memory_write_success(skill_name: str, args: Dict[str, Any], result: Dict[st
         pass
 
 
+def _memory_write_failure(skill_name: str, args: Dict[str, Any], result: Dict[str, Any], failure_type: str):
+    """Write a failure template to persistent memory (best-effort)."""
+    try:
+        redact_keys = ["password", "token", "access_token", "secret", "apikey", "api_key"]
+        safe_args = _redact(args, redact_keys)
+        safe_res = _redact(result, redact_keys)
+
+        meta = safe_res.get("meta") or {}
+        error = safe_res.get("error") or {}
+        trace_id = meta.get("trace_id")
+        duration_ms = meta.get("duration_ms")
+
+        payload = {
+            "template": "skill_failure_case_v1",
+            "skill": skill_name,
+            "args": safe_args,
+            "result_summary": {
+                "ok": safe_res.get("ok"),
+                "message": safe_res.get("message"),
+            },
+            "error": {
+                "code": error.get("code"),
+                "reason": error.get("reason"),
+                "retriable": error.get("retriable"),
+            },
+            "labels": {
+                "trace_id": trace_id,
+                "duration_ms": duration_ms,
+                "failure_type": failure_type,
+            },
+        }
+        _ = _AGENT.use_skill(
+            "persistent_memory",
+            action="add",
+            content=json.dumps(payload, ensure_ascii=False),
+            agent_id=_AGENT.agent_id,
+            role=_AGENT.role,
+            metadata={
+                "skill_name": skill_name,
+                "schema_version": 1,
+                "kind": "failure_case",
+                "failure_type": failure_type,
+            },
+        )
+    except Exception:
+        pass
+
+
 class StartSkillRequest(BaseModel):
     name: str
     args: Dict[str, Any] = {}
@@ -217,6 +265,7 @@ async def _run_skill_and_store(
                 },
                 trace_id=trace_id,
             )
+            _memory_write_failure(name, args, result, failure_type="failed_envelope")
     except Exception as e:  # noqa: BLE001
         env = Envelope(
             ok=False,
@@ -239,6 +288,7 @@ async def _run_skill_and_store(
             },
             trace_id=trace_id,
         )
+        _memory_write_failure(name, args, env, failure_type="exception")
 
 
 def _hash_payload(obj: Any) -> str:
@@ -402,6 +452,7 @@ async def start_skill(
                 },
                 trace_id=trace_id,
             )
+            _memory_write_failure(name, args, env, failure_type="timeout")
             if _CB_ENABLED:
                 dq = _CB_RECENT.setdefault(name, deque(maxlen=_CB_WINDOW))
                 dq.append(False)
@@ -439,9 +490,11 @@ async def start_skill(
                 },
                 trace_id=trace_id,
             )
-            # Memory write on success
+            # Memory write on success/failure
             if isinstance(result, dict) and result.get("ok") is True:
                 _memory_write_success(name, args, result)
+            else:
+                _memory_write_failure(name, args, result, failure_type="failed_envelope")
             # Update CB recent stats
             if _CB_ENABLED:
                 dq = _CB_RECENT.setdefault(name, deque(maxlen=_CB_WINDOW))
@@ -471,6 +524,7 @@ async def start_skill(
                 },
                 trace_id=trace_id,
             )
+            _memory_write_failure(name, args, env, failure_type="timeout")
             if _CB_ENABLED:
                 dq = _CB_RECENT.setdefault(name, deque(maxlen=_CB_WINDOW))
                 dq.append(False)

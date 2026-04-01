@@ -55,6 +55,12 @@ class StoreSolutionInput(BaseModel):
     confidence: float = Field(1.0, description="方案置信度 0.0-1.0")
 
 
+class FeedbackSolutionInput(BaseModel):
+    """记录命中方案执行反馈的输入参数"""
+    solution_id: str = Field(..., description="命中方案的唯一 ID")
+    result: str = Field(..., description="执行结果：'passed' 或 'failed'")
+
+
 class SearchSolutionSkill(Skill):
     """
     检索相似解决方案技能
@@ -96,19 +102,34 @@ class SearchSolutionSkill(Skill):
 
         if match:
             solution = match["solution"]
+            response_solution = {
+                "error_type": solution.get("error_type"),
+                "error_message": solution.get("error_message"),
+                "solution_steps": solution.get("solution_steps", []),
+                "solution_code": solution.get("solution_code", ""),
+                "environment": solution.get("environment", ""),
+                "confidence": solution.get("confidence", 1.0),
+                "usage_count": solution.get("usage_count", 0),
+                "success_count": solution.get("success_count", 0),
+                "failure_count": solution.get("failure_count", 0),
+                "success_rate": solution.get("success_rate"),
+                "solution_id": match.get("solution_id"),
+                "agent_id": solution.get("agent_id")
+            }
+
+            solution_id = match.get("solution_id")
+            increment_usage = getattr(self.kb, "increment_usage", None)
+            if solution_id and callable(increment_usage):
+                try:
+                    if increment_usage(solution_id):
+                        response_solution["usage_count"] = int(response_solution.get("usage_count", 0) or 0) + 1
+                except Exception:
+                    pass
+
             return {
                 "found": True,
                 "similarity": match["score"],
-                "solution": {
-                    "error_type": solution.get("error_type"),
-                    "error_message": solution.get("error_message"),
-                    "solution_steps": solution.get("solution_steps", []),
-                    "solution_code": solution.get("solution_code", ""),
-                    "environment": solution.get("environment", ""),
-                    "confidence": solution.get("confidence", 1.0),
-                    "usage_count": solution.get("usage_count", 0),
-                    "agent_id": solution.get("agent_id")
-                },
+                "solution": response_solution,
                 "availability": search_status,
             }
 
@@ -173,6 +194,27 @@ class StoreSolutionSkill(Skill):
             "stored": success,
             "signature": record.error_signature if success else None,
             "availability": store_status,
+        }
+
+
+class FeedbackSolutionSkill(Skill):
+    """
+    记录命中方案的执行反馈
+    """
+    name = "feedback_solution"
+    description = "将命中方案的执行结果回写知识库，更新成功/失败反馈统计"
+    input_schema = FeedbackSolutionInput
+
+    def __init__(self):
+        self.kb = _get_shared_solution_kb()
+
+    def execute(self, solution_id: str, result: str) -> dict:
+        success = self.kb.record_feedback(solution_id, result)
+        feedback_status_getter = getattr(self.kb, "get_last_feedback_status", None)
+        feedback_status = feedback_status_getter() if callable(feedback_status_getter) else {}
+        return {
+            "updated": success,
+            "availability": feedback_status,
         }
 
 

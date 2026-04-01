@@ -34,6 +34,11 @@ class SolutionRecord:
     agent_id: str                  # 贡献者 Agent ID
     timestamp: float = field(default_factory=time.time)
     usage_count: int = 0           # 复用次数
+    success_count: int = 0         # 命中后执行成功次数
+    failure_count: int = 0         # 命中后执行失败次数
+    success_rate: Optional[float] = None
+    last_feedback_at: Optional[float] = None
+    last_feedback_result: str = ""
 
 
 class SolutionKnowledgeBase:
@@ -106,6 +111,12 @@ class SolutionKnowledgeBase:
             "result_count": 0,
         }
         self._last_store_status = {
+            "ok": True,
+            "unavailable": False,
+            "error_code": None,
+            "reason": None,
+        }
+        self._last_feedback_status = {
             "ok": True,
             "unavailable": False,
             "error_code": None,
@@ -292,6 +303,14 @@ class SolutionKnowledgeBase:
             "reason": reason,
         }
 
+    def _set_feedback_status(self, ok: bool, unavailable: bool, error_code: Optional[str], reason: Optional[str]):
+        self._last_feedback_status = {
+            "ok": ok,
+            "unavailable": unavailable,
+            "error_code": error_code,
+            "reason": reason,
+        }
+
     def get_last_search_status(self) -> Dict:
         return dict(getattr(self, "_last_search_status", {
             "ok": True,
@@ -303,6 +322,14 @@ class SolutionKnowledgeBase:
 
     def get_last_store_status(self) -> Dict:
         return dict(getattr(self, "_last_store_status", {
+            "ok": True,
+            "unavailable": False,
+            "error_code": None,
+            "reason": None,
+        }))
+
+    def get_last_feedback_status(self) -> Dict:
+        return dict(getattr(self, "_last_feedback_status", {
             "ok": True,
             "unavailable": False,
             "error_code": None,
@@ -381,7 +408,7 @@ class SolutionKnowledgeBase:
             for hit in results:
                 if hit.score < self.SIMILARITY_THRESHOLD:
                     continue
-                payload = hit.payload
+                payload = getattr(hit, "payload", None) or {}
                 if payload.get("confidence", 1.0) < min_confidence:
                     continue
 
@@ -391,9 +418,13 @@ class SolutionKnowledgeBase:
                     query_environment=environment,
                     now_ts=now_ts,
                 )
+                solution_id = getattr(hit, "id", None)
+                if solution_id is None:
+                    solution_id = payload.get("error_signature")
                 candidates.append({
                     "score": hit.score,
                     "rank_score": rerank_score,
+                    "solution_id": str(solution_id) if solution_id is not None else None,
                     "solution": payload,
                 })
 
@@ -567,6 +598,105 @@ class SolutionKnowledgeBase:
             return True
         except Exception as e:
             print(f"❌ Failed to increment usage for solution ({solution_id}): {e}")
+            return False
+
+    def record_feedback(self, solution_id: str, result: str) -> bool:
+        normalized_result = (result or "").strip().lower()
+        if normalized_result not in {"passed", "failed"}:
+            self._set_feedback_status(
+                ok=False,
+                unavailable=False,
+                error_code="invalid_feedback_result",
+                reason="result must be 'passed' or 'failed'",
+            )
+            return False
+
+        if not self.client:
+            if not self._warned_client:
+                print("⚠️ Qdrant client unavailable; feedback recording disabled.")
+                self._warned_client = True
+            self._set_feedback_status(
+                ok=False,
+                unavailable=True,
+                error_code="vector_store_unavailable",
+                reason=self._client_unavailable_reason or "Qdrant client unavailable",
+            )
+            return False
+
+        try:
+            records = self.client.retrieve(
+                collection_name=self.COLLECTION_NAME,
+                ids=[solution_id]
+            )
+        except Exception as e:
+            print(f"❌ Failed to retrieve solution record for feedback ({solution_id}): {e}")
+            self._set_feedback_status(
+                ok=False,
+                unavailable=True,
+                error_code="feedback_retrieve_failed",
+                reason=str(e),
+            )
+            return False
+
+        if not records:
+            print(f"⚠️ Solution record not found for feedback: {solution_id}")
+            self._set_feedback_status(
+                ok=False,
+                unavailable=False,
+                error_code="solution_not_found",
+                reason="solution record not found",
+            )
+            return False
+
+        try:
+            payload = records[0].payload or {}
+            success_count = int(payload.get("success_count", 0) or 0)
+            failure_count = int(payload.get("failure_count", 0) or 0)
+        except (AttributeError, TypeError, ValueError) as e:
+            print(f"❌ Invalid feedback payload for solution ({solution_id}): {e}")
+            self._set_feedback_status(
+                ok=False,
+                unavailable=False,
+                error_code="invalid_feedback_payload",
+                reason=str(e),
+            )
+            return False
+
+        if normalized_result == "passed":
+            success_count += 1
+        else:
+            failure_count += 1
+
+        total = success_count + failure_count
+        success_rate = (success_count / total) if total else None
+
+        try:
+            self.client.set_payload(
+                collection_name=self.COLLECTION_NAME,
+                payload={
+                    "success_count": success_count,
+                    "failure_count": failure_count,
+                    "success_rate": success_rate,
+                    "last_feedback_at": time.time(),
+                    "last_feedback_result": normalized_result,
+                },
+                points=[solution_id]
+            )
+            self._set_feedback_status(
+                ok=True,
+                unavailable=False,
+                error_code=None,
+                reason=None,
+            )
+            return True
+        except Exception as e:
+            print(f"❌ Failed to record feedback for solution ({solution_id}): {e}")
+            self._set_feedback_status(
+                ok=False,
+                unavailable=True,
+                error_code="feedback_store_failed",
+                reason=str(e),
+            )
             return False
 
     def get_stats(self) -> Dict:

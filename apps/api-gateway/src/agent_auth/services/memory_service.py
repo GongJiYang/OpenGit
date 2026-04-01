@@ -3,6 +3,8 @@ import json
 import logging
 import os
 import re
+import sqlite3
+import time
 from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
@@ -10,7 +12,18 @@ logger = logging.getLogger(__name__)
 MEM0_PROVIDER_ALIAS = "langchain"
 DEFAULT_MEM0_DIR = os.path.abspath("./agenthub_data/mem0/runtime")
 DEFAULT_MEM0_TELEMETRY = "False"
+DEFAULT_MEMORY_NAMESPACE_LIMIT = 200
+DEFAULT_MEMORY_TTL_SECONDS = 30 * 24 * 60 * 60
+_VOLATILE_MEMORY_KEYS = {
+    "trace_id",
+    "duration_ms",
+    "timestamp",
+    "created_at",
+    "updated_at",
+    "request_id",
+}
 _ROLE_SAFE_RE = re.compile(r"[^a-zA-Z0-9_-]+")
+_SHARED_MEMORY_NAMESPACE = "__shared__"
 
 try:
     from mem0 import Memory
@@ -120,6 +133,7 @@ class MemoryService:
         self.local_qdrant_root = ""
         self.runtime_dir = ""
         self.local_qdrant_path = ""
+        self.governance_db_path = ""
 
         self._refresh_runtime_paths()
 
@@ -135,6 +149,10 @@ class MemoryService:
         )
         self.runtime_dir = self._resolve_runtime_dir()
         self.local_qdrant_path = self._resolve_local_qdrant_path()
+        self.governance_db_path = os.getenv(
+            "MEM0_GOVERNANCE_DB_PATH",
+            os.path.join(self.runtime_dir, "governance.db"),
+        )
 
     def _is_initialized(self) -> bool:
         return self.memory is not None and self.enabled
@@ -269,43 +287,140 @@ class MemoryService:
         normalized = _ROLE_SAFE_RE.sub("_", role.strip().lower()).strip("_")
         return normalized or "default"
 
+    @staticmethod
+    def _normalize_scope(scope: Optional[str], *, allow_combined: bool = False) -> str:
+        normalized = (scope or "private").strip().lower()
+        allowed = {"private", "shared"}
+        if allow_combined:
+            allowed.add("combined")
+        if normalized not in allowed:
+            raise ValueError(f"unsupported memory scope: {scope}")
+        return normalized
+
+    def _memory_namespace(self, agent_id: str, role: Optional[str], scope: Optional[str] = "private") -> str:
+        normalized_role = self._normalize_role(role)
+        normalized_scope = self._normalize_scope(scope)
+        if normalized_scope == "shared":
+            return f"{_SHARED_MEMORY_NAMESPACE}::role::{normalized_role}"
+        return f"{agent_id}::role::{normalized_role}"
+
     def _memory_actor_id(self, agent_id: str, role: Optional[str]) -> str:
-        return f"{agent_id}::role::{self._normalize_role(role)}"
+        return self._memory_namespace(agent_id, role, scope="private")
 
-    def add_memory(
-        self,
-        agent_id: str,
-        content: str,
-        metadata: Optional[dict] = None,
-        role: Optional[str] = None,
-    ):
-        if not self._ensure_ready() or not self.memory:
+    @staticmethod
+    def _normalize_memory_content(content: str) -> str:
+        raw = (content or "").strip()
+        if not raw:
+            return ""
+        try:
+            parsed = json.loads(raw)
+        except Exception:
+            return raw
+
+        if isinstance(parsed, dict):
+            labels = parsed.get("labels")
+            if isinstance(labels, dict):
+                stable_labels = {
+                    key: value
+                    for key, value in labels.items()
+                    if key not in _VOLATILE_MEMORY_KEYS
+                }
+                parsed = {**parsed, "labels": stable_labels}
+        return json.dumps(parsed, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+    def _memory_fingerprint(self, content: str, metadata: Optional[dict] = None) -> str:
+        payload = {
+            "content": self._normalize_memory_content(content),
+            "metadata": dict(metadata or {}),
+        }
+        canonical = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+    def _namespace_memory_limit(self) -> int:
+        raw = (os.getenv("MEM0_NAMESPACE_LIMIT") or "").strip()
+        if not raw:
+            return DEFAULT_MEMORY_NAMESPACE_LIMIT
+        try:
+            value = int(raw)
+        except ValueError:
+            return DEFAULT_MEMORY_NAMESPACE_LIMIT
+        return max(1, value)
+
+    def _memory_ttl_seconds(self) -> Optional[int]:
+        raw = (os.getenv("MEM0_MEMORY_TTL_SECONDS") or "").strip()
+        if not raw:
+            return DEFAULT_MEMORY_TTL_SECONDS
+        try:
+            value = int(raw)
+        except ValueError:
+            return DEFAULT_MEMORY_TTL_SECONDS
+        if value <= 0:
             return None
+        return value
 
-        normalized_role = self._normalize_role(role)
-        effective_metadata = dict(metadata or {})
-        effective_metadata.setdefault("memory_role", normalized_role)
+    def _delete_memory_ids(self, memory_ids_json: str) -> None:
+        delete_memory = getattr(self.memory, "delete", None)
+        if not callable(delete_memory):
+            return
+        try:
+            memory_ids = json.loads(memory_ids_json or "[]")
+        except Exception:
+            memory_ids = []
+        for memory_id in memory_ids:
+            try:
+                delete_memory(memory_id)
+            except Exception:
+                logger.warning("Mem0 delete failed during governance prune", exc_info=True)
 
-        return self.memory.add(
-            content,
-            agent_id=self._memory_actor_id(agent_id, normalized_role),
-            metadata=effective_metadata,
+    def _governance_connection(self) -> sqlite3.Connection:
+        os.makedirs(os.path.dirname(self.governance_db_path), exist_ok=True)
+        conn = sqlite3.connect(self.governance_db_path)
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS memory_governance (
+                agent_id TEXT NOT NULL,
+                fingerprint TEXT NOT NULL,
+                content TEXT NOT NULL,
+                metadata_json TEXT NOT NULL,
+                memory_ids_json TEXT NOT NULL DEFAULT '[]',
+                created_at REAL NOT NULL,
+                PRIMARY KEY (agent_id, fingerprint)
+            )
+            """
         )
+        columns = {
+            row[1]
+            for row in conn.execute("PRAGMA table_info(memory_governance)").fetchall()
+        }
+        if "memory_ids_json" not in columns:
+            conn.execute("ALTER TABLE memory_governance ADD COLUMN memory_ids_json TEXT NOT NULL DEFAULT '[]'")
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS ix_memory_governance_agent_created ON memory_governance(agent_id, created_at)"
+        )
+        return conn
 
-    def get_memories(
-        self,
-        agent_id: str,
-        query: Optional[str] = None,
-        limit: int = 5,
-        role: Optional[str] = None,
-    ) -> List[Dict[str, Any]]:
-        if not self._ensure_ready() or not self.memory:
-            return []
-        normalized_role = self._normalize_role(role)
+    @staticmethod
+    def _extract_memory_ids(result: Any) -> List[str]:
+        if isinstance(result, dict):
+            if isinstance(result.get("id"), str) and result.get("id"):
+                return [result["id"]]
+            items = result.get("results", [])
+        elif isinstance(result, list):
+            items = result
+        else:
+            items = []
+
+        ids: List[str] = []
+        for item in items:
+            if isinstance(item, dict) and isinstance(item.get("id"), str) and item.get("id"):
+                ids.append(item["id"])
+        return ids
+
+    def _search_namespace(self, namespace: str, query: Optional[str], limit: int) -> List[Dict[str, Any]]:
         try:
             result = self.memory.search(
                 query or "",
-                agent_id=self._memory_actor_id(agent_id, normalized_role),
+                agent_id=namespace,
                 limit=limit,
             )
         except Exception:
@@ -313,9 +428,143 @@ class MemoryService:
             return []
         return self._normalize_search_results(result)
 
-    def delete_all_memories(self, agent_id: str, role: Optional[str] = None):
+    def _governance_prune(self, conn: sqlite3.Connection, actor_id: str, limit: int) -> None:
+        ttl_seconds = self._memory_ttl_seconds()
+        ttl_rows = []
+        if ttl_seconds is not None:
+            expire_before = time.time() - ttl_seconds
+            ttl_rows = conn.execute(
+                """
+                SELECT fingerprint, memory_ids_json FROM memory_governance
+                WHERE agent_id = ? AND created_at < ?
+                ORDER BY created_at ASC, rowid ASC
+                """,
+                (actor_id, expire_before),
+            ).fetchall()
+
+        overflow_rows = conn.execute(
+            """
+            SELECT fingerprint, memory_ids_json FROM memory_governance
+            WHERE agent_id = ?
+            ORDER BY created_at DESC, rowid DESC
+            LIMIT -1 OFFSET ?
+            """,
+            (actor_id, limit),
+        ).fetchall()
+
+        rows_by_fingerprint = {}
+        for fingerprint, memory_ids_json in [*ttl_rows, *overflow_rows]:
+            rows_by_fingerprint[fingerprint] = memory_ids_json
+        if not rows_by_fingerprint:
+            return
+
+        for memory_ids_json in rows_by_fingerprint.values():
+            self._delete_memory_ids(memory_ids_json)
+
+        conn.executemany(
+            "DELETE FROM memory_governance WHERE agent_id = ? AND fingerprint = ?",
+            [(actor_id, fingerprint) for fingerprint in rows_by_fingerprint],
+        )
+
+    def _governance_delete_namespace(self, actor_id: str) -> None:
+        conn = self._governance_connection()
+        try:
+            conn.execute("DELETE FROM memory_governance WHERE agent_id = ?", (actor_id,))
+            conn.commit()
+        finally:
+            conn.close()
+
+    def add_memory(
+        self,
+        agent_id: str,
+        content: str,
+        metadata: Optional[dict] = None,
+        role: Optional[str] = None,
+        scope: str = "private",
+    ):
+        if not self._ensure_ready() or not self.memory:
+            return None
+
+        normalized_role = self._normalize_role(role)
+        normalized_scope = self._normalize_scope(scope)
+        actor_id = self._memory_namespace(agent_id, normalized_role, scope=normalized_scope)
+        effective_metadata = dict(metadata or {})
+        effective_metadata.setdefault("memory_role", normalized_role)
+        effective_metadata.setdefault("memory_scope", normalized_scope)
+        fingerprint = self._memory_fingerprint(content, effective_metadata)
+        created_at = time.time()
+        metadata_json = json.dumps(effective_metadata, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        limit = self._namespace_memory_limit()
+
+        conn = self._governance_connection()
+        try:
+            existing = conn.execute(
+                "SELECT fingerprint FROM memory_governance WHERE agent_id = ? AND fingerprint = ?",
+                (actor_id, fingerprint),
+            ).fetchone()
+            if existing:
+                return {"status": "deduplicated", "fingerprint": fingerprint}
+
+            stored = self.memory.add(
+                content,
+                agent_id=actor_id,
+                metadata=effective_metadata,
+            )
+            if stored is None:
+                return None
+
+            memory_ids_json = json.dumps(self._extract_memory_ids(stored), ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+            conn.execute(
+                "INSERT INTO memory_governance(agent_id, fingerprint, content, metadata_json, memory_ids_json, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+                (actor_id, fingerprint, content, metadata_json, memory_ids_json, created_at),
+            )
+            self._governance_prune(conn, actor_id, limit)
+            conn.commit()
+            return stored
+        finally:
+            conn.close()
+
+    def get_memories(
+        self,
+        agent_id: str,
+        query: Optional[str] = None,
+        limit: int = 5,
+        role: Optional[str] = None,
+        scope: str = "private",
+    ) -> List[Dict[str, Any]]:
+        if not self._ensure_ready() or not self.memory:
+            return []
+        normalized_role = self._normalize_role(role)
+        normalized_scope = self._normalize_scope(scope, allow_combined=True)
+        private_namespace = self._memory_namespace(agent_id, normalized_role, scope="private")
+
+        if normalized_scope == "private":
+            return self._search_namespace(private_namespace, query, limit)
+
+        shared_namespace = self._memory_namespace(agent_id, normalized_role, scope="shared")
+        if normalized_scope == "shared":
+            return self._search_namespace(shared_namespace, query, limit)
+
+        private_results = self._search_namespace(private_namespace, query, limit)
+        shared_results = self._search_namespace(shared_namespace, query, limit)
+        merged: List[Dict[str, Any]] = []
+        seen = set()
+        for item in [*private_results, *shared_results]:
+            key = json.dumps(item, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str)
+            if key in seen:
+                continue
+            seen.add(key)
+            merged.append(item)
+            if len(merged) >= limit:
+                break
+        return merged
+
+    def delete_all_memories(self, agent_id: str, role: Optional[str] = None, scope: str = "private"):
+        normalized_scope = self._normalize_scope(scope)
+        actor_id = self._memory_namespace(agent_id, role, scope=normalized_scope)
         if self._ensure_ready() and self.memory:
-            self.memory.delete_all(agent_id=self._memory_actor_id(agent_id, role))
+            self.memory.delete_all(agent_id=actor_id)
+        self._governance_delete_namespace(actor_id)
 
     def _normalize_search_results(self, result: Any) -> List[Dict[str, Any]]:
         if isinstance(result, dict):

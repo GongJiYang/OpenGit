@@ -22,6 +22,8 @@ class PersistentMemoryInput(BaseModel):
     agent_id: str = Field(..., description="The unique ID of the agent")
     role: Optional[str] = Field(None, description="Optional role namespace for memory isolation")
     metadata: Optional[dict] = Field(None, description="Optional metadata for the memory (only for 'add')")
+    scope: Optional[str] = Field(None, description="Memory scope: private, shared, or combined for search")
+    shared: Optional[bool] = Field(None, description="Deprecated alias for shared scope")
 
 class PersistentMemorySkill(Skill):
     """
@@ -39,20 +41,25 @@ class PersistentMemorySkill(Skill):
         agent_id: str,
         role: Optional[str] = None,
         metadata: dict = None,
+        scope: Optional[str] = None,
+        shared: Optional[bool] = None,
     ) -> dict:
         if not get_memory_service:
             return {"error": "MemoryService not available in current environment"}
 
         service = get_memory_service()
+        effective_scope = scope
+        if effective_scope is None and shared:
+            effective_scope = "shared"
 
         if action == "add":
-            res = service.add_memory(agent_id, content, metadata, role=role)
+            res = service.add_memory(agent_id, content, metadata, role=role, scope=effective_scope or "private")
             if res is None:
                 return {"status": "error", "message": "Memory save failed", "result": None}
             return {"status": "success", "message": "Memory saved", "result": res}
 
         elif action == "search":
-            memories = service.get_memories(agent_id, content, role=role)
+            memories = service.get_memories(agent_id, content, role=role, scope=effective_scope or "private")
             return {
                 "status": "success",
                 "count": len(memories),

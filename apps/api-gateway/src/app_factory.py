@@ -1,5 +1,4 @@
 # ruff: noqa: E402
-import sys
 import os
 import logging
 import subprocess
@@ -21,20 +20,11 @@ from agent_auth.models.platform import UserAgentBinding
 from core.middleware import limiter, setup_rate_limit_and_middlewares
 from core.settings import get_settings
 
-# --- Hack for Monorepo Paths (MVP only) ---
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-if BASE_DIR not in sys.path:
-    sys.path.append(BASE_DIR)
-sys.path.append(os.path.abspath(os.path.join(BASE_DIR, "../../../packages/protocol/src")))
-sys.path.append(os.path.abspath(os.path.join(BASE_DIR, "../../../services/git-core/src")))
-sys.path.append(os.path.abspath(os.path.join(BASE_DIR, "../../../services/semantic-store/src")))
-sys.path.append(os.path.abspath(os.path.join(BASE_DIR, "../../../services/execution-vmm/src")))
-# Add monorepo root to import skills/bots
-sys.path.append(os.path.abspath(os.path.join(BASE_DIR, "../../../")))
 
 from core.lifespan import lifespan
-from dependencies.services import get_indexer, get_sandbox
-from core.security import get_secure_repo_path
+from dependencies.services import get_indexer, get_sandbox, get_session_manager
+from core.security import ensure_governance_allows_execution, get_secure_repo_path
 from agent_auth.routers import agent_router, claim_router, oauth_router, wechat_router
 from meta import meta_router
 from agent_auth.deps import get_auth_session
@@ -50,6 +40,7 @@ from routers.commits import router as commits_router
 from routers.leaderboard import router as leaderboard_router
 from routers.repos import router as repos_router
 from routers.system import router as system_router
+from routers.backlog_governance import router as backlog_governance_router
 from schemas.repos import CreateRepoRequest
 from schemas.search import SearchResponse
 from schemas.workitems import WorkItemListResponse
@@ -127,6 +118,7 @@ async def get_role_prompt(
     role_name: str,
     agent_id: Optional[str] = None,
     query: Optional[str] = None,
+    memory_scope: str = "private",
     raw: bool = False,
     principal: Any = Depends(require_active_identity),
     auth_session: Session = Depends(get_auth_session),
@@ -189,6 +181,7 @@ async def get_role_prompt(
             target_agent_id,
             query=query,
             role=role,
+            scope=memory_scope,
         )
         if memories:
             memory_context = "\n\n### 🧠 RELEVANT HISTORICAL EXPERIENCE\n"
@@ -285,7 +278,7 @@ def index_code(
     except subprocess.CalledProcessError:
         raise HTTPException(status_code=404, detail="File not found in repository HEAD")
 
-    chunks = parser.parse(content)
+    chunks = parser.parse(content, file_path=file_path)
     idx.clear_file_index(repo_name, file_path)
     for c in chunks:
         idx.index_chunk(repo_name, file_path, c)
@@ -349,6 +342,8 @@ def search_code(
 @limiter.limit("10/minute")
 def verify_repo(request: Request, repo_name: str, cmd: str = "pytest", agent: Any = Depends(require_agent)):
     """Trigger the Sandbox to run tests on a repo (with command validation)."""
+    ensure_governance_allows_execution(verify_endpoint=True)
+
     normalized_cmd = (cmd or "pytest").strip()
     try:
         tokens = ExecutionGuard.verify_command(normalized_cmd)
@@ -377,12 +372,20 @@ def verify_repo(request: Request, repo_name: str, cmd: str = "pytest", agent: An
     if not sb:
         raise HTTPException(status_code=503, detail="Subprocess sandbox is not initialized")
 
+    session_manager = get_session_manager(request)
+    if not session_manager:
+        raise HTTPException(status_code=503, detail="Session manager is not initialized")
+
     # Clone bare repo to a temporary working directory so tests have a worktree
     work_dir = tempfile.mkdtemp(prefix="agenthub_verify_")
+    verify_task_id = f"verify:{repo_name}"
     try:
         subprocess.run(["git", "clone", bare_repo_path, work_dir], check=True, capture_output=True)
-        exit_code, output = sb.run_tests(work_dir, " ".join(tokens))
+        session_manager.get_or_create_session(str(agent.id), verify_task_id, work_dir)
+        exit_code, output = session_manager.execute_with_status(str(agent.id), verify_task_id, " ".join(tokens))
     finally:
+        if session_manager:
+            session_manager.close_session(str(agent.id), verify_task_id)
         shutil.rmtree(work_dir, ignore_errors=True)
 
     return {
@@ -523,6 +526,7 @@ def create_app() -> FastAPI:
     from skills.api_router import router as skills_router  # type: ignore
 
     app.include_router(skills_router, prefix="/api/v1")
+    app.include_router(backlog_governance_router, prefix="/api/v1")
 
     return app
 

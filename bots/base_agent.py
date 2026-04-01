@@ -19,7 +19,7 @@ if skills_root not in sys.path:
 
 from skills.registry import SkillRegistry  # noqa: E402
 from skills.library.file_ops import ReadFileSkill, WriteFileSkill  # noqa: E402
-from skills.library.solution_ops import SearchSolutionSkill, StoreSolutionSkill  # noqa: E402
+from skills.library.solution_ops import SearchSolutionSkill, StoreSolutionSkill, FeedbackSolutionSkill  # noqa: E402
 from skills.library.template_ops import (  # noqa: E402
     ListTemplatesSkill, GetTemplateSkill, RenderTemplateSkill,
     ReplaceBlockSkill, InsertBlockSkill, WrapBlockSkill,
@@ -48,6 +48,7 @@ class BaseAgent:
         # 解决方案知识库技能
         self.skills.register(SearchSolutionSkill())
         self.skills.register(StoreSolutionSkill())
+        self.skills.register(FeedbackSolutionSkill())
         # 结构化变更模板技能
         self.skills.register(ListTemplatesSkill())
         self.skills.register(GetTemplateSkill())
@@ -154,9 +155,22 @@ class BaseAgent:
 
     def search_code(self, query: str) -> List[Dict]:
         try:
-            res = requests.get(f"{API_URL}/search", params={"query": query})
-            return res.json()
-        except Exception:
+            res = requests.get(f"{API_URL}/search", params={"query": query, "strict": True})
+            if res.status_code == 200:
+                return res.json()
+            if res.status_code == 503:
+                detail = {}
+                try:
+                    detail = res.json().get("detail", {})
+                except Exception:
+                    detail = {}
+                reason = detail.get("reason") or detail.get("error_code") or str(res.status_code)
+                self.log(f"语义搜索不可用，降级为空结果: {reason}", "⚠️")
+                return []
+            self.log(f"语义搜索失败: {res.status_code}", "⚠️")
+            return []
+        except Exception as e:
+            self.log(f"语义搜索请求失败: {e}", "⚠️")
             return []
 
     def list_repos(self) -> List[str]:
@@ -247,7 +261,7 @@ class BaseAgent:
         使用策略:
             1. 新异常 → 先在 KB 检索
             2. 如果命中相似度高 → 直接返回方案，LLM 只需确认+执行
-            3. 如果无命中 → LLM 正常推理 → 推理成功后写回 KB
+            3. 如果 KB 不可用或无命中 → LLM 正常推理 → 推理成功后写回 KB
 
         Args:
             error_type: 错误类型 (TypeError, ImportError, etc.)
@@ -256,38 +270,54 @@ class BaseAgent:
 
         Returns:
             {
-                "source": "kb_memoization" | "llm_inference",
-                "solution": {...} | None,  # KB 命中时的方案
+                "source": "kb_memoization" | "kb_unavailable_fallback" | "llm_inference",
+                "solution": {...} | None,
                 "action": "confirm_and_execute" | "reason_and_solve",
-                "similarity": float  # 相似度分数（仅 KB 命中时）
+                "similarity": float,
+                "availability": dict,
+                "solution_id": str | None,
             }
         """
-        # 1. 先检索 KB
         kb_result = self.use_skill("search_solution",
             error_type=error_type,
             error_message=error_message,
             stack_trace=stack_trace
         )
+        availability = kb_result.get("availability") or {}
 
         if kb_result.get("found"):
             similarity = kb_result.get("similarity", 0)
-            if similarity >= 0.85:  # 相似度阈值
-                # 2a. 命中 → 直接返回方案，LLM 只确认
+            if similarity >= 0.85:
                 self.log(f"KB 命中! 相似度 {similarity:.2%}", "🎯")
                 return {
                     "source": "kb_memoization",
                     "action": "confirm_and_execute",
                     "similarity": similarity,
-                    "solution": kb_result["solution"]
+                    "solution": kb_result["solution"],
+                    "solution_id": kb_result["solution"].get("solution_id"),
+                    "availability": availability,
                 }
 
-        # 2b. 未命中 → LLM 正常推理
+        if availability.get("unavailable"):
+            reason = availability.get("reason") or availability.get("error_code") or "unknown"
+            self.log(f"KB 不可用，降级到 LLM 推理: {reason}", "⚠️")
+            return {
+                "source": "kb_unavailable_fallback",
+                "action": "reason_and_solve",
+                "similarity": 0,
+                "solution": None,
+                "solution_id": None,
+                "availability": availability,
+            }
+
         self.log("KB 未命中，启动 LLM 推理...", "🧠")
         return {
             "source": "llm_inference",
             "action": "reason_and_solve",
             "similarity": 0,
-            "solution": None
+            "solution": None,
+            "solution_id": None,
+            "availability": availability,
         }
 
     def store_solution(
@@ -334,9 +364,41 @@ class BaseAgent:
         if result.get("stored"):
             self.log(f"解决方案已写入 KB (sig: {result.get('signature')})", "💾")
             return True
-        else:
-            self.log("解决方案写入失败", "⚠️")
+
+        availability = result.get("availability") or {}
+        if availability.get("unavailable"):
+            reason = availability.get("reason") or availability.get("error_code") or "unknown"
+            self.log(f"解决方案未写入 KB（后端不可用）: {reason}", "⚠️")
             return False
+
+        if availability.get("error_code") or availability.get("reason"):
+            detail = availability.get("reason") or availability.get("error_code")
+            self.log(f"解决方案写入失败: {detail}", "⚠️")
+            return False
+
+        self.log("解决方案写入失败", "⚠️")
+        return False
+
+    def record_solution_feedback(self, solution_id: str, result: str) -> bool:
+        feedback = self.use_skill("feedback_solution", solution_id=solution_id, result=result)
+        availability = feedback.get("availability") or {}
+
+        if feedback.get("updated"):
+            self.log(f"命中方案反馈已回写 KB: {result}", "📈")
+            return True
+
+        if availability.get("unavailable"):
+            reason = availability.get("reason") or availability.get("error_code") or "unknown"
+            self.log(f"命中方案反馈未写入 KB（后端不可用）: {reason}", "⚠️")
+            return False
+
+        if availability.get("error_code") or availability.get("reason"):
+            detail = availability.get("reason") or availability.get("error_code")
+            self.log(f"命中方案反馈写入失败: {detail}", "⚠️")
+            return False
+
+        self.log("命中方案反馈写入失败", "⚠️")
+        return False
 
     def parse_error_output(self, error_output: str) -> Dict:
         """
