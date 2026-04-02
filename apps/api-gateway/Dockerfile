@@ -15,8 +15,8 @@ COPY apps/api-gateway /app/apps/api-gateway
 # Install dependencies
 RUN pip install fastapi uvicorn pydantic pydantic-settings python-multipart gitpython requests httpx numpy zhipuai qdrant-client mem0ai slowapi sqlmodel 'bcrypt>=4.0.1,<5.0.0' passlib python-jose[cryptography] apscheduler sniffio psycopg2-binary aiohttp alembic pyyaml jinja2
 
-# Install Protocol Package
-RUN pip install /app/packages/protocol
+# Install local monorepo packages required at runtime
+RUN pip install /app/packages/protocol /app/services/git-core /app/services/semantic-store /app/services/execution-vmm
 
 # Set Working Directory to Gateway
 WORKDIR /app/apps/api-gateway
