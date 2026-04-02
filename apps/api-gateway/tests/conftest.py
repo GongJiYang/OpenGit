@@ -11,8 +11,11 @@ from fastapi.testclient import TestClient
 from sqlalchemy import inspect
 from sqlmodel import Session
 
-# Ensure src is importable
+# Ensure src and repo-root packages are importable
+REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "../.."))
 SRC_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "../src"))
+if REPO_ROOT not in sys.path:
+    sys.path.insert(0, REPO_ROOT)
 if SRC_DIR not in sys.path:
     sys.path.insert(0, SRC_DIR)
 

@@ -44,7 +44,7 @@ jobs:
 
       - name: Run api-gateway security regression subset
         env:
-          PYTHONPATH: ${{ github.workspace }}/packages/protocol/src:${{ github.workspace }}/services/git-core/src:${{ github.workspace }}/services/semantic-store/src:${{ github.workspace }}/services/execution-vmm/src:${{ github.workspace }}/apps/api-gateway/src
+          PYTHONPATH: ${{ github.workspace }}:${{ github.workspace }}/packages/protocol/src:${{ github.workspace }}/services/git-core/src:${{ github.workspace }}/services/semantic-store/src:${{ github.workspace }}/services/execution-vmm/src:${{ github.workspace }}/apps/api-gateway/src
         run: |
           pytest -q \
             tests/test_security_failfast.py \
