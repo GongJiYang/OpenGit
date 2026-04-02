@@ -10,6 +10,7 @@ dependencies = [
     "fastapi",
     "uvicorn",
     "pydantic-settings",
+    "slowapi",
     "mem0ai",
     "zhipuai",
     "qdrant-client",
