@@ -1,4 +1,32 @@
+import pytest
+
 from core.settings import Settings
+
+
+@pytest.mark.parametrize(
+    "raw,expected",
+    [
+        ("off", "off"),
+        ("observe", "observe"),
+        ("enforce", "enforce"),
+        (" EnFoRcE ", "enforce"),
+        ("invalid", "off"),
+    ],
+)
+def test_settings_normalized_governance_mode(monkeypatch, raw, expected):
+    monkeypatch.setenv("APP_GOVERNANCE_MODE", raw)
+
+    settings = Settings()
+
+    assert settings.normalized_governance_mode == expected
+
+
+def test_settings_governance_mode_defaults_to_off(monkeypatch):
+    monkeypatch.delenv("APP_GOVERNANCE_MODE", raising=False)
+
+    settings = Settings()
+
+    assert settings.normalized_governance_mode == "off"
 
 
 def test_settings_rejects_too_small_password_min_length(monkeypatch):
@@ -83,3 +111,24 @@ def test_settings_rejects_non_positive_session_ttl(monkeypatch):
     problems = settings.collect_security_problems()
 
     assert "APP_SESSION_TTL_SECONDS must be at least 1" in problems
+
+
+def test_settings_rejects_mismatched_auth_database_url(monkeypatch):
+    monkeypatch.setenv("DATABASE_URL", "sqlite:////tmp/main.db")
+    monkeypatch.setenv("AUTH_DATABASE_URL", "sqlite:////tmp/auth.db")
+
+    settings = Settings()
+    problems = settings.collect_security_problems()
+
+    assert "AUTH_DATABASE_URL and DATABASE_URL must match (single-database mode)" in problems
+
+
+def test_settings_accepts_matching_auth_database_url(monkeypatch):
+    same_url = "sqlite:////tmp/agenthub.db"
+    monkeypatch.setenv("DATABASE_URL", same_url)
+    monkeypatch.setenv("AUTH_DATABASE_URL", same_url)
+
+    settings = Settings()
+    problems = settings.collect_security_problems()
+
+    assert "AUTH_DATABASE_URL and DATABASE_URL must match (single-database mode)" not in problems

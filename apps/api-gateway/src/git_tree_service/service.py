@@ -6,7 +6,10 @@ import tempfile
 from datetime import datetime, timezone
 from typing import Optional
 
-from agenthub_protocol.schemas import TRACE_COMMIT_PROTOCOL_VERSION
+from agenthub_protocol.schemas import (
+    TRACE_COMMIT_PROTOCOL_VERSION,
+    TRACE_COMMIT_MAX_COMMIT_MESSAGE_BYTES,
+)
 from agenthub_protocol.signing import (
     compute_binding_hash,
     compute_diff_hash_from_patch,
@@ -21,6 +24,8 @@ from sqlmodel import Session, select
 from persistence import Bounty, BountyStatus
 
 class GitTreeService:
+    SYSTEM_TASK_TREE_AGENT_ID = "system/task-tree-sync"
+
     def __init__(self, session: Session, storage_root: str):
         self.session = session
         self.storage_root = os.path.abspath(storage_root)
@@ -28,7 +33,7 @@ class GitTreeService:
     @staticmethod
     def _build_system_trace_commit(
         *,
-        trusted_agent_id: str,
+        author_agent_id: str,
         model_name: str,
         diff_summary: str,
         reasoning_trace: list[str],
@@ -40,6 +45,11 @@ class GitTreeService:
         timestamp_iso: str,
         signing_secret: str,
     ) -> dict:
+        trigger_note = (
+            author_agent_id
+            if isinstance(author_agent_id, str) and author_agent_id.strip()
+            else "system"
+        )
         trace_commit = {
             "protocol_version": TRACE_COMMIT_PROTOCOL_VERSION,
             "tree_hash": tree_hash,
@@ -60,17 +70,20 @@ class GitTreeService:
                 "vector": [0.0],
             },
             "author": {
-                "agent_id": trusted_agent_id,
+                "agent_id": GitTreeService.SYSTEM_TASK_TREE_AGENT_ID,
                 "model_name": model_name,
             },
             "parent_sha": parent_sha,
             "timestamp": timestamp_iso,
+            "automation": {
+                "triggered_by_agent_id": trigger_note,
+            },
         }
         trace_commit["binding_hash"] = compute_binding_hash(trace_commit)
         trace_commit["signature"] = sign_trace_commit(
             trace_commit,
             signing_secret,
-            agent_id=trusted_agent_id,
+            agent_id=GitTreeService.SYSTEM_TASK_TREE_AGENT_ID,
         )
         return trace_commit
 
@@ -114,8 +127,19 @@ class GitTreeService:
 
         return "\n".join(mermaid)
 
-    def sync_repo_task_tree(self, repo_name: str, trusted_agent_id: str = "system"):
-        """Update BOUNTY_TREE.md in the bare repository with TraceCommit JSON."""
+    @staticmethod
+    def _build_commit_message(trace_commit: dict) -> str:
+        commit_msg = json.dumps(trace_commit, ensure_ascii=False, separators=(",", ":"))
+        commit_msg_bytes = len(commit_msg.encode("utf-8"))
+        if commit_msg_bytes > TRACE_COMMIT_MAX_COMMIT_MESSAGE_BYTES:
+            raise RuntimeError(
+                "TraceCommit payload too large for git commit message "
+                f"({commit_msg_bytes} bytes > {TRACE_COMMIT_MAX_COMMIT_MESSAGE_BYTES})"
+            )
+        return commit_msg
+
+    def sync_repo_task_tree(self, repo_name: str, actor_agent_id: str = "system"):
+        """Update BOUNTY_TREE.md in bare repo as system actor; keep trigger agent in automation metadata."""
         bare_repo_path = os.path.join(self.storage_root, repo_name)
         if not os.path.exists(bare_repo_path):
             return
@@ -169,7 +193,7 @@ class GitTreeService:
             ]
 
             trace_commit = self._build_system_trace_commit(
-                trusted_agent_id=trusted_agent_id,
+                author_agent_id=actor_agent_id,
                 model_name="agenthub-system/git-tree-service",
                 diff_summary="update BOUNTY_TREE.md task graph visualization",
                 reasoning_trace=reasoning_trace,
@@ -190,13 +214,13 @@ class GitTreeService:
             if not verify_trace_commit_signature(trace_commit, signing_secret):
                 raise RuntimeError("Generated TraceCommit signature verification failed")
 
-            commit_msg = json.dumps(trace_commit)
+            commit_msg = self._build_commit_message(trace_commit)
             git_identity_env = {
                 **os.environ,
-                "GIT_AUTHOR_NAME": trusted_agent_id,
-                "GIT_AUTHOR_EMAIL": f"{trusted_agent_id}@agenthub.dev",
-                "GIT_COMMITTER_NAME": trusted_agent_id,
-                "GIT_COMMITTER_EMAIL": f"{trusted_agent_id}@agenthub.dev",
+                "GIT_AUTHOR_NAME": self.SYSTEM_TASK_TREE_AGENT_ID,
+                "GIT_AUTHOR_EMAIL": "system-task-tree-sync@agenthub.dev",
+                "GIT_COMMITTER_NAME": self.SYSTEM_TASK_TREE_AGENT_ID,
+                "GIT_COMMITTER_EMAIL": "system-task-tree-sync@agenthub.dev",
             }
             subprocess.run(
                 ["git", "commit", "-m", commit_msg],
@@ -206,7 +230,10 @@ class GitTreeService:
                 env=git_identity_env,
             )
 
-            review_branch = f"system/{trusted_agent_id}/task-tree-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}-{secrets.token_hex(4)}"
+            review_branch = (
+                f"system/task-tree-sync/task-tree-"
+                f"{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}-{secrets.token_hex(4)}"
+            )
             subprocess.run(["git", "checkout", "-b", review_branch], cwd=work_dir, check=True, capture_output=True)
             subprocess.run(["git", "push", "origin", review_branch], cwd=work_dir, check=True, capture_output=True)
         finally:

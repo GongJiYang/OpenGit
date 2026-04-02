@@ -20,6 +20,8 @@ spec:
                 secretKeyRef:
                   name: api-gateway-secrets
                   key: DATABASE_URL
+            - name: PYTHONPATH
+              value: "/app:/app/apps/api-gateway:/app/apps/api-gateway/src:/app/packages/protocol/src:/app/services/git-core/src:/app/services/semantic-store/src:/app/services/execution-vmm/src"
             - name: ALEMBIC_CONFIG
               value: /app/apps/api-gateway/alembic.ini
           command: ["sh","-c"]

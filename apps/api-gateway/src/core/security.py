@@ -8,6 +8,25 @@ from agenthub_protocol.path_utils import ensure_safe_path
 from core.settings import get_settings
 
 
+GOVERNANCE_ENFORCE_EXECUTION_FORBIDDEN_DETAIL = (
+    "Forbidden: execution endpoints are disabled when APP_GOVERNANCE_MODE=enforce"
+)
+GOVERNANCE_ENFORCE_VERIFY_NOT_IMPLEMENTED_DETAIL = (
+    "Local verify endpoint is disabled when APP_GOVERNANCE_MODE=enforce"
+)
+
+
+def ensure_governance_allows_execution(*, verify_endpoint: bool = False) -> None:
+    settings = get_settings()
+    if settings.normalized_governance_mode != "enforce":
+        return
+
+    if verify_endpoint:
+        raise HTTPException(status_code=501, detail=GOVERNANCE_ENFORCE_VERIFY_NOT_IMPLEMENTED_DETAIL)
+
+    raise HTTPException(status_code=403, detail=GOVERNANCE_ENFORCE_EXECUTION_FORBIDDEN_DETAIL)
+
+
 def validate_security_env() -> None:
     """Validate critical security env vars and fail-fast on insecure config."""
     settings = get_settings(refresh=True)

@@ -11,10 +11,21 @@ from sqlalchemy import event
 
 # Singleton Engine
 _engine = None
+CREATE_ALL_ENV_FLAG = "ALLOW_SQLMODEL_CREATE_ALL"
+DEFAULT_SQLITE_URL = "sqlite:///./agenthub_data/agenthub.db"
+
 
 def get_database_url() -> str:
-    """Get the database URL from environment or use default."""
-    return os.getenv("AUTH_DATABASE_URL") or os.getenv("DATABASE_URL", "sqlite:///./agenthub_data/agents.db")
+    """Get the database URL with single-database enforcement."""
+    database_url = os.getenv("DATABASE_URL")
+    auth_database_url = os.getenv("AUTH_DATABASE_URL")
+
+    if database_url and auth_database_url and database_url != auth_database_url:
+        raise RuntimeError(
+            "AUTH_DATABASE_URL and DATABASE_URL must match (single-database mode)"
+        )
+
+    return database_url or auth_database_url or DEFAULT_SQLITE_URL
 
 
 def get_engine():
@@ -46,6 +57,12 @@ def create_db_and_tables(engine=None):
     """
     Create database and all tables.
     """
+    if os.getenv(CREATE_ALL_ENV_FLAG) != "1":
+        raise RuntimeError(
+            "create_db_and_tables is disabled in runtime path. "
+            f"Use Alembic migrations instead; set {CREATE_ALL_ENV_FLAG}=1 only for tests/bootstrap."
+        )
+
     if engine is None:
         engine = get_engine()
         # Ensure data directory exists
@@ -67,7 +84,5 @@ def get_db():
 
 
 if __name__ == "__main__":
-    # Run this script directly to initialize database
-    print("Initializing AgentHub Agent Authentication database...")
-    engine = create_db_and_tables()
-    print("Database initialization complete!")
+    print("Runtime direct create_all is disabled. Use Alembic migrations instead.")
+    print(f"If you really need local bootstrap/testing, rerun with {CREATE_ALL_ENV_FLAG}=1.")

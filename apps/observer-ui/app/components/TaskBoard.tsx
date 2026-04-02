@@ -26,6 +26,15 @@ export default function TaskBoard({ repoId }: { repoId: string }) {
     const [loading, setLoading] = useState(true);
     const [filter, setFilter] = useState<"all" | "open" | "in_progress" | "submitted" | "completed">("all");
 
+    const getWriteAuthHeaders = (): Record<string, string> => {
+        const token = localStorage.getItem("token");
+        const headers: Record<string, string> = {};
+        if (token) {
+            headers["Authorization"] = `Bearer ${token}`;
+        }
+        return headers;
+    };
+
     const fetchTasks = useCallback(async () => {
         try {
             setLoading(true);
@@ -48,7 +57,8 @@ export default function TaskBoard({ repoId }: { repoId: string }) {
         setLoading(true);
         try {
             const res = await fetch(`${API_BASE}/bounties/${taskId}/claim`, {
-                method: "POST"
+                method: "POST",
+                headers: getWriteAuthHeaders()
             });
             if (res.ok) {
                 await fetchTasks();

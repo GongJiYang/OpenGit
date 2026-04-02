@@ -31,6 +31,7 @@ interface PreparationModeProps {
   bounties: Bounty[];
   onClaimPreparation: (bountyId: string, notes: string) => Promise<void>;
   onActivate: (bountyId: string) => Promise<void>;
+  onViewDetails?: (bountyId: string) => void;
 }
 
 const STATUS_CONFIG: Record<string, { color: string; bgColor: string; borderColor: string }> = {
@@ -40,7 +41,7 @@ const STATUS_CONFIG: Record<string, { color: string; bgColor: string; borderColo
   in_progress: { color: "text-blue-400", bgColor: "bg-blue-500/10", borderColor: "border-blue-500/30" },
 };
 
-export default function PreparationMode({ bounties, onClaimPreparation, onActivate }: PreparationModeProps) {
+export default function PreparationMode({ bounties, onClaimPreparation, onActivate, onViewDetails }: PreparationModeProps) {
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [preparationNotes, setPreparationNotes] = useState<Record<string, string>>({});
   const [isSubmitting, setIsSubmitting] = useState<string | null>(null);
@@ -275,7 +276,10 @@ export default function PreparationMode({ bounties, onClaimPreparation, onActiva
                     )}
 
                     {/* View details */}
-                    <button className="px-4 py-2 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 rounded-lg flex items-center gap-2 text-sm transition-colors">
+                    <button
+                      onClick={() => onViewDetails?.(bounty.id)}
+                      className="px-4 py-2 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 rounded-lg flex items-center gap-2 text-sm transition-colors"
+                    >
                       <FileText className="w-4 h-4" />
                       Details
                     </button>

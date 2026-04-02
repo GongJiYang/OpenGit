@@ -391,6 +391,7 @@ class VerificationService:
             # Ban if reputation drops too low
             if runner.reputation_score < 20:
                 runner.status = RunnerStatus.BANNED
+                runner.is_banned = True
                 runner.banned_at = datetime.utcnow()
                 runner.banned_reason = f"Audit failure: {explanation}"
 

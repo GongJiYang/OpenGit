@@ -86,6 +86,12 @@ class RestoreRequest(BaseModel):
     pass
 
 
+class GovernanceTransitionRequest(BaseModel):
+    to_status: str
+    reason: Optional[str] = None
+    force: bool = True
+
+
 class BountyDecisionRequest(BaseModel):
     """Request for submitting bounty analysis/decision options."""
 

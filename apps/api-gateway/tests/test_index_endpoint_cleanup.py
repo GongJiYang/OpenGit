@@ -55,8 +55,9 @@ def test_index_endpoint_reads_repo_head_and_clears_stale_vectors(client, auth_he
     calls = []
 
     class _FakeParser:
-        def parse(self, content):
+        def parse(self, content, file_path=None):
             assert content == "from-head\n"
+            assert file_path == "pkg/mod.py"
             return ["chunk-1", "chunk-2"]
 
     class _FakeIndexer:
@@ -94,7 +95,7 @@ def test_index_endpoint_reads_repo_head_and_clears_stale_vectors(client, auth_he
 
 def test_index_endpoint_rejects_missing_head_file(client, auth_headers):
     class _FakeParser:
-        def parse(self, content):
+        def parse(self, content, file_path=None):
             return []
 
     class _FakeIndexer:

@@ -14,7 +14,6 @@ from sqlmodel import Session, select
 
 from ..models import Agent, AgentStatus
 from ..utils.heartbeat_cache import get_heartbeat_cache
-from persistence import Bounty
 
 
 # ============== Configuration ==============
@@ -133,8 +132,8 @@ def cleanup_expired_temporary_claims(session: Session) -> dict:
     """
     Clean up expired temporary bounty claims.
 
-    Bounties that were temporarily claimed but not converted to permanent
-    claims within 24 hours will be released back to open status.
+    Delegates to BountyService so status release goes through FSM transition
+    and shares the same auditing/guard/concurrency semantics.
 
     Args:
         session: Database session
@@ -142,33 +141,10 @@ def cleanup_expired_temporary_claims(session: Session) -> dict:
     Returns:
         dict: Cleanup statistics
     """
-    now = datetime.utcnow()
+    from ..services.bounty_service import BountyService
 
-    # Find expired temporary claims
-    statement = select(Bounty).where(
-        Bounty.is_temporary_claim.is_(True),
-        Bounty.claim_expires_at < now,
-        Bounty.status == "in_progress"
-    )
-    expired_claims = session.exec(statement).all()
-
-    released_count = 0
-    for bounty in expired_claims:
-        # Release the bounty back to open
-        bounty.status = "open"
-        bounty.assignee = None
-        bounty.is_temporary_claim = False
-        bounty.claim_expires_at = None
-        bounty.updated_at = now
-        session.add(bounty)
-        released_count += 1
-
-    session.commit()
-
-    return {
-        "released_count": released_count,
-        "checked_at": now.isoformat(),
-    }
+    service = BountyService(bounty_session=session)
+    return service.cleanup_expired_temporary_claims()
 
 
 # ============== Heartbeat Timeout Check Task ==============
@@ -401,9 +377,7 @@ def setup_scheduled_tasks(session_factory) -> AsyncIOScheduler:
     )
     def temporary_claim_cleanup_job():
         with session_factory() as session:
-            from ..services.bounty_service import BountyService
-            service = BountyService(bounty_session=session)
-            result = service.cleanup_expired_temporary_claims()
+            result = cleanup_expired_temporary_claims(session)
             print(f"[Scheduler] Temporary claim cleanup: {result}")
 
     # Runner health check job

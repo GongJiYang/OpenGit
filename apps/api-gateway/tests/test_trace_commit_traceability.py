@@ -4,6 +4,7 @@ import shutil
 import subprocess
 import tempfile
 from datetime import datetime
+from uuid import uuid4
 from pathlib import Path
 
 import pytest
@@ -16,18 +17,23 @@ from agenthub_protocol.signing import (
     sign_trace_commit,
     verify_trace_commit_signature,
 )
+from agenthub_protocol.schemas import TRACE_COMMIT_MAX_COMMIT_MESSAGE_BYTES
 from agenthub_protocol.validator import TraceValidator
 
 from dependencies.auth import require_active_identity
 from persistence import Bounty, BountyStatus, CommitRecord
 
 from agent_auth.models import Agent
-from agent_auth.models.platform import Repo
+from agent_auth.models.platform import Repo, UserAgentBinding
 from agent_auth.models.runner import ComputeJob, ComputeJobStatus, ExecutionMode, RepoExecutionConfig
 from routers import commits as commits_router
 from git_tree_service.service import GitTreeService
 from agent_auth.utils import get_api_key_prefix
-from core.security import STORE_ROOT
+from core.security import (
+    STORE_ROOT,
+    GOVERNANCE_ENFORCE_EXECUTION_FORBIDDEN_DETAIL,
+    GOVERNANCE_ENFORCE_VERIFY_NOT_IMPLEMENTED_DETAIL,
+)
 
 
 
@@ -215,11 +221,13 @@ def test_commit_requires_non_empty_intent_vector(client, db_engine, auth_headers
         shutil.rmtree(bare_path, ignore_errors=True)
 
 
-def test_commit_returns_quality_warnings_for_weak_trace(client, db_engine, auth_headers):
+def test_commit_returns_quality_warnings_for_weak_trace(client, db_engine, auth_headers, monkeypatch):
     repo_name = "traceability-quality-warning-response"
     bare_path = os.path.abspath(os.path.join(STORE_ROOT, repo_name))
     if os.path.exists(bare_path):
         shutil.rmtree(bare_path, ignore_errors=True)
+
+    monkeypatch.setenv("TRACE_COMMIT_QUALITY_GATE", "warn")
 
     try:
         _init_repo_with_one_commit(bare_path)
@@ -257,6 +265,7 @@ def test_commit_returns_quality_warnings_for_weak_trace(client, db_engine, auth_
             assert isinstance(rec.trace_json.get("quality_warnings"), list)
             assert any("Weak Reasoning" in w for w in rec.trace_json.get("quality_warnings", []))
     finally:
+        monkeypatch.delenv("TRACE_COMMIT_QUALITY_GATE", raising=False)
         shutil.rmtree(bare_path, ignore_errors=True)
 
 
@@ -962,6 +971,21 @@ def test_execution_guard_sanitize_output_uses_head_tail_truncation():
     assert len(sanitized) > 80
 
 
+def test_verify_endpoint_returns_501_when_governance_enforce(client, auth_headers, monkeypatch):
+    monkeypatch.setenv("APP_GOVERNANCE_MODE", "enforce")
+    from core.settings import clear_settings_cache
+
+    clear_settings_cache()
+
+    res = client.post(
+        "/api/v1/verify",
+        params={"repo_name": "does-not-matter", "cmd": "pytest -q"},
+        headers=auth_headers,
+    )
+    assert res.status_code == 501
+    assert res.json().get("detail") == GOVERNANCE_ENFORCE_VERIFY_NOT_IMPLEMENTED_DETAIL
+
+
 def test_verify_endpoint_rejects_python_inline_execution(client, auth_headers):
     res = client.post(
         "/api/v1/verify",
@@ -1055,6 +1079,49 @@ def test_verify_endpoint_returns_503_when_subprocess_not_initialized(client, aut
     assert res.json().get("detail") == "Subprocess sandbox is not initialized"
 
 
+def test_verify_endpoint_returns_503_when_session_manager_not_initialized(client, auth_headers, monkeypatch):
+    from main import app
+
+    monkeypatch.setenv("APP_SECURITY_MODE", "warn")
+    monkeypatch.setenv("APP_SANDBOX_PROVIDER", "subprocess")
+    monkeypatch.setenv("APP_ALLOW_INSECURE_SUBPROCESS_SANDBOX", "true")
+    from core.settings import clear_settings_cache
+
+    clear_settings_cache()
+
+    original_sandbox = getattr(app.state, "sandbox", None)
+    original_session_manager = getattr(app.state, "session_manager", None)
+    app.state.sandbox = object()
+    app.state.session_manager = None
+    try:
+        res = client.post(
+            "/api/v1/verify",
+            params={"repo_name": "does-not-matter", "cmd": "pytest -q"},
+            headers=auth_headers,
+        )
+    finally:
+        app.state.sandbox = original_sandbox
+        app.state.session_manager = original_session_manager
+
+    assert res.status_code == 503
+    assert res.json().get("detail") == "Session manager is not initialized"
+
+
+def test_commit_verify_external_returns_403_when_governance_enforce(client, monkeypatch):
+    monkeypatch.setenv("APP_GOVERNANCE_MODE", "enforce")
+    from core.settings import clear_settings_cache
+
+    clear_settings_cache()
+
+    res = client.post(
+        "/api/v1/commits/1/verify/external",
+        json={"exit_code": 0, "stdout": "ok"},
+    )
+
+    assert res.status_code == 403
+    assert res.json().get("detail") == GOVERNANCE_ENFORCE_EXECUTION_FORBIDDEN_DETAIL
+
+
 def test_verify_endpoint_logs_use_head_tail_truncation(client, auth_headers, monkeypatch):
     from main import app
 
@@ -1074,12 +1141,24 @@ def test_verify_endpoint_logs_use_head_tail_truncation(client, auth_headers, mon
         clear_settings_cache()
 
         original_sandbox = getattr(app.state, "sandbox", None)
+        original_session_manager = getattr(app.state, "session_manager", None)
 
-        class _SB:
-            def run_tests(self, repo_path, test_command):
+        calls = {}
+
+        class _SessionManagerStub:
+            def get_or_create_session(self, agent_id, task_id, repo_path):
+                calls["create"] = (agent_id, task_id, repo_path)
+                return "sid-1"
+
+            def execute_with_status(self, agent_id, task_id, command):
+                calls["execute"] = (agent_id, task_id, command)
                 return 1, "HEAD-" + ("z" * 4000) + "-TAIL"
 
-        app.state.sandbox = _SB()
+            def close_session(self, agent_id, task_id):
+                calls["close"] = (agent_id, task_id)
+
+        app.state.sandbox = object()
+        app.state.session_manager = _SessionManagerStub()
         try:
             res = client.post(
                 "/api/v1/verify",
@@ -1088,9 +1167,17 @@ def test_verify_endpoint_logs_use_head_tail_truncation(client, auth_headers, mon
             )
         finally:
             app.state.sandbox = original_sandbox
+            app.state.session_manager = original_session_manager
 
         assert res.status_code == 200, res.text
-        logs = (res.json() or {}).get("logs") or ""
+        body = res.json() or {}
+        assert body.get("exit_code") == 1
+        assert body.get("passed") is False
+        assert calls["create"][1] == f"verify:{repo_name}"
+        assert calls["execute"][1] == f"verify:{repo_name}"
+        assert calls["execute"][2] == "pytest -q"
+        assert calls["close"][1] == f"verify:{repo_name}"
+        logs = body.get("logs") or ""
         assert "HEAD-" in logs
         assert "-TAIL" in logs
         assert "[TRUNCATED" in logs
@@ -1280,7 +1367,7 @@ def test_trace_validator_rejects_mismatched_binding_hash():
         TraceValidator.validate_commit(payload)
 
 
-def test_trace_validator_rejects_non_empty_doc_references():
+def test_trace_validator_allows_attestable_doc_references_and_env_vars_accessed():
     payload = {
         "protocol_version": "1.0",
         "tree_hash": "f" * 40,
@@ -1290,7 +1377,32 @@ def test_trace_validator_rejects_non_empty_doc_references():
         "rejected_alternatives": ["skip context policy"],
         "context_snapshot": {
             "file_paths": ["a.py"],
-            "doc_references": ["internal://spec"],
+            "doc_references": ["internal://spec/checkout-flow"],
+            "env_vars_accessed": ["TRACE_COMMIT_SIGNING_SECRET"],
+            "library_versions": {},
+        },
+        "intent": {"description": "do thing", "category": "fix", "vector": [0.0]},
+        "author": {"agent_id": "a1", "model_name": "m1"},
+        "timestamp": "2026-01-01T00:00:00+00:00",
+    }
+    payload["reasoning_hash"] = compute_reasoning_hash(payload["reasoning_trace"])
+
+    validated = TraceValidator.validate_commit(payload)
+    assert validated.context_snapshot.doc_references == ["internal://spec/checkout-flow"]
+    assert validated.context_snapshot.env_vars_accessed == ["TRACE_COMMIT_SIGNING_SECRET"]
+
+
+def test_trace_validator_rejects_non_attestable_doc_reference_format():
+    payload = {
+        "protocol_version": "1.0",
+        "tree_hash": "f" * 40,
+        "diff_hash": "0" * 64,
+        "diff_summary": "summary long enough",
+        "reasoning_trace": ["step1"],
+        "rejected_alternatives": ["skip context policy"],
+        "context_snapshot": {
+            "file_paths": ["a.py"],
+            "doc_references": ["../spec.md"],
             "env_vars_accessed": [],
             "library_versions": {},
         },
@@ -1304,7 +1416,7 @@ def test_trace_validator_rejects_non_empty_doc_references():
         TraceValidator.validate_commit(payload)
 
 
-def test_trace_validator_rejects_non_empty_env_vars_accessed():
+def test_trace_validator_rejects_non_uppercase_env_var_name():
     payload = {
         "protocol_version": "1.0",
         "tree_hash": "f" * 40,
@@ -1315,7 +1427,7 @@ def test_trace_validator_rejects_non_empty_env_vars_accessed():
         "context_snapshot": {
             "file_paths": ["a.py"],
             "doc_references": [],
-            "env_vars_accessed": ["INTERNAL_API_TOKEN"],
+            "env_vars_accessed": ["internal_api_token"],
             "library_versions": {},
         },
         "intent": {"description": "do thing", "category": "fix", "vector": [0.0]},
@@ -1412,10 +1524,10 @@ def test_trace_validator_rejects_timestamp_too_far_in_future():
         TraceValidator.validate_commit(payload, require_timezone_aware_timestamp=True)
 
 
-def test_signing_secret_defaults_to_internal_api_token(monkeypatch):
+def test_signing_secret_does_not_fallback_to_internal_api_token(monkeypatch):
     monkeypatch.delenv("TRACE_COMMIT_SIGNING_SECRET", raising=False)
     monkeypatch.setenv("INTERNAL_API_TOKEN", "internal-token-for-signing")
-    assert get_trace_signing_secret() == "internal-token-for-signing"
+    assert get_trace_signing_secret() is None
 
 
 def test_signing_secret_prefers_trace_secret(monkeypatch):
@@ -1572,13 +1684,14 @@ def test_git_tree_service_commit_message_is_trace_commit_json(client, db_engine,
 
         assert pushed["called"]
         assert pushed["ref"]
-        assert pushed["ref"].startswith(f"system/{agent_id}/task-tree-")
+        assert pushed["ref"].startswith("system/task-tree-sync/task-tree-")
         assert generated_commit_message["value"]
         payload = json.loads(generated_commit_message["value"])
 
         assert payload.get("protocol_version") == "1.0"
         assert payload.get("diff_summary") == "update BOUNTY_TREE.md task graph visualization"
-        assert payload.get("author", {}).get("agent_id") == agent_id
+        assert payload.get("author", {}).get("agent_id") == GitTreeService.SYSTEM_TASK_TREE_AGENT_ID
+        assert payload.get("automation", {}).get("triggered_by_agent_id") == agent_id
         assert payload.get("context_snapshot", {}).get("file_paths") == ["BOUNTY_TREE.md"]
         assert payload.get("signature")
         assert payload.get("tree_hash")
@@ -1760,6 +1873,10 @@ def test_commit_auto_verification_runner_provider_sets_runner_message(client, db
             s.refresh(bounty)
             bounty_id = bounty.id
 
+            owner_user_id = uuid4()
+            s.add(UserAgentBinding(user_id=owner_user_id, agent_id=agent_uuid))
+            s.commit()
+
         monkeypatch.setenv("APP_SANDBOX_PROVIDER", "runner")
         from core.settings import clear_settings_cache
 
@@ -1812,6 +1929,7 @@ def test_commit_auto_verification_runner_provider_sets_runner_message(client, db
             assert job.code_commit == rec.commit_sha
             assert job.test_command == "pytest -q"
             assert job.requester_agent_id == agent_uuid
+            assert job.requester_user_id == owner_user_id
             assert job.requester_type == "agent"
             assert job.timeout_seconds == 3600
             assert (job.env_vars or {}).get("repo_name") == repo_name
@@ -1839,6 +1957,7 @@ def test_commit_auto_verification_repo_execution_config_self_hosted_queues_runne
         with Session(db_engine) as s:
             agent = s.exec(select(Agent).where(Agent.api_key_prefix == api_key_prefix)).first()
             assert agent is not None
+            agent_uuid = agent.id
             agent_id = str(agent.id)
 
             repo = Repo(
@@ -1871,6 +1990,9 @@ def test_commit_auto_verification_repo_execution_config_self_hosted_queues_runne
 
             repo_cfg = RepoExecutionConfig(repo_id=repo_id, execution_mode=ExecutionMode.SELF_HOSTED)
             s.add(repo_cfg)
+
+            owner_user_id = uuid4()
+            s.add(UserAgentBinding(user_id=owner_user_id, agent_id=agent_uuid))
 
             s.commit()
             s.refresh(bounty)
@@ -1925,12 +2047,84 @@ def test_commit_auto_verification_repo_execution_config_self_hosted_queues_runne
             assert job.repo_id == repo_id
             assert job.execution_mode == ExecutionMode.SELF_HOSTED
             assert job.status == ComputeJobStatus.PENDING
+            assert job.requester_agent_id == agent_uuid
+            assert job.requester_user_id == owner_user_id
             assert job.timeout_seconds == 7200
             assert job.code_branch == rec.branch_name
             assert job.code_commit == rec.commit_sha
     finally:
         shutil.rmtree(bare_path, ignore_errors=True)
 
+
+
+def test_commit_compacts_reasoning_trace_for_git_message_when_payload_too_large(client, db_engine, auth_headers):
+    repo_name = "traceability-commit-message-too-large"
+    bare_path = os.path.abspath(os.path.join(STORE_ROOT, repo_name))
+    if os.path.exists(bare_path):
+        shutil.rmtree(bare_path, ignore_errors=True)
+
+    try:
+        _init_repo_with_one_commit(bare_path)
+
+        api_key = auth_headers["X-API-Key"]
+        api_key_prefix = get_api_key_prefix(api_key)
+
+        with Session(db_engine) as s:
+            agent = s.exec(select(Agent).where(Agent.api_key_prefix == api_key_prefix)).first()
+            assert agent is not None
+            agent_id = str(agent.id)
+
+        long_step = "x" * 2000
+        reasoning_steps_needed = (TRACE_COMMIT_MAX_COMMIT_MESSAGE_BYTES // 2000) + 8
+        req = {
+            "agent_id": agent_id,
+            "model_name": "traceability-test-model",
+            "files": {"trace.txt": "oversized trace\n"},
+            "intent_description": "compact oversized trace commit message payload",
+            "intent_category": "fix",
+            "intent_vector": [0.0],
+            "diff_summary": "compact oversize trace commit payload before git commit",
+            "reasoning_trace": [long_step for _ in range(reasoning_steps_needed)],
+            "rejected_alternatives": ["keep unbounded trace payload in git commit message"],
+        }
+
+        res = client.post(f"/api/v1/repos/{repo_name}/commit", json=req, headers=auth_headers)
+        assert res.status_code == 200, res.text
+
+        body = res.json()
+        assert body.get("success") is True
+
+        with Session(db_engine) as s:
+            rec = s.exec(select(CommitRecord).where(CommitRecord.repo_name == repo_name).order_by(CommitRecord.id.desc())).first()
+            assert rec is not None
+            trace_json = rec.trace_json or {}
+            git_message_trace = trace_json.get("git_message_trace") or {}
+            assert git_message_trace.get("reasoning_trace_compacted") is True
+            compact_reasoning_trace = git_message_trace.get("reasoning_trace")
+            assert isinstance(compact_reasoning_trace, list)
+            assert len(compact_reasoning_trace) == 3
+            assert compact_reasoning_trace[0].startswith("Reasoning trace abbreviated")
+            assert (trace_json.get("reasoning_trace") or []) == req["reasoning_trace"]
+            assert trace_json.get("reasoning_hash") == compute_reasoning_hash(req["reasoning_trace"])
+            assert trace_json.get("signature")
+            signing_secret = get_trace_signing_secret()
+            assert signing_secret
+            assert verify_trace_commit_signature(trace_json, signing_secret)
+
+            trace_from_git = subprocess.run(
+                ["git", "show", "-s", "--format=%B", rec.commit_sha],
+                cwd=bare_path,
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout.strip()
+            trace_from_git_json = json.loads(trace_from_git)
+            git_reasoning = trace_from_git_json.get("reasoning_trace") or []
+            assert len(git_reasoning) == 3
+            assert isinstance(git_reasoning[0], str)
+            assert git_reasoning[0].startswith("Reasoning trace abbreviated")
+    finally:
+        shutil.rmtree(bare_path, ignore_errors=True)
 
 
 def test_pull_request_spec_allows_tests_flag_for_other_types():
@@ -1959,3 +2153,60 @@ def test_pull_request_spec_allows_tests_flag_for_other_types():
     pr = TraceValidator.validate_pull_request_spec(pr_payload)
     assert pr.type == "refactor"
     assert pr.tests_added is False
+
+
+def test_commit_enforce_quality_gate_rejects_weak_trace_before_push(client, db_engine, auth_headers, monkeypatch):
+    repo_name = "traceability-quality-gate-enforce"
+    bare_path = os.path.abspath(os.path.join(STORE_ROOT, repo_name))
+    if os.path.exists(bare_path):
+        shutil.rmtree(bare_path, ignore_errors=True)
+
+    monkeypatch.setenv("TRACE_COMMIT_QUALITY_GATE", "enforce")
+
+    try:
+        _init_repo_with_one_commit(bare_path)
+
+        api_key = auth_headers["X-API-Key"]
+        api_key_prefix = get_api_key_prefix(api_key)
+
+        with Session(db_engine) as s:
+            agent = s.exec(select(Agent).where(Agent.api_key_prefix == api_key_prefix)).first()
+            assert agent is not None
+            agent_id = str(agent.id)
+
+        req = {
+            "agent_id": agent_id,
+            "model_name": "traceability-test-model",
+            "files": {"trace.txt": "weak trace should be blocked\n"},
+            "intent_description": "reject weak trace when quality gate is enforce",
+            "intent_category": "fix",
+            "intent_vector": [0.0],
+            "diff_summary": "add weak trace payload",
+            "reasoning_trace": ["single step"],
+            "rejected_alternatives": ["skip quality checks"],
+        }
+
+        res = client.post(f"/api/v1/repos/{repo_name}/commit", json=req, headers=auth_headers)
+        assert res.status_code == 400, res.text
+        body = res.json()
+        detail = body.get("detail")
+        assert isinstance(detail, dict)
+        assert detail.get("message") == "Trace quality gate failed"
+        warnings = detail.get("quality_warnings")
+        assert isinstance(warnings, list)
+        assert any("Weak Reasoning" in w for w in warnings)
+
+        with Session(db_engine) as s:
+            rec = s.exec(select(CommitRecord).where(CommitRecord.repo_name == repo_name).order_by(CommitRecord.id.desc())).first()
+            assert rec is None
+
+        ls_remote = subprocess.run(
+            ["git", "ls-remote", bare_path],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        assert f"refs/heads/agent/{agent_id}/" not in ls_remote.stdout
+    finally:
+        monkeypatch.delenv("TRACE_COMMIT_QUALITY_GATE", raising=False)
+        shutil.rmtree(bare_path, ignore_errors=True)

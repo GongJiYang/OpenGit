@@ -1,7 +1,5 @@
 from logging.config import fileConfig
-import sys
 import os
-from os.path import abspath, dirname
 
 from sqlalchemy import engine_from_config
 from sqlalchemy import pool
@@ -12,31 +10,19 @@ from alembic import context
 # for 'autogenerate' support
 from sqlmodel import SQLModel
 
-# Ensure project modules are importable for model registration
-PROJECT_ROOT = dirname(dirname(abspath(__file__)))
-PATHS_TO_ADD = [
-    os.path.join(PROJECT_ROOT, "src"),
-    os.path.join(PROJECT_ROOT, "..", "..", "packages", "protocol", "src"),
-    os.path.join(PROJECT_ROOT, "..", "..", "services", "git-core", "src"),
-    os.path.join(PROJECT_ROOT, "..", "..", "services", "semantic-store", "src"),
-    os.path.join(PROJECT_ROOT, "..", "..", "services", "execution-vmm", "src"),
-    os.path.join(PROJECT_ROOT, "..", ".."),
-]
-for path in PATHS_TO_ADD:
-    normalized = os.path.abspath(path)
-    if normalized not in sys.path:
-        sys.path.insert(0, normalized)
-
-# Import all models to register them with SQLModel.metadata
-# We use noqa: E402 because these must happen after sys.path.insert
-# We use noqa: F401 because these are imported strictly for their side-effects (metadata registration)
+# Import all models to register them with SQLModel.metadata.
+# Runtime import paths are expected to be provided by PYTHONPATH / environment.
 try:
-    import persistence  # noqa: E401, E402, F401
-    import agent_auth.models  # noqa: E401, E402, F401
-    import agent_auth.models.platform  # noqa: E401, E402, F401
-    import agent_auth.models.runner  # noqa: E401, E402, F401
+    import persistence  # noqa: F401
+    import agent_auth.models  # noqa: F401
+    import agent_auth.models.platform  # noqa: F401
+    import agent_auth.models.runner  # noqa: F401
 except ImportError as exc:
-    raise RuntimeError(f"Failed to import SQLModel models for Alembic metadata: {exc}") from exc
+    raise RuntimeError(
+        "Failed to import SQLModel models for Alembic metadata. "
+        "Ensure PYTHONPATH includes apps/api-gateway/src and required monorepo package/service src paths. "
+        f"Original error: {exc}"
+    ) from exc
 
 target_metadata = SQLModel.metadata
 

@@ -53,7 +53,6 @@ Required keys:
 - `ZHIPUAI_API_KEY`
 - `QDRANT_URL`
 - `DATABASE_URL`
-- `AUTH_DATABASE_URL`
 - `EXTERNAL_CI_SECRET` (optional)
 
 ---

@@ -71,3 +71,25 @@ def require_active_identity(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="Valid X-API-Key or Bearer Token required"
     )
+
+
+def require_active_identity_optional(
+    x_api_key: Optional[str] = Header(None, alias="X-API-Key"),
+    authorization: Optional[str] = Header(None, alias="Authorization"),
+    auth_session: Session = Depends(get_auth_session),
+) -> Optional[Any]:
+    """
+    Optional identity resolver.
+
+    - Returns None when no identity credentials are provided.
+    - Preserves strict validation (raises) when credentials are provided but invalid.
+    """
+    has_bearer = bool(authorization and authorization.startswith("Bearer "))
+    if not x_api_key and not has_bearer:
+        return None
+
+    return require_active_identity(
+        x_api_key=x_api_key,
+        authorization=authorization,
+        auth_session=auth_session,
+    )

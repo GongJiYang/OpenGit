@@ -77,8 +77,14 @@ export default function RepoSettingsPage() {
     useEffect(() => {
         const fetchRunners = async () => {
             try {
+                const token = localStorage.getItem("token");
+                const headers: Record<string, string> = {};
+                if (token) {
+                    headers["Authorization"] = `Bearer ${token}`;
+                }
+
                 const res = await fetch(`${API_BASE}/v1/runners`, {
-                    headers: { "X-User-Id": "demo-user" }
+                    headers
                 });
                 if (res.ok) {
                     setRunners(await res.json());

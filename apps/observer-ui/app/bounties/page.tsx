@@ -22,11 +22,13 @@ import ParallelTracksView from "../components/ParallelTracksView";
 import AgentWorkloadPanel from "../components/AgentWorkloadPanel";
 import CollaborationPanel from "../components/CollaborationPanel";
 import CodeReviewPanel from "../components/CodeReviewPanel";
+import BountyDetailDrawer from "../components/BountyDetailDrawer";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE || "/api";
 
 type StatusFilter = "all" | "pending" | "ready_for_preparation" | "open" | "in_progress" | "submitted" | "completed";
 type ViewMode = "list" | "tracks" | "dag";
+type BacklogJobStatus = "idle" | "queued" | "running" | "succeeded" | "failed";
 
 interface Bounty {
   id: string;
@@ -59,6 +61,12 @@ export default function BountiesPage() {
 
     // Hierarchical form state
     const [showHierarchicalForm, setShowHierarchicalForm] = useState(false);
+    const [selectedBountyId, setSelectedBountyId] = useState<string | null>(null);
+
+    // Backlog governance state
+    const [backlogJobStatus, setBacklogJobStatus] = useState<BacklogJobStatus>("idle");
+    const [backlogJobId, setBacklogJobId] = useState<string | null>(null);
+    const [backlogResultMessage, setBacklogResultMessage] = useState<string | null>(null);
 
     useEffect(() => {
         fetchBounties();
@@ -71,6 +79,107 @@ export default function BountiesPage() {
             setBounties(data);
         } catch (e) {
             console.error(e);
+        }
+    }
+
+    const getWriteAuthHeaders = (): Record<string, string> => {
+        const token = localStorage.getItem("token");
+        const headers: Record<string, string> = {
+            "Content-Type": "application/json",
+        };
+        if (token) {
+            headers["Authorization"] = `Bearer ${token}`;
+        }
+        return headers;
+    };
+
+    const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+    async function pollBacklogJob(jobId: string) {
+        for (let attempt = 0; attempt < 120; attempt += 1) {
+            try {
+                const res = await fetch(`${API_BASE}/v1/backlog/jobs/${jobId}`, {
+                    headers: getWriteAuthHeaders(),
+                });
+                const body = await res.json().catch(() => ({}));
+
+                if (!res.ok) {
+                    setBacklogJobStatus("failed");
+                    setBacklogResultMessage(body.detail || "Failed to poll backlog job");
+                    return;
+                }
+
+                const status = body?.job?.status;
+                if (status === "running") {
+                    setBacklogJobStatus("running");
+                } else if (status === "queued") {
+                    setBacklogJobStatus("queued");
+                } else if (status === "succeeded") {
+                    setBacklogJobStatus("succeeded");
+                    setBacklogResultMessage(body?.message || "Backlog governance succeeded");
+                    return;
+                } else if (status === "failed") {
+                    setBacklogJobStatus("failed");
+                    setBacklogResultMessage(body?.error?.reason || body?.message || "Backlog governance failed");
+                    return;
+                }
+            } catch (e) {
+                console.error(e);
+                setBacklogJobStatus("failed");
+                setBacklogResultMessage("Failed to poll backlog job");
+                return;
+            }
+
+            await sleep(1500);
+        }
+
+        setBacklogJobStatus("failed");
+        setBacklogResultMessage("Backlog job polling timeout");
+    }
+
+    async function handleStartBacklog() {
+        const repoName = repo.trim();
+        if (!repoName) {
+            alert("Please enter target repo first");
+            return;
+        }
+
+        setBacklogResultMessage(null);
+        setBacklogJobId(null);
+        setBacklogJobStatus("queued");
+
+        try {
+            const res = await fetch(`${API_BASE}/v1/backlog/start`, {
+                method: "POST",
+                headers: getWriteAuthHeaders(),
+                body: JSON.stringify({
+                    repo_name: repoName,
+                    mode: "async",
+                    args: {},
+                }),
+            });
+            const body = await res.json().catch(() => ({}));
+
+            if (!res.ok || body?.ok === false) {
+                setBacklogJobStatus("failed");
+                setBacklogResultMessage(body?.error?.reason || body?.detail || "Failed to start backlog governance");
+                return;
+            }
+
+            const jobId = body?.job?.id;
+            if (!jobId) {
+                setBacklogJobStatus("failed");
+                setBacklogResultMessage("Backlog job id missing");
+                return;
+            }
+
+            setBacklogJobId(jobId);
+            setBacklogJobStatus(body?.job?.status === "running" ? "running" : "queued");
+            await pollBacklogJob(jobId);
+        } catch (e) {
+            console.error(e);
+            setBacklogJobStatus("failed");
+            setBacklogResultMessage("Failed to start backlog governance");
         }
     }
 
@@ -91,9 +200,7 @@ export default function BountiesPage() {
 
         await fetch(`${API_BASE}/bounties`, {
             method: "POST",
-            headers: {
-                "Content-Type": "application/json"
-            },
+            headers: getWriteAuthHeaders(),
             body: JSON.stringify(payload)
         });
 
@@ -111,9 +218,7 @@ export default function BountiesPage() {
         try {
             const res = await fetch(`${API_BASE}/v1/bounties/decomposed`, {
                 method: "POST",
-                headers: {
-                    "Content-Type": "application/json"
-                },
+                headers: getWriteAuthHeaders(),
                 body: JSON.stringify({
                     repo_name: finalRepoName,
                     root_task: rootTask
@@ -140,9 +245,7 @@ export default function BountiesPage() {
     async function handleClaimPreparation(bountyId: string, notes: string) {
         const res = await fetch(`${API_BASE}/v1/bounties/${bountyId}/claim-preparation`, {
             method: "POST",
-            headers: {
-                "Content-Type": "application/json"
-            },
+            headers: getWriteAuthHeaders(),
             body: JSON.stringify({
                 preparation_notes: notes
             })
@@ -158,7 +261,8 @@ export default function BountiesPage() {
 
     async function handleActivate(bountyId: string) {
         const res = await fetch(`${API_BASE}/v1/bounties/${bountyId}/activate-from-preparation`, {
-            method: "POST"
+            method: "POST",
+            headers: getWriteAuthHeaders()
         });
 
         if (res.ok) {
@@ -168,6 +272,18 @@ export default function BountiesPage() {
             alert(error.detail || "Failed to activate");
         }
     }
+
+    const openBountyDetails = (bountyId: string) => {
+        setSelectedBountyId(bountyId);
+    };
+
+    const closeBountyDetails = () => {
+        setSelectedBountyId(null);
+    };
+
+    const selectedBounty = selectedBountyId
+        ? bounties.find((b) => b.id === selectedBountyId) || null
+        : null;
 
     const filteredBounties = bounties.filter(b =>
         filter === "all" || b.status === filter
@@ -184,6 +300,7 @@ export default function BountiesPage() {
     };
 
     return (
+        <>
         <div className="space-y-6">
             {/* Header */}
             <div className="flex items-start justify-between">
@@ -269,7 +386,7 @@ export default function BountiesPage() {
                     {viewMode === "dag" && (
                         <DAGVisualization
                             bounties={bounties.map(b => ({ ...b, dependencies: b.dependencies || [] }))}
-                            onNodeClick={(id) => console.log("Clicked", id)}
+                            onNodeClick={openBountyDetails}
                         />
                     )}
 
@@ -277,7 +394,7 @@ export default function BountiesPage() {
                     {viewMode === "tracks" && (
                         <ParallelTracksView
                             bounties={filteredBounties.map(b => ({ ...b, dependencies: b.dependencies || [] }))}
-                            onTaskClick={(id) => console.log("Clicked", id)}
+                            onTaskClick={openBountyDetails}
                         />
                     )}
 
@@ -294,7 +411,8 @@ export default function BountiesPage() {
                                 filteredBounties.map((b) => (
                                     <div
                                         key={b.id}
-                                        className={`glass-panel p-5 rounded-xl flex justify-between items-start transition-all ${b.status === "open" ? "hover:border-yellow-500/30" : ""
+                                        onClick={() => openBountyDetails(b.id)}
+                                        className={`glass-panel p-5 rounded-xl flex justify-between items-start transition-all cursor-pointer ${b.status === "open" ? "hover:border-yellow-500/30" : "hover:border-zinc-700/50"
                                             }`}
                                     >
                                         <div className="flex-1">
@@ -394,8 +512,39 @@ export default function BountiesPage() {
                                     bounties={bounties.map(b => ({ ...b, dependencies: b.dependencies || [] }))}
                                     onClaimPreparation={handleClaimPreparation}
                                     onActivate={handleActivate}
+                                    onViewDetails={openBountyDetails}
                                 />
                             )}
+
+                            {/* Backlog Governance Panel */}
+                            <div className="glass-panel rounded-xl p-4">
+                                <h3 className="text-sm font-semibold text-white mb-3">Backlog Governance</h3>
+                                <p className="text-xs text-zinc-500 mb-3">
+                                    Start governance sync for current target repo and poll async status.
+                                </p>
+                                <button
+                                    onClick={handleStartBacklog}
+                                    disabled={!repo.trim() || backlogJobStatus === "queued" || backlogJobStatus === "running"}
+                                    className="w-full bg-blue-600 hover:bg-blue-500 disabled:bg-zinc-700 disabled:text-zinc-500 text-white rounded py-2 text-sm font-medium transition-colors"
+                                >
+                                    {backlogJobStatus === "queued" || backlogJobStatus === "running"
+                                        ? "Backlog Running..."
+                                        : "Start Backlog Governance"}
+                                </button>
+                                <div className="mt-3 text-xs text-zinc-400">
+                                    Status: <span className="text-zinc-200 uppercase">{backlogJobStatus}</span>
+                                </div>
+                                {backlogJobId && (
+                                    <div className="mt-1 text-xs text-zinc-500 break-all">Job: {backlogJobId}</div>
+                                )}
+                                {backlogResultMessage && (
+                                    <div
+                                        className={`mt-2 text-xs ${backlogJobStatus === "failed" ? "text-red-400" : "text-emerald-400"}`}
+                                    >
+                                        {backlogResultMessage}
+                                    </div>
+                                )}
+                            </div>
 
                             {/* Agent Workload Panel */}
                             <AgentWorkloadPanel />
@@ -497,5 +646,12 @@ export default function BountiesPage() {
                 </div>
             </div>
         </div>
+
+        <BountyDetailDrawer
+            bounty={selectedBounty}
+            bounties={bounties}
+            onClose={closeBountyDetails}
+        />
+        </>
     );
 }

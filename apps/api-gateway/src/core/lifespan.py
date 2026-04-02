@@ -8,7 +8,7 @@ from agenthub_execution_vmm.executor import SessionManager
 from agenthub_execution_vmm.sandbox import SubprocessSandbox
 from agenthub_execution_vmm.session_store import InMemorySessionStore, RedisSessionStore
 from agenthub_git_core.repo_manager import RepoManager
-from agenthub_semantic_store.ast_parser import PythonASTParser
+from agenthub_semantic_store.ast_parser import SemanticParser
 from agenthub_semantic_store.indexer import VectorIndexer
 
 from core.security import validate_security_env
@@ -41,7 +41,7 @@ async def lifespan(app: FastAPI):
             idx = None
         app.state.indexer = idx
 
-    app.state.parser = PythonASTParser()
+    app.state.parser = SemanticParser()
 
     app.state.session_store = InMemorySessionStore()
     if settings.normalized_session_store_backend == "redis":

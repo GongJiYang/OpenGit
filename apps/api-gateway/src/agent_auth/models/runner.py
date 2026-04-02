@@ -97,6 +97,13 @@ class Runner(SQLModel, table=True):
 
     # Authentication
     token_hash: str = Field(max_length=128, description="bcrypt hash of runner token")
+    token_lookup: Optional[str] = Field(
+        default=None,
+        max_length=64,
+        index=True,
+        unique=True,
+        description="Indexed SHA-256 lookup of runner token for O(1) candidate fetch",
+    )
 
     # Status
     status: RunnerStatus = Field(default=RunnerStatus.OFFLINE, index=True)
@@ -178,8 +185,12 @@ class RunnerToken(SQLModel, table=True):
     user_id: UUID = Field(foreign_key="users.id", nullable=False, index=True)
 
     # Token (shown only once!)
-    token: str = Field(max_length=64, unique=True, index=True,
-                        description="Plaintext token (shown once to user)")
+    token_lookup: str = Field(
+        max_length=64,
+        unique=True,
+        index=True,
+        description="Indexed SHA-256 lookup of registration token",
+    )
     token_hash: str = Field(max_length=128, description="bcrypt hash for verification")
 
     # Status
@@ -197,7 +208,7 @@ class RunnerToken(SQLModel, table=True):
 
     class Config:
         indexes = [
-            Index("ix_runner_tokens_token", "token"),
+            Index("ix_runner_tokens_token_lookup", "token_lookup"),
             Index("ix_runner_tokens_user_id", "user_id"),
         ]
 

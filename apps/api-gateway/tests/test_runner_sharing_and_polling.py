@@ -1,3 +1,4 @@
+import hashlib
 from datetime import datetime, timedelta
 from typing import List, Optional, Tuple
 from uuid import UUID, uuid4
@@ -44,6 +45,7 @@ def _create_runner(
         name=f"runner-{uuid4().hex[:8]}",
         owner_user_id=owner_user_id,
         token_hash=token_hash,
+        token_lookup=hashlib.sha256(token.encode("utf-8")).hexdigest(),
         status=RunnerStatus.ONLINE,
         last_heartbeat_at=datetime.utcnow() - timedelta(seconds=5),
         pool_type=pool_type,
@@ -171,6 +173,189 @@ def test_poll_jobs_platform_runner_accepts_any_requester(client):
     res = client.get("/api/v1/runners/poll-jobs", headers={"X-Runner-Token": token})
     assert res.status_code == 200
     assert len(res.json()) == 1
+
+
+def test_poll_jobs_shared_runner_accepts_agent_bound_owner_requester(client):
+    from persistence import get_engine
+
+    with Session(get_engine()) as session:
+        runner_owner_id = _create_user(session, "owner-shared-bound")
+        bound_user_id = _create_user(session, "bound-shared-bound")
+        bound_agent = Agent(
+            name=f"agent-{uuid4().hex[:8]}",
+            model_name="test-model",
+            api_key_hash="hash",
+            api_key_prefix=f"prefix-{uuid4().hex[:6]}",
+            claim_code=f"TC{uuid4().hex[:6].upper()}",
+            claim_url="/claim",
+            claim_expires_at=datetime.utcnow() + timedelta(days=1),
+            status="claimed",
+            role="contributor",
+        )
+        session.add(bound_agent)
+        session.commit()
+        session.refresh(bound_agent)
+
+        session.add(UserAgentBinding(user_id=bound_user_id, agent_id=bound_agent.id))
+        session.commit()
+
+        runner_id, token = _create_runner(session, runner_owner_id, pool_type=RunnerPoolType.SHARED)
+        session.add(
+            RunnerShareGrant(
+                runner_id=runner_id,
+                grantee_user_id=bound_user_id,
+                granted_by_user_id=runner_owner_id,
+                can_execute=True,
+            )
+        )
+        session.commit()
+
+        _create_job(
+            session,
+            requester_user_id=bound_user_id,
+            requester_agent_id=bound_agent.id,
+        )
+
+    res = client.get("/api/v1/runners/poll-jobs", headers={"X-Runner-Token": token})
+    assert res.status_code == 200
+    assert len(res.json()) == 1
+
+
+def test_poll_jobs_rejects_invalid_token_without_full_scan(client, monkeypatch):
+    from persistence import get_engine
+    from agent_auth.routers import runner as runner_router
+
+    with Session(get_engine()) as session:
+        owner_id = _create_user(session, "owner-invalid-token")
+        _create_runner(session, owner_id, pool_type=RunnerPoolType.PRIVATE)
+
+    call_counter = {"count": 0}
+    original_verify = runner_router._verify_token
+
+    def _counted_verify(token: str, token_hash: str) -> bool:
+        call_counter["count"] += 1
+        return original_verify(token, token_hash)
+
+    monkeypatch.setattr(runner_router, "_verify_token", _counted_verify)
+
+    res = client.get(
+        "/api/v1/runners/poll-jobs",
+        headers={"X-Runner-Token": f"ahauth_{uuid4().hex}"},
+    )
+
+    assert res.status_code == 401
+    assert call_counter["count"] == 0
+
+
+def test_poll_jobs_only_verifies_single_lookup_candidate(client, monkeypatch):
+    from persistence import get_engine
+    from agent_auth.routers import runner as runner_router
+
+    with Session(get_engine()) as session:
+        owner_id = _create_user(session, "owner-single-verify")
+        _create_runner(session, owner_id, pool_type=RunnerPoolType.PRIVATE)
+        _create_runner(session, owner_id, pool_type=RunnerPoolType.SHARED)
+        _create_runner(session, owner_id, pool_type=RunnerPoolType.PLATFORM)
+
+        target_token = f"ahauth_{uuid4().hex}"
+        target_hash = bcrypt.hashpw(target_token.encode("utf-8"), bcrypt.gensalt(rounds=12)).decode("utf-8")
+        target_runner = Runner(
+            name=f"runner-target-{uuid4().hex[:8]}",
+            owner_user_id=owner_id,
+            token_hash=target_hash,
+            token_lookup=hashlib.sha256(target_token.encode("utf-8")).hexdigest(),
+            status=RunnerStatus.ONLINE,
+            last_heartbeat_at=datetime.utcnow() - timedelta(seconds=5),
+            pool_type=RunnerPoolType.PRIVATE,
+            is_global=True,
+            allowed_repo_ids=[],
+        )
+        session.add(target_runner)
+        session.commit()
+
+    call_counter = {"count": 0}
+    original_verify = runner_router._verify_token
+
+    def _counted_verify(token: str, token_hash: str) -> bool:
+        call_counter["count"] += 1
+        return original_verify(token, token_hash)
+
+    monkeypatch.setattr(runner_router, "_verify_token", _counted_verify)
+
+    res = client.get(
+        "/api/v1/runners/poll-jobs",
+        headers={"X-Runner-Token": target_token},
+    )
+
+    assert res.status_code == 200
+    assert call_counter["count"] == 1
+
+
+def test_poll_jobs_legacy_runner_without_lookup_self_heals(client):
+    from persistence import get_engine
+
+    with Session(get_engine()) as session:
+        owner_id = _create_user(session, "owner-legacy-self-heal")
+        legacy_token = f"ahauth_{uuid4().hex}"
+        legacy_hash = bcrypt.hashpw(legacy_token.encode("utf-8"), bcrypt.gensalt(rounds=12)).decode("utf-8")
+        legacy_runner = Runner(
+            name=f"runner-legacy-{uuid4().hex[:8]}",
+            owner_user_id=owner_id,
+            token_hash=legacy_hash,
+            token_lookup=None,
+            status=RunnerStatus.ONLINE,
+            last_heartbeat_at=datetime.utcnow() - timedelta(seconds=5),
+            pool_type=RunnerPoolType.PRIVATE,
+            is_global=True,
+            allowed_repo_ids=[],
+        )
+        session.add(legacy_runner)
+        session.commit()
+        session.refresh(legacy_runner)
+        legacy_runner_id = legacy_runner.id
+
+    res = client.get(
+        "/api/v1/runners/poll-jobs",
+        headers={"X-Runner-Token": legacy_token},
+    )
+    assert res.status_code == 200
+
+    with Session(get_engine()) as session:
+        refreshed = session.get(Runner, legacy_runner_id)
+        assert refreshed is not None
+        assert refreshed.token_lookup == hashlib.sha256(legacy_token.encode("utf-8")).hexdigest()
+
+
+def test_poll_jobs_rejects_status_banned_runner(client):
+    from persistence import get_engine
+
+    with Session(get_engine()) as session:
+        owner_id = _create_user(session, "owner-status-banned")
+        banned_token = f"ahauth_{uuid4().hex}"
+        banned_hash = bcrypt.hashpw(banned_token.encode("utf-8"), bcrypt.gensalt(rounds=12)).decode("utf-8")
+        banned_runner = Runner(
+            name=f"runner-status-banned-{uuid4().hex[:8]}",
+            owner_user_id=owner_id,
+            token_hash=banned_hash,
+            token_lookup=hashlib.sha256(banned_token.encode("utf-8")).hexdigest(),
+            status=RunnerStatus.BANNED,
+            is_banned=False,
+            banned_reason="Audit violation",
+            last_heartbeat_at=datetime.utcnow() - timedelta(seconds=5),
+            pool_type=RunnerPoolType.PRIVATE,
+            is_global=True,
+            allowed_repo_ids=[],
+        )
+        session.add(banned_runner)
+        session.commit()
+
+    res = client.get(
+        "/api/v1/runners/poll-jobs",
+        headers={"X-Runner-Token": banned_token},
+    )
+
+    assert res.status_code == 403
+    assert "Runner banned" in res.json()["detail"]
 
 
 def test_update_runner_repos_supports_pool_type(client):

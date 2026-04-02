@@ -156,6 +156,30 @@ def transition(session: Session, bounty_id: str, to_status: str, ctx: Optional[D
         session.commit()
         return updated, None
 
+    # Ready-for-preparation -> Ready-for-preparation (claim preparation assignee)
+    if from_status == BountyStatus.READY_FOR_PREPARATION.value and to_status == BountyStatus.READY_FOR_PREPARATION.value:
+        agent_id = ctx.get("agent_id")
+        if not agent_id:
+            return None, "agent_id required for preparation claim"
+        stmt = (
+            update(Bounty)
+            .where(
+                Bounty.id == bounty_id,
+                Bounty.status == BountyStatus.READY_FOR_PREPARATION.value,
+                Bounty.assignee.is_(None),
+            )
+            .values(assignee=str(agent_id), updated_at=datetime.utcnow())
+            .execution_options(synchronize_session=False)
+        )
+        res = session.exec(stmt)
+        if getattr(res, "rowcount", 0) == 0:
+            return None, "Race detected: bounty already claimed for preparation"
+        session.commit()
+        updated = session.get(Bounty, bounty_id)
+        _audit(session, updated, from_status, to_status, ctx)
+        session.commit()
+        return updated, None
+
     if from_status == BountyStatus.READY_FOR_PREPARATION.value and to_status == BountyStatus.IN_PROGRESS.value:
         # Dependencies completed, preparer exists
         if not _deps_completed(session, bounty):
@@ -204,6 +228,23 @@ def transition(session: Session, bounty_id: str, to_status: str, ctx: Optional[D
             update(Bounty)
             .where(Bounty.id == bounty_id, Bounty.status == BountyStatus.SUBMITTED.value)
             .values(status=BountyStatus.IN_PROGRESS.value, updated_at=datetime.utcnow())
+            .execution_options(synchronize_session=False)
+        )
+        res = session.exec(stmt)
+        if getattr(res, "rowcount", 0) == 0:
+            return None, "Transition rejected due to concurrent update"
+        session.commit()
+        updated = session.get(Bounty, bounty_id)
+        _audit(session, updated, from_status, to_status, ctx)
+        session.commit()
+        return updated, None
+
+    # Submitted -> Completed (approved/accepted)
+    if from_status == BountyStatus.SUBMITTED.value and to_status == BountyStatus.COMPLETED.value:
+        stmt = (
+            update(Bounty)
+            .where(Bounty.id == bounty_id, Bounty.status == BountyStatus.SUBMITTED.value)
+            .values(status=BountyStatus.COMPLETED.value, updated_at=datetime.utcnow())
             .execution_options(synchronize_session=False)
         )
         res = session.exec(stmt)

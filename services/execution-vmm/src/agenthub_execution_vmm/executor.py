@@ -1,7 +1,7 @@
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from threading import RLock
-from typing import Dict, Optional
+from typing import Dict, Optional, Tuple
 
 from .sandbox import Sandbox
 from .session_store import InMemorySessionStore, SessionStore, build_lease
@@ -163,8 +163,8 @@ class InMemorySessionManager:
 
         return winner_session_id
 
-    def execute(self, agent_id: str, task_id: str, command: str) -> str:
-        """Execute a command in the agent's dedicated session."""
+    def execute_with_status(self, agent_id: str, task_id: str, command: str) -> Tuple[int, str]:
+        """Execute a command in the agent's dedicated session and preserve exit status."""
         key = f"{agent_id}:{task_id}"
 
         expired_session_id: Optional[str] = None
@@ -187,7 +187,7 @@ class InMemorySessionManager:
                     self._close_session_safely(lease.session_id)
 
             if not record:
-                return "❌ No active session found for this task. Initialize it first."
+                return 1, "❌ No active session found for this task. Initialize it first."
 
             if self._is_expired(record, now):
                 expired_session_id = record.session_id
@@ -204,10 +204,10 @@ class InMemorySessionManager:
         if expired_session_id:
             self._store.delete(key)
             self._close_session_safely(expired_session_id)
-            return "❌ Session expired for this task. Initialize it first."
+            return 1, "❌ Session expired for this task. Initialize it first."
 
         if not session_id:
-            return "❌ No active session found for this task. Initialize it first."
+            return 1, "❌ No active session found for this task. Initialize it first."
 
         if not self._is_session_healthy(session_id):
             self._store.delete(key)
@@ -216,10 +216,13 @@ class InMemorySessionManager:
                 if stale and stale.session_id == session_id:
                     self._sessions.pop(key, None)
             self._close_session_safely(session_id)
-            return "❌ Session is unhealthy for this task. Initialize it first."
+            return 1, "❌ Session is unhealthy for this task. Initialize it first."
 
-        exit_code, output = self.sandbox.run_command(session_id, command)
-        _ = exit_code
+        return self.sandbox.run_command(session_id, command)
+
+    def execute(self, agent_id: str, task_id: str, command: str) -> str:
+        """Execute a command in the agent's dedicated session."""
+        _, output = self.execute_with_status(agent_id, task_id, command)
         return output
 
     def close_session(self, agent_id: str, task_id: str):

@@ -2,12 +2,14 @@ from datetime import datetime, timedelta
 import secrets
 
 import bcrypt
+import pytest
+from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, select
 
 from main import app
 from agent_auth.models import Agent, AgentStatus
 from agent_auth.models.platform import User, UserAgentBinding
-from agent_auth.services.user_auth import get_current_user
+from agent_auth.services.user_auth import UserAuthService, get_current_user
 from agent_auth.utils import API_KEY_PREFIX, API_KEY_LENGTH, get_api_key_prefix
 
 
@@ -209,3 +211,90 @@ def test_bind_agent_rejects_claim_code_mismatch(client, db_engine):
             select(UserAgentBinding).where(UserAgentBinding.agent_id == agent_id)
         ).first()
         assert binding is None
+
+
+def test_bind_agent_sets_claimed_owner_fields_atomically(db_engine):
+    owner_email = f"owner-fields-{secrets.token_hex(3)}@example.com".lower()
+    agent_id, _raw_api_key, _claim_code = _create_claimed_agent(db_engine, owner_email=owner_email)
+
+    github_id = f"gh-{secrets.token_hex(4)}"
+    github_login = f"owner_{secrets.token_hex(3)}"
+
+    with Session(db_engine) as session:
+        owner = User(
+            email=owner_email,
+            email_verified=True,
+            display_name="owner-fields-user",
+            github_id=github_id,
+            github_login=github_login,
+            password_hash=None,
+        )
+        session.add(owner)
+        session.commit()
+        session.refresh(owner)
+
+        agent = session.get(Agent, agent_id)
+        assert agent is not None
+        agent.owner_github_id = None
+        agent.owner_github_login = None
+        session.add(agent)
+        session.commit()
+
+        service = UserAuthService(session)
+        binding = service.bind_agent_to_user(owner, agent)
+        assert binding is not None
+
+        persisted = session.get(Agent, agent_id)
+        assert persisted is not None
+        assert persisted.owner_email == owner_email
+        assert persisted.owner_github_id == github_id
+        assert persisted.owner_github_login == github_login
+        assert persisted.status == AgentStatus.CLAIMED
+        assert persisted.claimed_at is not None
+
+
+def test_bind_agent_concurrency_integrity_error_is_normalized(db_engine, monkeypatch):
+    owner_email = f"owner-race-{secrets.token_hex(3)}@example.com".lower()
+    agent_id, _raw_api_key, _claim_code = _create_claimed_agent(db_engine, owner_email=owner_email)
+
+    with Session(db_engine) as session:
+        owner = User(
+            email=owner_email,
+            email_verified=True,
+            display_name="owner-race-user",
+            password_hash=None,
+        )
+        session.add(owner)
+        session.commit()
+        session.refresh(owner)
+
+        other = User(
+            email=f"other-{secrets.token_hex(3)}@example.com".lower(),
+            email_verified=True,
+            display_name="other-user",
+            password_hash=None,
+        )
+        session.add(other)
+        session.commit()
+        session.refresh(other)
+
+        session.add(UserAgentBinding(user_id=other.id, agent_id=agent_id, is_permanent=True))
+        session.commit()
+
+        service = UserAuthService(session)
+        agent = session.get(Agent, agent_id)
+        assert agent is not None
+
+        original_commit = session.commit
+
+        def _race_commit():
+            # Simulate race: pre-check passed, but DB reports unique conflict on commit.
+            session.rollback()
+            raise IntegrityError("insert", {}, Exception("duplicate key"))
+
+        monkeypatch.setattr(session, "commit", _race_commit)
+        try:
+            with pytest.raises(ValueError, match="Agent is already bound to another user"):
+                service.bind_agent_to_user(owner, agent)
+        finally:
+            monkeypatch.setattr(session, "commit", original_commit)

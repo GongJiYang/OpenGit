@@ -13,6 +13,7 @@ from typing import Optional, Tuple
 import re
 
 from sqlmodel import Session, select
+from sqlalchemy.exc import IntegrityError
 from passlib.context import CryptContext
 from jose import JWTError, jwt
 
@@ -287,22 +288,50 @@ class UserAuthService:
         ).first()
         if existing:
             raise ValueError("Agent is already bound to another user")
-        # Create binding
+
+        now = datetime.utcnow()
+
+        # Keep claim owner fields consistent with immutable binding identity.
+        if user.email:
+            agent.owner_email = user.email.lower()
+        if user.github_id:
+            agent.owner_github_id = user.github_id
+        if user.github_login:
+            agent.owner_github_login = user.github_login
+
+        if agent.status != AgentStatus.CLAIMED:
+            agent.status = AgentStatus.CLAIMED
+        if agent.claimed_at is None:
+            agent.claimed_at = now
+
         binding = UserAgentBinding(
             user_id=user.id,
             agent_id=agent.id,
             ip_address=ip_address,
             is_permanent=True,
         )
-        self.session.add(binding)
-        # Update agent owner info
-        agent.owner_email = user.email
-        agent.owner_github_id = user.github_id
-        agent.owner_github_login = user.github_login
-        agent.status = AgentStatus.CLAIMED
-        agent.claimed_at = datetime.utcnow()
         self.session.add(agent)
-        self.session.commit()
+        self.session.add(binding)
+
+        try:
+            self.session.commit()
+        except IntegrityError:
+            self.session.rollback()
+            # Normalize concurrent / duplicate bind races to stable API errors.
+            existing_by_user = self.session.exec(
+                select(UserAgentBinding).where(UserAgentBinding.user_id == user.id)
+            ).first()
+            if existing_by_user:
+                raise ValueError("User already has a bound agent")
+
+            existing_by_agent = self.session.exec(
+                select(UserAgentBinding).where(UserAgentBinding.agent_id == agent.id)
+            ).first()
+            if existing_by_agent:
+                raise ValueError("Agent is already bound to another user")
+
+            raise
+
         self.session.refresh(binding)
         return binding
     def get_user_bound_agent(self, user: User) -> Optional[Agent]:

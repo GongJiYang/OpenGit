@@ -20,6 +20,7 @@ if SRC_DIR not in sys.path:
 TEST_DB_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), "../agenthub_data/test_agenthub.db"))
 os.makedirs(os.path.dirname(TEST_DB_PATH), exist_ok=True)
 os.environ["DATABASE_URL"] = f"sqlite:///{TEST_DB_PATH}"
+os.environ["ALLOW_SQLMODEL_CREATE_ALL"] = "1"
 
 from core.settings import clear_settings_cache  # noqa: E402
 from persistence import create_db_and_tables, get_engine  # noqa: E402
@@ -139,6 +140,7 @@ def client(monkeypatch):
     monkeypatch.setenv("GITHUB_CLIENT_ID", "test-github-client-id")
     monkeypatch.setenv("GITHUB_CLIENT_SECRET", "test-github-client-secret")
     monkeypatch.setenv("INTERNAL_API_TOKEN", "test-internal-token")
+    monkeypatch.setenv("TRACE_COMMIT_SIGNING_SECRET", "test-trace-signing-secret")
 
     # PII mask default empty
     monkeypatch.delenv("SKILLS_PII_MASK_FIELDS", raising=False)

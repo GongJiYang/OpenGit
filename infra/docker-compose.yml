@@ -48,7 +48,6 @@ services:
     environment:
       - APP_ENV=production
       - DATABASE_URL=postgresql+psycopg2://agenthub:agenthub@postgres:5432/agenthub
-      - AUTH_DATABASE_URL=postgresql+psycopg2://agenthub:agenthub@postgres:5432/agenthub
       - ZHIPUAI_API_KEY=${ZHIPUAI_API_KEY}
       - QDRANT_URL=${QDRANT_URL:-./agenthub_data/qdrant}
     volumes:

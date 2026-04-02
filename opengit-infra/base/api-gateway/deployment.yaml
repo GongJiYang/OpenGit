@@ -22,6 +22,9 @@ spec:
                 name: api-gateway-config
             - secretRef:
                 name: api-gateway-secrets
+          env:
+            - name: PYTHONPATH
+              value: "/app:/app/apps/api-gateway:/app/apps/api-gateway/src:/app/packages/protocol/src:/app/services/git-core/src:/app/services/semantic-store/src:/app/services/execution-vmm/src"
           volumeMounts:
             - name: agenthub-data
               mountPath: /app/apps/api-gateway/agenthub_data

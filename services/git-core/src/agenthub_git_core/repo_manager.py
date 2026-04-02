@@ -1,6 +1,7 @@
 import logging
 import os
 import secrets
+import shlex
 import shutil
 import stat
 import subprocess
@@ -22,14 +23,46 @@ def _load_ensure_safe_path():
     return ensure_safe_path
 
 
+def _resolve_hook_runtime_defaults() -> tuple[Optional[str], Optional[str]]:
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+
+    git_core_src = os.path.abspath(os.path.join(base_dir, ".."))
+    if not os.path.isdir(os.path.join(git_core_src, "agenthub_git_core")):
+        git_core_src = None
+
+    protocol_src: Optional[str] = None
+    try:
+        import agenthub_protocol
+
+        installed_protocol_src = os.path.abspath(os.path.join(os.path.dirname(agenthub_protocol.__file__), ".."))
+        if os.path.isdir(os.path.join(installed_protocol_src, "agenthub_protocol")):
+            protocol_src = installed_protocol_src
+    except Exception:
+        protocol_src = None
+
+    if protocol_src is None:
+        monorepo_protocol_src = os.path.abspath(os.path.join(base_dir, "../../../../packages/protocol/src"))
+        if os.path.isdir(os.path.join(monorepo_protocol_src, "agenthub_protocol")):
+            protocol_src = monorepo_protocol_src
+
+    return git_core_src, protocol_src
+
+
 def _build_runtime_hook_wrapper() -> str:
-    return """#!/bin/sh
+    default_git_core_src, default_protocol_src = _resolve_hook_runtime_defaults()
+    default_git_core_src_literal = shlex.quote(default_git_core_src) if default_git_core_src else "''"
+    default_protocol_src_literal = shlex.quote(default_protocol_src) if default_protocol_src else "''"
+
+    return f"""#!/bin/sh
 # AgentHub Hook Wrapper (runtime-resolved)
 set -eu
 
-resolve_python() {
-  if [ -n "${AGENTHUB_HOOK_PYTHON:-}" ]; then
-    printf '%s' "${AGENTHUB_HOOK_PYTHON}"
+DEFAULT_GIT_CORE_SRC={default_git_core_src_literal}
+DEFAULT_PROTOCOL_SRC={default_protocol_src_literal}
+
+resolve_python() {{
+  if [ -n "${{AGENTHUB_HOOK_PYTHON:-}}" ]; then
+    printf '%s' "${{AGENTHUB_HOOK_PYTHON}}"
     return 0
   fi
   if command -v python3 >/dev/null 2>&1; then
@@ -41,32 +74,64 @@ resolve_python() {
     return 0
   fi
   return 1
-}
+}}
+
+resolve_valid_src() {{
+  candidate="$1"
+  package_dir="$2"
+  if [ -z "${{candidate}}" ]; then
+    return 0
+  fi
+  if [ -d "${{candidate}}/${{package_dir}}" ]; then
+    printf '%s' "${{candidate}}"
+  fi
+}}
+
+can_import_hook_module() {{
+  "${{PYTHON_BIN}}" -c "import importlib.util,sys;sys.exit(0 if importlib.util.find_spec('agenthub_git_core.hook_logic') else 1)" >/dev/null 2>&1
+}}
+
+run_hook_module() {{
+  exec "${{PYTHON_BIN}}" -m agenthub_git_core.hook_logic
+}}
 
 PYTHON_BIN="$(resolve_python || true)"
-if [ -z "${PYTHON_BIN}" ]; then
+if [ -z "${{PYTHON_BIN}}" ]; then
   echo "❌ REJECTED: Python runtime not found for AgentHub hook." >&2
   exit 1
 fi
 
-run_hook_module() {
-  exec "${PYTHON_BIN}" -m agenthub_git_core.hook_logic
-}
-
-if "${PYTHON_BIN}" -c "import importlib.util,sys;sys.exit(0 if importlib.util.find_spec('agenthub_git_core.hook_logic') else 1)" >/dev/null 2>&1; then
+if can_import_hook_module; then
   run_hook_module
 fi
 
-if [ -n "${AGENTHUB_GIT_CORE_SRC:-}" ]; then
-  EXTRA_PYTHONPATH="${AGENTHUB_GIT_CORE_SRC}"
-  if [ -n "${AGENTHUB_PROTOCOL_SRC:-}" ]; then
-    EXTRA_PYTHONPATH="${EXTRA_PYTHONPATH}:${AGENTHUB_PROTOCOL_SRC}"
+RESOLVED_GIT_CORE_SRC="$(resolve_valid_src "${{AGENTHUB_GIT_CORE_SRC:-${{DEFAULT_GIT_CORE_SRC}}}}" "agenthub_git_core")"
+RESOLVED_PROTOCOL_SRC="$(resolve_valid_src "${{AGENTHUB_PROTOCOL_SRC:-${{DEFAULT_PROTOCOL_SRC}}}}" "agenthub_protocol")"
+
+EXTRA_PYTHONPATH=""
+if [ -n "${{RESOLVED_GIT_CORE_SRC}}" ]; then
+  EXTRA_PYTHONPATH="${{RESOLVED_GIT_CORE_SRC}}"
+fi
+if [ -n "${{RESOLVED_PROTOCOL_SRC}}" ]; then
+  EXTRA_PYTHONPATH="${{EXTRA_PYTHONPATH:+${{EXTRA_PYTHONPATH}}:}}${{RESOLVED_PROTOCOL_SRC}}"
+fi
+
+if [ -n "${{EXTRA_PYTHONPATH}}" ]; then
+  export PYTHONPATH="${{EXTRA_PYTHONPATH}}${{PYTHONPATH:+:${{PYTHONPATH}}}}"
+  if can_import_hook_module; then
+    run_hook_module
   fi
-  export PYTHONPATH="${EXTRA_PYTHONPATH}${PYTHONPATH:+:${PYTHONPATH}}"
-  run_hook_module
 fi
 
-echo "❌ REJECTED: hook runtime unavailable. Install agenthub-git-core package or set AGENTHUB_GIT_CORE_SRC (and AGENTHUB_PROTOCOL_SRC when needed)." >&2
+echo "❌ REJECTED: hook runtime unavailable for AgentHub hook module." >&2
+echo "   python=${{PYTHON_BIN}}" >&2
+echo "   AGENTHUB_GIT_CORE_SRC=${{AGENTHUB_GIT_CORE_SRC:-<unset>}}" >&2
+echo "   AGENTHUB_PROTOCOL_SRC=${{AGENTHUB_PROTOCOL_SRC:-<unset>}}" >&2
+echo "   default_git_core_src=${{DEFAULT_GIT_CORE_SRC:-<unset>}}" >&2
+echo "   default_protocol_src=${{DEFAULT_PROTOCOL_SRC:-<unset>}}" >&2
+echo "   resolved_git_core_src=${{RESOLVED_GIT_CORE_SRC:-<unset>}}" >&2
+echo "   resolved_protocol_src=${{RESOLVED_PROTOCOL_SRC:-<unset>}}" >&2
+echo "   Install agenthub-git-core in hook runtime, or set AGENTHUB_GIT_CORE_SRC and AGENTHUB_PROTOCOL_SRC to valid source roots." >&2
 exit 1
 """
 

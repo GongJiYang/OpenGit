@@ -57,6 +57,8 @@ jobs:
             tests/test_claim_confirm_atomicity.py
 
       - name: Ensure single Alembic head and no branches
+        env:
+          PYTHONPATH: ${{ github.workspace }}/apps/api-gateway/src:${{ github.workspace }}/packages/protocol/src:${{ github.workspace }}/services/git-core/src:${{ github.workspace }}/services/semantic-store/src:${{ github.workspace }}/services/execution-vmm/src
         run: |
           set -euo pipefail
           HEAD_COUNT=$(python -m alembic -c alembic.ini heads | grep -c '(head)' || true)
@@ -74,6 +76,8 @@ jobs:
           fi
 
       - name: Ensure SQL upgrade is non-destructive baseline
+        env:
+          PYTHONPATH: ${{ github.workspace }}/apps/api-gateway/src:${{ github.workspace }}/packages/protocol/src:${{ github.workspace }}/services/git-core/src:${{ github.workspace }}/services/semantic-store/src:${{ github.workspace }}/services/execution-vmm/src
         run: |
           set -euo pipefail
           python -m alembic -c alembic.ini upgrade head --sql > /tmp/alembic_upgrade.sql

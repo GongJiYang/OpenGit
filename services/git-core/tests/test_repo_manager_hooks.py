@@ -15,14 +15,29 @@ def test_runtime_hook_wrapper_uses_dynamic_runtime_resolution():
     assert "-m agenthub_git_core.hook_logic" in wrapper
     assert "AGENTHUB_HOOK_PYTHON" in wrapper
     assert "AGENTHUB_GIT_CORE_SRC" in wrapper
+    assert "DEFAULT_GIT_CORE_SRC=" in wrapper
+    assert "DEFAULT_PROTOCOL_SRC=" in wrapper
 
 
 
-def test_runtime_hook_wrapper_does_not_include_monorepo_scan_fallback():
+def test_runtime_hook_wrapper_keeps_non_scanning_fallback_strategy():
     wrapper = _build_runtime_hook_wrapper()
 
     assert "SEARCH_DIR" not in wrapper
-    assert "services/git-core/src" not in wrapper
+    assert "find " not in wrapper
+    assert "resolve_valid_src" in wrapper
+    assert "resolved_git_core_src" in wrapper
+
+
+
+def test_runtime_hook_wrapper_emits_runtime_diagnostics_on_failure():
+    wrapper = _build_runtime_hook_wrapper()
+
+    assert "hook runtime unavailable for AgentHub hook module" in wrapper
+    assert "default_git_core_src=" in wrapper
+    assert "default_protocol_src=" in wrapper
+    assert "resolved_git_core_src=" in wrapper
+    assert "resolved_protocol_src=" in wrapper
 
 
 def test_install_hook_replaces_legacy_pinned_wrapper(tmp_path):

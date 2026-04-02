@@ -3,8 +3,6 @@
 import { useState, useEffect, useCallback } from "react";
 import {
   Globe,
-  Key,
-  Clock,
   Copy,
   CheckCircle,
   AlertCircle,
@@ -19,11 +17,10 @@ const API_BASE = process.env.NEXT_PUBLIC_API_BASE || "/api";
 interface ServiceEndpointInfo {
   job_id: string;
   service_endpoint: string | null;
-  access_token: string | null;
   token_expires_at: string | null;
   status: string;
   passed: boolean | null;
-  is_ready: boolean;
+  is_ready_for_testing: boolean;
 }
 
 interface ServiceEndpointPanelProps {
@@ -36,7 +33,15 @@ export default function ServiceEndpointPanel({ jobId, onStatusChange }: ServiceE
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState<string | null>(null);
-  const [countdown, setCountdown] = useState<string>("");
+
+  const getAuthHeaders = (): Record<string, string> => {
+    const token = localStorage.getItem("token");
+    const headers: Record<string, string> = {};
+    if (token) {
+      headers["Authorization"] = `Bearer ${token}`;
+    }
+    return headers;
+  };
 
   const fetchServiceStatus = useCallback(async () => {
     if (!jobId) return;
@@ -45,7 +50,9 @@ export default function ServiceEndpointPanel({ jobId, onStatusChange }: ServiceE
     setError(null);
 
     try {
-      const res = await fetch(`${API_BASE}/v1/runners/jobs/${jobId}/service-status`);
+      const res = await fetch(`${API_BASE}/v1/runners/jobs/${jobId}/service-status`, {
+        headers: getAuthHeaders(),
+      });
 
       if (!res.ok) {
         if (res.status === 404) {
@@ -72,48 +79,14 @@ export default function ServiceEndpointPanel({ jobId, onStatusChange }: ServiceE
 
     // Poll every 10 seconds if service is not ready yet
     const interval = setInterval(() => {
-      if (!serviceInfo?.is_ready) {
+      if (!serviceInfo?.is_ready_for_testing) {
         fetchServiceStatus();
       }
     }, 10000);
 
     return () => clearInterval(interval);
-  }, [jobId, serviceInfo?.is_ready, fetchServiceStatus]);
+  }, [jobId, serviceInfo?.is_ready_for_testing, fetchServiceStatus]);
 
-  // Countdown timer for token expiration
-  useEffect(() => {
-    if (!serviceInfo?.token_expires_at) {
-      setCountdown("");
-      return;
-    }
-
-    const updateCountdown = () => {
-      const expiresAt = new Date(serviceInfo.token_expires_at!);
-      const now = new Date();
-      const diff = expiresAt.getTime() - now.getTime();
-
-      if (diff <= 0) {
-        setCountdown("Expired");
-        return;
-      }
-
-      const hours = Math.floor(diff / (1000 * 60 * 60));
-      const minutes = Math.floor((diff % (1000 * 60 * 60)) / (1000 * 60));
-      const seconds = Math.floor((diff % (1000 * 60)) / 1000);
-
-      if (hours > 0) {
-        setCountdown(`${hours}h ${minutes}m remaining`);
-      } else if (minutes > 0) {
-        setCountdown(`${minutes}m ${seconds}s remaining`);
-      } else {
-        setCountdown(`${seconds}s remaining`);
-      }
-    };
-
-    updateCountdown();
-    const timer = setInterval(updateCountdown, 1000);
-    return () => clearInterval(timer);
-  }, [serviceInfo?.token_expires_at]);
 
   const copyToClipboard = async (text: string, label: string) => {
     try {
@@ -140,10 +113,6 @@ export default function ServiceEndpointPanel({ jobId, onStatusChange }: ServiceE
     }
   };
 
-  const isTokenExpired = () => {
-    if (!serviceInfo?.token_expires_at) return true;
-    return new Date(serviceInfo.token_expires_at) < new Date();
-  };
 
   if (loading && !serviceInfo) {
     return (
@@ -199,7 +168,7 @@ export default function ServiceEndpointPanel({ jobId, onStatusChange }: ServiceE
             Tests {serviceInfo.passed ? "Passed" : "Failed"}
           </div>
         )}
-        {!serviceInfo.is_ready && (
+        {!serviceInfo.is_ready_for_testing && (
           <div className="flex items-center gap-1 text-xs text-orange-400">
             <Loader2 className="w-3 h-3 animate-spin" />
             Service deploying...
@@ -244,50 +213,6 @@ export default function ServiceEndpointPanel({ jobId, onStatusChange }: ServiceE
         </div>
       )}
 
-      {/* Access Token */}
-      {serviceInfo.access_token && (
-        <div className="space-y-2">
-          <label className="text-xs text-zinc-500 uppercase flex items-center gap-1.5">
-            <Key className="w-3 h-3" />
-            Access Token
-          </label>
-          <div className="flex items-center gap-2">
-            <div className="flex-1 bg-black/50 border border-zinc-800 rounded px-3 py-2 text-sm text-zinc-200 font-mono truncate">
-              {serviceInfo.access_token.slice(0, 20)}...
-            </div>
-            <button
-              onClick={() => copyToClipboard(serviceInfo.access_token!, "token")}
-              className="p-2 rounded bg-zinc-800 text-zinc-400 hover:text-white transition-colors"
-              title="Copy token"
-            >
-              {copied === "token" ? (
-                <CheckCircle className="w-4 h-4 text-emerald-400" />
-              ) : (
-                <Copy className="w-4 h-4" />
-              )}
-            </button>
-          </div>
-
-          {/* Token Expiration */}
-          {serviceInfo.token_expires_at && (
-            <div className={`flex items-center gap-2 text-xs mt-1 ${isTokenExpired() ? "text-red-400" : "text-zinc-500"}`}>
-              <Clock className="w-3 h-3" />
-              {isTokenExpired() ? "Token expired" : countdown}
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* Usage Instructions */}
-      {serviceInfo.service_endpoint && serviceInfo.access_token && (
-        <div className="mt-4 p-3 bg-black/30 rounded-lg border border-zinc-800">
-          <p className="text-xs text-zinc-400 mb-2">Usage Example:</p>
-          <pre className="text-[11px] text-zinc-300 font-mono overflow-x-auto">
-{`curl -H "Authorization: Bearer ${serviceInfo.access_token.slice(0, 15)}..." \\
-  ${serviceInfo.service_endpoint}/api/health`}
-          </pre>
-        </div>
-      )}
 
       {/* Health Check URL */}
       {serviceInfo.service_endpoint && (

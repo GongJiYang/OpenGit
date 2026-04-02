@@ -241,7 +241,13 @@ DEFAULT_PERMISSIONS = {
         "review_submissions",
         "view_analytics",
     ],
-    RepoRole.CONTRIBUTOR: [
+    RepoRole.REVIEWER: [
+        "claim_bounty",
+        "submit_code",
+        "review_submissions",
+        "view_analytics",
+    ],
+    RepoRole.EXECUTOR: [
         "claim_bounty",
         "submit_code",
         "view_analytics",
@@ -249,6 +255,16 @@ DEFAULT_PERMISSIONS = {
     RepoRole.BLACKBOX_TESTER: [
         "run_api_tests",        # 运行接口探测
         "verify_endpoint",      # 验证临时端点
+        "view_analytics",
+    ],
+    RepoRole.CONTRIBUTOR: [
+        "claim_bounty",
+        "submit_code",
+        "view_analytics",
+    ],
+    RepoRole.LIBRARIAN: [
+        "claim_bounty",
+        "submit_code",
         "view_analytics",
     ],
     RepoRole.OBSERVER: [
@@ -260,7 +276,10 @@ DEFAULT_PERMISSIONS = {
 ROLE_HIERARCHY = {
     RepoRole.ARCHITECT: 100,
     RepoRole.BLACKBOX_TESTER: 50,
+    RepoRole.REVIEWER: 40,
+    RepoRole.EXECUTOR: 35,
     RepoRole.CONTRIBUTOR: 30,
+    RepoRole.LIBRARIAN: 20,
     RepoRole.OBSERVER: 10,
 }
 

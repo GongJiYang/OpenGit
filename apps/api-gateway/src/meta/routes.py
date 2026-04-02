@@ -13,6 +13,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlmodel import Session, select
 
 from schemas.meta import ApprovePRRequest, CreateForkRequest, CreatePRRequest, MetaRepoInitRequest
+from core.security import ensure_governance_allows_execution
 
 from persistence import (
     MetaRepoConfig,
@@ -113,6 +114,8 @@ async def init_meta_repo(
 
     Only callable by agents with 'admin' role.
     """
+    ensure_governance_allows_execution()
+
     # Check if already initialized
     existing = session.exec(select(MetaRepoConfig)).first()
     if existing:
@@ -224,6 +227,7 @@ async def create_fork(
     """
     Create a fork of the meta-repository for PR workflow.
     """
+    ensure_governance_allows_execution()
     # TODO: Get agent info from auth
     owner_type = "agent"
     owner_id = "test-agent"  # Placeholder
@@ -337,6 +341,7 @@ async def create_pr(
     """
     Create a Pull Request for the meta-repository.
     """
+    ensure_governance_allows_execution()
     # TODO: Get author info from auth (kept for future integration)
     # Validate source repo exists and is a fork
     source_fork = session.exec(
@@ -477,6 +482,8 @@ async def approve_pr(
 
     For protected paths, requires different types of reviewers (at least 1 human + 1 agent).
     """
+    ensure_governance_allows_execution()
+
     pr = session.exec(
         select(PlatformPR).where(PlatformPR.pr_number == pr_number)
     ).first()
@@ -529,6 +536,7 @@ async def merge_pr(
     """
     Merge an approved PR and trigger deployment.
     """
+    ensure_governance_allows_execution()
     pr = session.exec(
         select(PlatformPR).where(PlatformPR.pr_number == pr_number)
     ).first()
@@ -636,6 +644,8 @@ async def rollback_update(
 
     Only callable by admin.
     """
+    ensure_governance_allows_execution()
+
     wis = WorkItemService(session)
     try:
         update = wis.meta.rollback_update(update_id, meta_config)

@@ -17,6 +17,7 @@ Security:
 - Banned runners are rejected with 403
 """
 
+import hashlib
 import secrets
 from datetime import datetime, timedelta
 from typing import Any, List, Optional
@@ -26,6 +27,7 @@ import bcrypt
 from fastapi import APIRouter, Depends, HTTPException, status, Header
 from sqlmodel import Session, select
 
+from core.security import ensure_governance_allows_execution
 from core.settings import get_settings
 
 from ..models.runner import (
@@ -245,6 +247,16 @@ def _verify_token(token: str, token_hash: str) -> bool:
         return False
 
 
+def _runner_token_lookup(token: str) -> str:
+    """Stable lookup key for indexed runner token candidate fetch."""
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+def _registration_token_lookup(token: str) -> str:
+    """Stable lookup key for one-time registration token candidate fetch."""
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
 def verify_runner_token(token: str, session: Session) -> Runner:
     """Verify runner authentication token and return runner."""
     if not token.startswith("ahauth_"):
@@ -253,12 +265,29 @@ def verify_runner_token(token: str, session: Session) -> Runner:
             detail="Invalid token format"
         )
 
-    # Find all runners and verify hash (timing-safe)
-    runners = session.exec(select(Runner)).all()
+    lookup = _runner_token_lookup(token)
+    runner = session.exec(select(Runner).where(Runner.token_lookup == lookup)).first()
 
-    for runner in runners:
+    # Backward compatibility during rollout: legacy rows may not have token_lookup yet.
+    if runner is None:
+        legacy_runners = session.exec(select(Runner).where(Runner.token_lookup.is_(None))).all()
+        for legacy_runner in legacy_runners:
+            if _verify_token(token, legacy_runner.token_hash):
+                legacy_runner.token_lookup = lookup
+                session.add(legacy_runner)
+                session.commit()
+                session.refresh(legacy_runner)
+                runner = legacy_runner
+                break
+
+    if runner:
+        if runner.token_lookup is None:
+            runner.token_lookup = lookup
+            session.add(runner)
+            session.commit()
+            session.refresh(runner)
         if _verify_token(token, runner.token_hash):
-            if runner.is_banned:
+            if runner.is_banned or runner.status == RunnerStatus.BANNED:
                 raise HTTPException(
                     status_code=status.HTTP_403_FORBIDDEN,
                     detail=f"Runner banned: {runner.banned_reason or 'Policy violation'}"
@@ -308,12 +337,13 @@ async def generate_runner_token(
 
     User must be authenticated (JWT). Token is shown ONLY ONCE.
     """
+    ensure_governance_allows_execution()
     token = f"ahrun_{secrets.token_urlsafe(32)}"
     token_hash = _hash_token(token)
 
     runner_token = RunnerToken(
         user_id=user.id,
-        token=token,
+        token_lookup=_registration_token_lookup(token),
         token_hash=token_hash,
         expires_at=datetime.utcnow() + timedelta(hours=24),
     )
@@ -341,10 +371,13 @@ async def register_runner(
     Called by agenthub-runner CLI on first start.
     Token is consumed and cannot be reused.
     """
-    statement = select(RunnerToken).where(RunnerToken.token == req.token)
+    ensure_governance_allows_execution()
+
+    lookup = _registration_token_lookup(req.token)
+    statement = select(RunnerToken).where(RunnerToken.token_lookup == lookup)
     runner_token = session.exec(statement).first()
 
-    if not runner_token:
+    if not runner_token or not _verify_token(req.token, runner_token.token_hash):
         raise HTTPException(status_code=401, detail="Invalid or expired token")
     if runner_token.is_used:
         raise HTTPException(status_code=400, detail="Token already used")
@@ -360,6 +393,7 @@ async def register_runner(
         name=req.name,
         owner_user_id=runner_token.user_id,
         token_hash=runner_auth_hash,
+        token_lookup=_runner_token_lookup(runner_auth_token),
         status=RunnerStatus.ONLINE,
         last_heartbeat_at=datetime.utcnow(),
         cpu_cores=req.cpu_cores,
@@ -402,6 +436,8 @@ async def runner_heartbeat(
     Should be called every 30 seconds.
     Runners with no heartbeat for 60+ seconds are marked OFFLINE.
     """
+    ensure_governance_allows_execution()
+
     runner = verify_runner_token(x_runner_token, session)
 
     runner.last_heartbeat_at = datetime.utcnow()
@@ -436,6 +472,7 @@ async def poll_jobs(
     - If runner.is_global=True: can serve any repo
     - If runner.is_global=False: only serve repos in allowed_repo_ids
     """
+    ensure_governance_allows_execution()
     if runner.status == RunnerStatus.BUSY:
         return []
 
@@ -501,6 +538,7 @@ async def submit_job_result(
     - Partial pass detection (>= 80% tests pass)
     - Human review fallback when retries exhausted
     """
+    ensure_governance_allows_execution()
     from ..services.recovery_service import RecoveryService
 
     job = session.get(ComputeJob, req.job_id)
@@ -680,6 +718,7 @@ async def report_service_ready(
     - Can only access the specified service endpoint
     - Includes job_id and runner_id for audit
     """
+    ensure_governance_allows_execution()
     import jwt as pyjwt
 
     # Get the job
@@ -760,6 +799,7 @@ async def delete_runner(
     session: Session = Depends(get_db)
 ):
     """Delete a runner (soft disable)."""
+    ensure_governance_allows_execution()
     runner = session.get(Runner, runner_id)
 
     if not runner:
@@ -789,6 +829,7 @@ async def update_runner_repos(
     - is_global=True: Runner serves all repos (ignores allowed_repo_ids)
     - is_global=False: Runner only serves repos in allowed_repo_ids
     """
+    ensure_governance_allows_execution()
     runner = session.get(Runner, runner_id)
     if not runner:
         raise HTTPException(status_code=404, detail="Runner not found")
@@ -847,6 +888,7 @@ async def upsert_runner_share(
     session: Session = Depends(get_db)
 ):
     """Create or update a share grant for a runner. Owner only."""
+    ensure_governance_allows_execution()
     runner = session.get(Runner, runner_id)
     if not runner:
         raise HTTPException(status_code=404, detail="Runner not found")
@@ -893,6 +935,7 @@ async def delete_runner_share(
     session: Session = Depends(get_db)
 ):
     """Delete a share grant for a runner. Owner only."""
+    ensure_governance_allows_execution()
     runner = session.get(Runner, runner_id)
     if not runner:
         raise HTTPException(status_code=404, detail="Runner not found")
@@ -922,6 +965,8 @@ async def add_runner_repo(
     session: Session = Depends(get_db)
 ):
     """Add a single repository to runner's allowed list."""
+    ensure_governance_allows_execution()
+
     runner = session.get(Runner, runner_id)
     if not runner:
         raise HTTPException(status_code=404, detail="Runner not found")
@@ -954,6 +999,7 @@ async def remove_runner_repo(
     session: Session = Depends(get_db)
 ):
     """Remove a single repository from runner's allowed list."""
+    ensure_governance_allows_execution()
     runner = session.get(Runner, runner_id)
     if not runner:
         raise HTTPException(status_code=404, detail="Runner not found")
@@ -1136,6 +1182,8 @@ async def submit_audit_result(
     It compares the runner's submission with the audited result and
     applies reputation penalties or bans as needed.
     """
+    ensure_governance_allows_execution()
+
     from ..models.runner import AuditResult
 
     audit = session.get(AuditLog, req.audit_id)

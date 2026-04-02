@@ -10,10 +10,19 @@ from agenthub_protocol.roles import RepoRole
 # --- Constants ---
 DB_PATH = os.path.abspath("./agenthub_data/agenthub.db")
 DEFAULT_SQLITE_URL = f"sqlite:///{DB_PATH}"
+CREATE_ALL_ENV_FLAG = "ALLOW_SQLMODEL_CREATE_ALL"
 
 def get_database_url() -> str:
     """Get database URL from env or fallback to SQLite."""
     return os.getenv("DATABASE_URL", DEFAULT_SQLITE_URL)
+
+
+def _ensure_create_all_allowed() -> None:
+    if os.getenv(CREATE_ALL_ENV_FLAG) != "1":
+        raise RuntimeError(
+            "create_db_and_tables is disabled in runtime path. "
+            f"Use Alembic migrations instead; set {CREATE_ALL_ENV_FLAG}=1 only for tests/bootstrap."
+        )
 
 # --- Enums ---
 
@@ -430,6 +439,7 @@ def get_engine():
     return _engine
 
 def create_db_and_tables():
+    _ensure_create_all_allowed()
     db_url = get_database_url()
     if db_url.startswith("sqlite:///"):
         os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)

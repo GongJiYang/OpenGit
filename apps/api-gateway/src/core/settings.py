@@ -21,6 +21,7 @@ class Settings(BaseSettings):
 
     # Security mode and feature toggles
     app_security_mode: str = Field(default="strict", alias="APP_SECURITY_MODE")
+    app_governance_mode: str = Field(default="off", alias="APP_GOVERNANCE_MODE")
     app_enable_indexer: bool = Field(default=False, alias="APP_ENABLE_INDEXER")
     app_enable_sandbox: bool = Field(default=False, alias="APP_ENABLE_SANDBOX")
     app_sandbox_provider: str = Field(default="disabled", alias="APP_SANDBOX_PROVIDER")
@@ -74,6 +75,11 @@ class Settings(BaseSettings):
         return mode if mode in {"strict", "warn"} else "strict"
 
     @property
+    def normalized_governance_mode(self) -> str:
+        mode = (self.app_governance_mode or "off").strip().lower()
+        return mode if mode in {"off", "observe", "enforce"} else "off"
+
+    @property
     def effective_jwt_secret(self) -> Optional[str]:
         if not self.jwt_secret:
             return None
@@ -114,6 +120,9 @@ class Settings(BaseSettings):
 
         if self.app_session_ttl_seconds < 1:
             problems.append("APP_SESSION_TTL_SECONDS must be at least 1")
+
+        if self.database_url and self.auth_database_url and self.database_url != self.auth_database_url:
+            problems.append("AUTH_DATABASE_URL and DATABASE_URL must match (single-database mode)")
 
         if self.password_min_length < 8:
             problems.append("PASSWORD_MIN_LENGTH must be at least 8")

@@ -23,7 +23,7 @@ spec:
                 name: api-gateway-secrets
           env:
             - name: PYTHONPATH
-              value: "/app:/app/apps/api-gateway:/app/apps/api-gateway/src"
+              value: "/app:/app/apps/api-gateway:/app/apps/api-gateway/src:/app/packages/protocol/src:/app/services/git-core/src:/app/services/semantic-store/src:/app/services/execution-vmm/src"
             - name: APP_ENABLE_INDEXER
               value: "0"
             - name: APP_ENABLE_SANDBOX

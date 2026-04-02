@@ -1,12 +1,15 @@
-from datetime import datetime
+import hashlib
+from datetime import datetime, timedelta
 from typing import Optional
 from uuid import uuid4
 
-from sqlmodel import Session
+import bcrypt
+from sqlmodel import Session, select
 
 from core.settings import clear_settings_cache
+from core.security import GOVERNANCE_ENFORCE_EXECUTION_FORBIDDEN_DETAIL
 from agent_auth.models import Agent, AgentStatus
-from agent_auth.models.runner import AuditLog, ComputeJob, ComputeJobStatus, ExecutionMode, Runner
+from agent_auth.models.runner import AuditLog, ComputeJob, ComputeJobStatus, ExecutionMode, Runner, RunnerStatus, RunnerToken
 from agent_auth.models.platform import Repo, RepoMember, MembershipStatus, RepoRole
 from agent_auth.services.verification import VerificationService
 
@@ -50,9 +53,78 @@ def _seed_job_and_audit(
         return str(audit.id)
 
 
+def test_runner_register_returns_403_when_governance_enforce(client, monkeypatch):
+    monkeypatch.setenv("APP_GOVERNANCE_MODE", "enforce")
+    clear_settings_cache()
+
+    res = client.post(
+        "/api/v1/runners/register",
+        json={"token": "bad-token", "name": "runner-under-enforce"},
+    )
+
+    assert res.status_code == 403
+    assert res.json().get("detail") == GOVERNANCE_ENFORCE_EXECUTION_FORBIDDEN_DETAIL
+
+
+def test_generate_runner_token_persists_hash_and_lookup_without_plaintext(client):
+    from persistence import get_engine
+    from agent_auth.services.user_auth import get_current_user
+
+    user_id = uuid4()
+    app_user = type("MockUser", (), {"id": user_id})()
+
+    from main import app
+
+    app.dependency_overrides[get_current_user] = lambda: app_user
+    try:
+        res = client.post("/api/v1/runners/generate-token")
+        assert res.status_code == 200
+        token = res.json()["token"]
+
+        with Session(get_engine()) as session:
+            stored = session.exec(
+                select(RunnerToken).where(
+                    RunnerToken.token_lookup == hashlib.sha256(token.encode("utf-8")).hexdigest()
+                )
+            ).first()
+            assert stored is not None
+            assert bcrypt.checkpw(token.encode("utf-8"), stored.token_hash.encode("utf-8"))
+            assert getattr(stored, "token_lookup", None) is not None
+    finally:
+        app.dependency_overrides.pop(get_current_user, None)
+
+
 def test_internal_audit_pending_requires_internal_token(client):
     res = client.get("/api/v1/runners/internal/audit/pending")
     assert res.status_code == 422
+
+
+def test_runner_register_uses_hashed_registration_token_lookup(client):
+    from persistence import get_engine
+
+    raw_token = f"ahrun_{uuid4().hex}"
+    token_hash = bcrypt.hashpw(raw_token.encode("utf-8"), bcrypt.gensalt(rounds=12)).decode("utf-8")
+    owner_id = uuid4()
+
+    with Session(get_engine()) as session:
+        row = RunnerToken(
+            user_id=owner_id,
+            token_lookup=hashlib.sha256(raw_token.encode("utf-8")).hexdigest(),
+            token_hash=token_hash,
+            is_used=False,
+            expires_at=datetime.utcnow() + timedelta(hours=1),
+        )
+        session.add(row)
+        session.commit()
+
+    res = client.post(
+        "/api/v1/runners/register",
+        json={"token": raw_token, "name": "runner-register-hash"},
+    )
+    assert res.status_code == 200
+    body = res.json()
+    assert body["success"] is True
+    assert body.get("auth_token", "").startswith("ahauth_")
 
 
 def test_internal_audit_pending_rejects_invalid_internal_token(client, monkeypatch):
@@ -331,3 +403,64 @@ def test_internal_audit_submit_requires_new_fingerprint_fields(client, monkeypat
     detail = res.json().get("detail") or []
     missing_fields = {item.get("loc", [None])[-1] for item in detail if isinstance(item, dict)}
     assert "audited_test_command" in missing_fields
+
+
+def test_apply_audit_result_sets_is_banned_with_status_banned():
+    from persistence import get_engine
+    from agent_auth.models.runner import AuditResult
+
+    with Session(get_engine()) as session:
+        runner = Runner(
+            name="runner-ban-sync",
+            owner_user_id=uuid4(),
+            token_hash="hash",
+            reputation_score=10,
+            total_jobs_completed=0,
+        )
+        session.add(runner)
+        session.commit()
+        session.refresh(runner)
+
+        job = ComputeJob(
+            bounty_id="bounty-ban-sync",
+            execution_mode=ExecutionMode.SELF_HOSTED,
+            test_command="pytest",
+            timeout_seconds=300,
+            status=ComputeJobStatus.RUNNING,
+        )
+        session.add(job)
+        session.commit()
+        session.refresh(job)
+
+        audit = AuditLog(
+            job_id=job.id,
+            runner_id=runner.id,
+            status="pending",
+            reason="periodic_audit",
+            original_stdout="ok",
+            original_exit_code=0,
+            original_test_command="pytest",
+            original_code_commit="abc123",
+            original_env_fingerprint="A=1|B=2",
+        )
+        session.add(audit)
+        session.commit()
+        session.refresh(audit)
+
+        VerificationService.apply_audit_result(
+            session=session,
+            audit=audit,
+            result=AuditResult.FAILED,
+            explanation="mismatch",
+            audited_stdout="bad",
+            audited_exit_code=1,
+            audited_test_command="pytest",
+            audited_code_commit="abc123",
+            audited_env_fingerprint="A=1|B=2",
+        )
+
+        updated = session.get(Runner, runner.id)
+        assert updated is not None
+        assert updated.status == RunnerStatus.BANNED
+        assert updated.is_banned is True
+        assert updated.banned_reason is not None

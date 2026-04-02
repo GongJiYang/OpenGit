@@ -3,10 +3,12 @@ import os
 import re
 import subprocess
 import sys
+from typing import Optional
 
 
 DEFAULT_PROTECTED_BRANCH_REFS = {"refs/heads/main", "refs/heads/master"}
 PROTECTED_BRANCHES_ENV = "TRACE_COMMIT_PROTECTED_BRANCHES"
+PUSH_ACTOR_ENV = "AGENTHUB_PUSH_ACTOR"
 ZERO_SHA = "0000000000000000000000000000000000000000"
 ALLOWED_PUSH_REF_PATTERNS = (
     re.compile(r"^refs/heads/agent/([^/\s]+)/.+$"),
@@ -28,23 +30,29 @@ DEFAULT_MAX_PUSH_QUARANTINE_BYTES = 150 * 1024 * 1024
 DEFAULT_MAX_REPO_SIZE_BYTES = 5 * 1024 * 1024 * 1024
 
 
+def _normalize_protected_branch_ref(branch: str) -> Optional[str]:
+    if not branch:
+        return None
+    if branch.startswith("refs/heads/"):
+        return branch
+    if branch.startswith("refs/"):
+        return None
+    return f"refs/heads/{branch}"
+
+
 def _get_protected_branch_refs():
     protected_refs = set(DEFAULT_PROTECTED_BRANCH_REFS)
     raw_value = os.getenv(PROTECTED_BRANCHES_ENV, "")
     for item in raw_value.split(","):
-        branch = item.strip()
-        if not branch:
-            continue
-        if branch.startswith("refs/heads/"):
-            protected_refs.add(branch)
-        elif not branch.startswith("refs/"):
-            protected_refs.add(f"refs/heads/{branch}")
+        normalized = _normalize_protected_branch_ref(item.strip())
+        if normalized:
+            protected_refs.add(normalized)
     return protected_refs
 
 
 def _load_protocol_runtime():
     """Load protocol classes from installed/runtime PYTHONPATH only."""
-    from agenthub_protocol import TraceCommit
+    from agenthub_protocol import TraceCommit, TRACE_COMMIT_MAX_COMMIT_MESSAGE_BYTES
     from agenthub_protocol.signing import (
         compute_diff_hash_from_patch,
         get_trace_signing_secret,
@@ -56,6 +64,7 @@ def _load_protocol_runtime():
     return (
         TraceCommit,
         TraceValidator,
+        TRACE_COMMIT_MAX_COMMIT_MESSAGE_BYTES,
         compute_diff_hash_from_patch,
         get_trace_signing_secret,
         is_trace_signature_required,
@@ -78,6 +87,15 @@ def _extract_ref_actor(ref: str) -> str:
     raise ValueError(
         f"Unsupported ref '{ref}'. Allowed refs: refs/heads/agent/<agent_id>/* or refs/heads/system/<actor_id>/*"
     )
+
+
+def _get_transport_actor() -> str:
+    actor = (os.getenv(PUSH_ACTOR_ENV) or "").strip()
+    if not actor:
+        raise ValueError(f"Missing required transport actor env: {PUSH_ACTOR_ENV}")
+    if any(ch.isspace() for ch in actor):
+        raise ValueError(f"Invalid transport actor in {PUSH_ACTOR_ENV}: whitespace is not allowed")
+    return actor
 
 
 def _env_int(name: str, default: int) -> int:
@@ -192,6 +210,7 @@ def validate_push() -> None:
     (
         _,
         TraceValidator,
+        max_commit_message_bytes,
         compute_diff_hash_from_patch,
         get_trace_signing_secret,
         is_trace_signature_required,
@@ -203,6 +222,12 @@ def validate_push() -> None:
 
     if signature_required and not signing_secret:
         print("❌ REJECTED: Trace signature required but signing secret is not configured.", file=sys.stderr)
+        sys.exit(1)
+
+    try:
+        transport_actor_id = _get_transport_actor()
+    except ValueError as actor_err:
+        print(f"❌ REJECTED: {actor_err}", file=sys.stderr)
         sys.exit(1)
 
     print("🤖 AgentHub Guard: Inspecting incoming commits...", file=sys.stderr)
@@ -219,6 +244,14 @@ def validate_push() -> None:
             ref_actor_id = _extract_ref_actor(ref)
         except ValueError as ref_err:
             print(f"❌ REJECTED: {ref_err}", file=sys.stderr)
+            sys.exit(1)
+
+        if ref_actor_id != transport_actor_id:
+            print(
+                "❌ REJECTED: transport actor does not match ref actor "
+                f"(transport={transport_actor_id}, ref={ref_actor_id}).",
+                file=sys.stderr,
+            )
             sys.exit(1)
 
         is_delete = new_sha == ZERO_SHA
@@ -243,8 +276,13 @@ def validate_push() -> None:
 
         for commit_sha in commits:
             msg = get_commit_message(commit_sha)
-            if len(msg.encode("utf-8")) > 65536:
-                print(f"❌ REJECTED: Commit {commit_sha[:7]} message too large.", file=sys.stderr)
+            if len(msg.encode("utf-8")) > max_commit_message_bytes:
+                print(
+                    "❌ REJECTED: Commit "
+                    f"{commit_sha[:7]} message too large "
+                    f"(>{max_commit_message_bytes} bytes).",
+                    file=sys.stderr,
+                )
                 sys.exit(1)
             try:
                 data = json.loads(msg)
@@ -255,14 +293,17 @@ def validate_push() -> None:
                 if author_agent_id != ref_actor_id:
                     raise ValueError("Protocol Violation: branch actor does not match TraceCommit author.agent_id.")
 
-                expected_commit_sha = commit_sha if data.get("commit_sha") else None
+                parent_commit_sha = subprocess.check_output(["git", "show", "-s", "--format=%P", commit_sha]).decode().strip()
+                expected_parent_sha = parent_commit_sha.split()[0] if parent_commit_sha else None
                 trace = TraceValidator.validate_commit(
                     data,
-                    expected_commit_sha=expected_commit_sha,
-                    require_commit_sha=False,
-                    require_parent_sha=False,
+                    expected_commit_sha=commit_sha,
+                    require_commit_sha=True,
+                    require_parent_sha=bool(expected_parent_sha),
                     require_timezone_aware_timestamp=True,
                 )
+                if expected_parent_sha and data.get("parent_sha") != expected_parent_sha:
+                    raise ValueError("Protocol Violation: 'parent_sha' does not match git parent SHA.")
 
                 expected_tree_hash = subprocess.check_output(["git", "show", "-s", "--format=%T", commit_sha]).decode().strip()
                 if data.get("tree_hash") != expected_tree_hash:

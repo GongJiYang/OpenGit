@@ -14,7 +14,7 @@ from agenthub_execution_vmm.guard import ExecutionGuard
 from core.middleware import limiter
 from core.security import STORE_ROOT, get_secure_repo_path
 from core.settings import get_settings
-from dependencies.auth import require_agent, require_active_identity
+from dependencies.auth import require_agent, require_active_identity, require_active_identity_optional
 from git_tree_service import GitTreeService
 from persistence import Bounty, get_session
 from agenthub_protocol.roles import UserRole
@@ -28,6 +28,7 @@ from schemas.bounties import (
     DecomposedBountyResponse,
     PreparationClaimRequest,
     RestoreRequest,
+    GovernanceTransitionRequest,
     SubTaskDTO,
     TaskNode,
 )
@@ -35,6 +36,82 @@ from schemas.bounties import (
 router = APIRouter()
 logger = logging.getLogger(__name__)
 
+
+_ADMIN_ARCHITECT_REQUIRED_DETAIL = "Forbidden: admin or repo architect required"
+
+
+def _is_platform_admin(identity: Any) -> bool:
+    role = getattr(identity, "role", None)
+    if isinstance(role, UserRole):
+        return role == UserRole.ADMIN
+    if hasattr(role, "value"):
+        return str(role.value).lower() == UserRole.ADMIN.value
+    return str(role).lower() == UserRole.ADMIN.value
+
+
+def _require_repo_architect_or_admin(auth_session: Session, repo_name: str, identity: Any) -> None:
+    from agent_auth.services.authz import require_repo_member
+
+    if _is_platform_admin(identity):
+        return
+
+    if require_repo_member(auth_session, repo_name, str(identity.id), role=RepoRole.ARCHITECT):
+        return
+
+    raise HTTPException(status_code=403, detail=_ADMIN_ARCHITECT_REQUIRED_DETAIL)
+
+
+def _identity_actor_ctx(identity: Any) -> tuple[str, Optional[str]]:
+    role = getattr(identity, "role", None)
+    role_value = str(role.value).lower() if hasattr(role, "value") else str(role).lower()
+    actor_type = "user" if role_value in {UserRole.USER.value, UserRole.ADMIN.value} else "agent"
+    actor_id = getattr(identity, "id", None) or getattr(identity, "agent_id", None)
+    return actor_type, str(actor_id) if actor_id is not None else None
+
+
+def _require_same_agent_and_repo_role(
+    auth_session: Session,
+    repo_name: str,
+    identity: Any,
+    requested_agent_id: str,
+    *,
+    allowed_roles: tuple[RepoRole, ...],
+) -> str:
+    from agent_auth.services.authz import require_repo_member
+
+    identity_id = str(getattr(identity, "id", ""))
+    if identity_id != requested_agent_id:
+        raise HTTPException(status_code=403, detail="Agent ID mismatch")
+
+    if not require_repo_member(auth_session, repo_name, identity_id):
+        raise HTTPException(status_code=403, detail="Forbidden: Not a member of this repository")
+
+    for role in allowed_roles:
+        if require_repo_member(auth_session, repo_name, identity_id, role=role):
+            return role.value
+
+    allowed_label = " or ".join(role.value for role in allowed_roles)
+    raise HTTPException(status_code=403, detail=f"Forbidden: repo role {allowed_label} required")
+
+
+def _enforce_non_admin_agent_identity(identity: Any, requested_agent_id: str) -> None:
+    if _is_platform_admin(identity):
+        return
+
+    if str(getattr(identity, "id", "")) != requested_agent_id:
+        raise HTTPException(status_code=403, detail="Agent ID mismatch")
+
+
+def _require_governance_identity(
+    auth_session: Session,
+    repo_name: str,
+    identity: Any,
+    *,
+    requested_agent_id: Optional[str] = None,
+) -> None:
+    _require_repo_architect_or_admin(auth_session, repo_name, identity)
+    if requested_agent_id is not None:
+        _enforce_non_admin_agent_identity(identity, requested_agent_id)
 
 
 def _resolve_or_create_repo_for_bounty(
@@ -104,13 +181,9 @@ def create_bounty(
     bounty: CreateBountyRequest,
     session: Session = Depends(get_session),
     auth_session: Session = Depends(get_auth_session),
-    agent: Any = Depends(require_agent),
+    identity: Any = Depends(require_active_identity),
 ):
     """Post a new job (strict DTO)."""
-    # Only Architect can create
-    if agent.role.lower() != "architect":
-        raise HTTPException(status_code=403, detail="Forbidden: Only Architect agents can create bounties.")
-
     # Input validation
     if not bounty.title or not bounty.title.strip():
         raise HTTPException(status_code=400, detail="Title is required")
@@ -150,12 +223,7 @@ def create_bounty(
         requested_repo_id=bounty.repo_id,
     )
 
-    # Repo membership/ownership check (must be repo member or owner)
-    from agent_auth.services.authz import require_repo_member
-
-    allowed = require_repo_member(auth_session, resolved_repo_name, agent.id)
-    if not allowed:
-        raise HTTPException(status_code=403, detail="Forbidden: Not a member of this repository")
+    _require_governance_identity(auth_session, resolved_repo_name, identity)
 
     # verification_mode validation
     verification_mode = (bounty.verification_mode or get_settings().default_verification_mode).lower()
@@ -209,26 +277,19 @@ def decompose_task(
     agent_id: str,
     session: Session = Depends(get_session),
     auth_session: Session = Depends(get_auth_session),
-    agent: Any = Depends(require_agent),
+    identity: Any = Depends(require_active_identity),
 ):
-    """[Task Board] Allow Architect agents to split a task into atomic sub-tasks (strict DTO)."""
-    if str(agent.id) != agent_id:
-        raise HTTPException(status_code=403, detail="Agent ID mismatch")
+    """[Task Board] Allow repo architects/admin to split a task into atomic sub-tasks (strict DTO)."""
     parent = session.get(Bounty, parent_id)
     if not parent:
         raise HTTPException(status_code=404, detail="Parent task not found")
 
-    # Verify Architect Role
-    # Use principal passed by require_agent; here agent is Principal
-    if getattr(agent, "role", None) not in ("architect", RepoRole.ARCHITECT):
-        raise HTTPException(status_code=403, detail="Forbidden: Only Architect agents can decompose tasks.")
-
-    # Must be repo member to decompose tasks in this repo
-    from agent_auth.services.authz import require_repo_member
-
-    allowed = require_repo_member(auth_session, parent.repo_name, agent.id)
-    if not allowed:
-        raise HTTPException(status_code=403, detail="Forbidden: Not a member of this repository")
+    _require_governance_identity(
+        auth_session,
+        parent.repo_name,
+        identity,
+        requested_agent_id=agent_id,
+    )
 
     created_tasks = []
     for dto in sub_tasks:
@@ -319,7 +380,7 @@ def create_decomposed_bounties(
     req: DecomposedBountyRequest,
     session: Session = Depends(get_session),
     auth_session: Session = Depends(get_auth_session),
-    agent: Any = Depends(require_agent),
+    identity: Any = Depends(require_active_identity),
 ):
     """
     Create a hierarchical bounty tree from a nested JSON structure.
@@ -330,10 +391,6 @@ def create_decomposed_bounties(
     - Automatic status management (pending -> open when dependencies complete)
     """
     from persistence import BountyStatus
-
-    # Verify Architect Role
-    if agent.role.lower() != "architect":
-        raise HTTPException(status_code=403, detail="Forbidden: Only Architect agents can create decomposed bounties.")
 
     # Validate repo exists in filesystem
     repo_path = get_secure_repo_path(req.repo_name)
@@ -346,6 +403,8 @@ def create_decomposed_bounties(
         repo_name=req.repo_name,
         requested_repo_id=req.repo_id,
     )
+
+    _require_governance_identity(auth_session, resolved_repo_name, identity)
 
     all_bounties: List[Bounty] = []
     client_to_server_id: dict = {}
@@ -440,16 +499,16 @@ def create_decomposed_bounties(
     # Sync task tree to repository
     try:
         tree_service = GitTreeService(session, STORE_ROOT)
-        tree_service.sync_repo_task_tree(resolved_repo_name, agent.id)
+        tree_service.sync_repo_task_tree(resolved_repo_name, identity.id)
         task_tree_sync["status"] = "synced"
     except Exception as e:
         err = str(e)[:500]
         task_tree_sync["status"] = "failed"
         task_tree_sync["error"] = err
         logger.warning(
-            "[bounties][decomposed] task tree sync failed repo=%s agent=%s error=%s",
+            "[bounties][decomposed] task tree sync failed repo=%s actor=%s error=%s",
             resolved_repo_name,
-            str(agent.id),
+            str(identity.id),
             err,
         )
 
@@ -696,31 +755,22 @@ def mark_bounty_preparable(
     bounty_id: str,
     session: Session = Depends(get_session),
     auth_session: Session = Depends(get_auth_session),
-    agent: Any = Depends(require_agent)
+    identity: Any = Depends(require_active_identity)
 ):
     """
     Mark a pending bounty as ready for preparation.
 
-    Only Architect agents can mark bounties as preparable.
-    Must be an active member of the bounty's repository.
+    Requires platform admin or repo architect.
 
     Status transition: pending -> ready_for_preparation
     """
     from persistence import BountyStatus
 
-    # Verify Architect Role
-    if agent.role.lower() != "architect":
-        raise HTTPException(status_code=403, detail="Forbidden: Only Architect agents can mark bounties as preparable.")
-
     bounty = session.get(Bounty, bounty_id)
     if not bounty:
         raise HTTPException(status_code=404, detail="Bounty not found")
 
-    # Membership check via facade
-    from agent_auth.services.authz import require_repo_member
-    allowed = require_repo_member(auth_session, bounty.repo_name, agent.id)
-    if not allowed:
-        raise HTTPException(status_code=403, detail="Forbidden: Not a member of this repository")
+    _require_governance_identity(auth_session, bounty.repo_name, identity)
 
     if bounty.status != BountyStatus.PENDING.value:
         raise HTTPException(
@@ -728,16 +778,26 @@ def mark_bounty_preparable(
             detail=f"Bounty must be in 'pending' status. Current status: {bounty.status}"
         )
 
-    bounty.status = BountyStatus.READY_FOR_PREPARATION.value
-    bounty.updated_at = datetime.utcnow()
-    session.add(bounty)
-    session.commit()
-    session.refresh(bounty)
+    from agent_auth.services.bounty_fsm import transition
+
+    actor_type, actor_id = _identity_actor_ctx(identity)
+
+    updated, err = transition(
+        session,
+        bounty.id,
+        BountyStatus.READY_FOR_PREPARATION.value,
+        ctx={
+            "actor_type": actor_type,
+            "actor_id": actor_id,
+        },
+    )
+    if err:
+        raise HTTPException(status_code=409, detail=err)
 
     return {
-        "id": bounty.id,
-        "title": bounty.title,
-        "status": bounty.status,
+        "id": updated.id,
+        "title": updated.title,
+        "status": updated.status,
         "message": "Bounty marked as ready for preparation. Contributors can now prepare."
     }
 
@@ -749,6 +809,7 @@ def claim_bounty_for_preparation(
     bounty_id: str,
     req: PreparationClaimRequest,
     session: Session = Depends(get_session),
+    auth_session: Session = Depends(get_auth_session),
     agent: Any = Depends(require_agent)
 ):
     """
@@ -770,12 +831,17 @@ def claim_bounty_for_preparation(
     """
     from persistence import BountyStatus
 
-    if str(agent.id) != req.agent_id:
-        raise HTTPException(status_code=403, detail="Agent ID mismatch")
-
     bounty = session.get(Bounty, bounty_id)
     if not bounty:
         raise HTTPException(status_code=404, detail="Bounty not found")
+
+    _require_same_agent_and_repo_role(
+        auth_session,
+        bounty.repo_name,
+        agent,
+        req.agent_id,
+        allowed_roles=(RepoRole.CONTRIBUTOR,),
+    )
 
     # Check status - must be ready_for_preparation
     if bounty.status != BountyStatus.READY_FOR_PREPARATION.value:
@@ -784,30 +850,19 @@ def claim_bounty_for_preparation(
             detail=f"Bounty is not ready for preparation. Current status: {bounty.status}"
         )
 
-    # Check role match
-    req_role = bounty.required_role.value if hasattr(bounty.required_role, "value") else bounty.required_role
-    if agent.role.lower() != str(req_role).lower():
-        raise HTTPException(
-            status_code=403,
-            detail=f"This task requires role '{bounty.required_role}', agent has '{agent.role}'"
-        )
+    # Atomic claim for preparation via FSM (keeps audit/concurrency semantics)
+    from agent_auth.services.bounty_fsm import transition
 
-    # Atomic claim for preparation: ready_for_preparation + unassigned -> assignee
-    from sqlmodel import update
-    now = datetime.utcnow()
-    stmt = (
-        update(Bounty)
-        .where(
-            Bounty.id == bounty_id,
-            Bounty.status == BountyStatus.READY_FOR_PREPARATION.value,
-            Bounty.assignee.is_(None),
-        )
-        .values(assignee=str(agent.id), updated_at=now)
-        .execution_options(synchronize_session=False)
+    _, err = transition(
+        session,
+        bounty_id,
+        BountyStatus.READY_FOR_PREPARATION.value,
+        ctx={"actor_type": "agent", "actor_id": str(agent.id), "agent_id": str(agent.id)},
     )
-    result = session.exec(stmt)
-    if getattr(result, "rowcount", 0) == 0:
-        raise HTTPException(status_code=409, detail="Bounty already claimed for preparation")
+    if err:
+        if "already claimed for preparation" in err.lower() or "concurrent" in err.lower() or "race" in err.lower():
+            raise HTTPException(status_code=409, detail="Bounty already claimed for preparation")
+        raise HTTPException(status_code=400, detail=err)
 
     # Optional: append preparation notes after successful claim (structured)
     if req.preparation_notes:
@@ -840,7 +895,8 @@ def activate_from_preparation(
     request: Request,
     bounty_id: str,
     session: Session = Depends(get_session),
-    identity: Any = Depends(require_active_identity),
+    auth_session: Session = Depends(get_auth_session),
+    identity: Optional[Any] = Depends(require_active_identity_optional),
     x_internal_token: Optional[str] = Header(None, alias="X-Internal-Token"),
 ):
     """
@@ -857,35 +913,18 @@ def activate_from_preparation(
     """
     from persistence import BountyStatus
 
-    # Authorization gate
-    allowed = False
-    expected_token = get_settings().internal_api_token
-    if expected_token and x_internal_token and x_internal_token == expected_token:
-        allowed = True
-    else:
-        # Distinguish User vs Agent by type of role field
-        user_role = getattr(identity, "role", None)
-        is_user = False
-        try:
-            is_user = isinstance(user_role, UserRole)
-        except Exception:
-            is_user = False
-
-        if is_user:
-            # Human user: require ADMIN
-            if user_role == UserRole.ADMIN:
-                allowed = True
-        else:
-            # Agent: require architect
-            if isinstance(user_role, str) and user_role.lower() == "architect":
-                allowed = True
-
-    if not allowed:
-        raise HTTPException(status_code=403, detail="Forbidden: internal token or admin/architect required")
-
     bounty = session.get(Bounty, bounty_id)
     if not bounty:
         raise HTTPException(status_code=404, detail="Bounty not found")
+
+    # Authorization gate
+    expected_token = get_settings().internal_api_token
+    if expected_token and x_internal_token and x_internal_token == expected_token:
+        pass
+    else:
+        if identity is None:
+            raise HTTPException(status_code=401, detail="Valid X-API-Key or Bearer Token required")
+        _require_governance_identity(auth_session, bounty.repo_name, identity)
 
     if bounty.status != BountyStatus.READY_FOR_PREPARATION.value:
         raise HTTPException(
@@ -948,6 +987,151 @@ def _collect_cascade_ids(session: Session, root_id: str) -> Set[str]:
     return ids
 
 
+@router.post("/api/v1/bounties/{bounty_id}/governance-transition")
+@router.post("/bounties/{bounty_id}/governance-transition")
+@limiter.limit("20/minute")
+def governance_transition_bounty(
+    request: Request,
+    bounty_id: str,
+    req: GovernanceTransitionRequest,
+    session: Session = Depends(get_session),
+    auth_session: Session = Depends(get_auth_session),
+    identity: Any = Depends(require_active_identity),
+):
+    from persistence import BountyStatus
+
+    bounty = session.get(Bounty, bounty_id)
+    if not bounty:
+        raise HTTPException(status_code=404, detail="Bounty not found")
+
+    _require_governance_identity(auth_session, bounty.repo_name, identity)
+
+    to_status = (req.to_status or "").strip().lower()
+    actor_type, actor_id = _identity_actor_ctx(identity)
+
+    if to_status == BountyStatus.CANCELLED.value:
+        ids = _collect_cascade_ids(session, bounty_id) if req.force else {bounty_id}
+        from agent_auth.services.bounty_fsm import transition
+
+        errors = []
+        for bid in ids:
+            _, err = transition(
+                session,
+                bid,
+                BountyStatus.CANCELLED.value,
+                ctx={
+                    "actor_type": actor_type,
+                    "actor_id": actor_id,
+                    "reason": req.reason,
+                },
+            )
+            if err:
+                errors.append({"bounty_id": bid, "error": err})
+
+        if errors:
+            raise HTTPException(status_code=409, detail={"message": "Some cancellations failed", "errors": errors})
+        return {"success": True, "id": bounty_id, "status": BountyStatus.CANCELLED.value, "cancelled": list(ids), "count": len(ids)}
+
+    if to_status in (BountyStatus.OPEN.value, BountyStatus.PENDING.value):
+        from agent_auth.services.bounty_fsm import transition
+
+        if bounty.status == BountyStatus.READY_FOR_PREPARATION.value:
+            all_deps_completed = True
+            for dep_id in bounty.dependencies:
+                dep_bounty = session.get(Bounty, dep_id)
+                if not dep_bounty or dep_bounty.status != BountyStatus.COMPLETED.value:
+                    all_deps_completed = False
+                    break
+            if not all_deps_completed:
+                raise HTTPException(status_code=400, detail="Not all dependencies are completed yet")
+
+        updated, err = transition(
+            session,
+            bounty_id,
+            to_status,
+            ctx={
+                "actor_type": actor_type,
+                "actor_id": actor_id,
+                "reason": req.reason,
+            },
+        )
+        if err:
+            raise HTTPException(status_code=409, detail=err)
+        return {"success": True, "id": updated.id, "status": updated.status}
+
+    if to_status == BountyStatus.READY_FOR_PREPARATION.value:
+        if bounty.status != BountyStatus.PENDING.value:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Bounty must be in 'pending' status. Current status: {bounty.status}",
+            )
+
+        from agent_auth.services.bounty_fsm import transition
+
+        updated, err = transition(
+            session,
+            bounty.id,
+            BountyStatus.READY_FOR_PREPARATION.value,
+            ctx={"actor_type": actor_type, "actor_id": actor_id, "reason": req.reason},
+        )
+        if err:
+            raise HTTPException(status_code=409, detail=err)
+
+        return {"success": True, "id": updated.id, "status": updated.status}
+
+    if to_status in (BountyStatus.OPEN.value, BountyStatus.IN_PROGRESS.value) and bounty.status == BountyStatus.READY_FOR_PREPARATION.value:
+        all_deps_completed = True
+        for dep_id in bounty.dependencies:
+            dep_bounty = session.get(Bounty, dep_id)
+            if not dep_bounty or dep_bounty.status != BountyStatus.COMPLETED.value:
+                all_deps_completed = False
+                break
+        if not all_deps_completed:
+            raise HTTPException(status_code=400, detail="Not all dependencies are completed yet")
+
+        from agent_auth.services.bounty_fsm import transition
+
+        updated, err = transition(
+            session,
+            bounty.id,
+            BountyStatus.IN_PROGRESS.value if bounty.assignee else BountyStatus.OPEN.value,
+            ctx={"actor_type": actor_type, "actor_id": actor_id, "reason": req.reason},
+        )
+        if err:
+            raise HTTPException(status_code=400, detail=err)
+        return {"success": True, "id": updated.id, "status": updated.status, "assignee": updated.assignee}
+
+    if to_status == BountyStatus.IN_PROGRESS.value and bounty.status == BountyStatus.SUBMITTED.value:
+        from agent_auth.services.bounty_fsm import transition
+
+        updated, err = transition(
+            session,
+            bounty.id,
+            BountyStatus.IN_PROGRESS.value,
+            ctx={"actor_type": actor_type, "actor_id": actor_id, "reason": req.reason},
+        )
+        if err:
+            raise HTTPException(status_code=400, detail=err)
+        return {"success": True, "id": updated.id, "status": updated.status}
+
+    if to_status == BountyStatus.COMPLETED.value and bounty.status == BountyStatus.SUBMITTED.value:
+        from agent_auth.services.bounty_fsm import transition
+
+        updated, err = transition(
+            session,
+            bounty.id,
+            BountyStatus.COMPLETED.value,
+            ctx={"actor_type": actor_type, "actor_id": actor_id, "reason": req.reason},
+        )
+        if err:
+            raise HTTPException(status_code=400, detail=err)
+
+        resolve_bounty_dependencies(updated.id, session)
+        return {"success": True, "id": updated.id, "status": updated.status}
+
+    raise HTTPException(status_code=400, detail=f"Unsupported governance transition target: {to_status}")
+
+
 @router.post("/api/v1/bounties/{bounty_id}/cancel")
 @limiter.limit("10/minute")
 def cancel_bounty(
@@ -967,24 +1151,15 @@ def cancel_bounty(
     if not bounty:
         raise HTTPException(status_code=404, detail="Bounty not found")
 
-    from agenthub_protocol.roles import RepoRole
-    from agent_auth.services.authz import require_repo_member
-
-    allowed = False
-    # If identity is a User
-    if hasattr(identity, "role") and isinstance(identity.role, UserRole):
-        allowed = identity.role == UserRole.ADMIN
-    else:
-        allowed = require_repo_member(auth_session, bounty.repo_name, identity.id, role=RepoRole.ARCHITECT)
-
-    if not allowed:
-        raise HTTPException(status_code=403, detail="Forbidden: architect/admin required")
+    _require_governance_identity(auth_session, bounty.repo_name, identity)
 
     # Cascade ids
     ids = _collect_cascade_ids(session, bounty_id) if req.force else {bounty_id}
 
     from agent_auth.services.bounty_fsm import transition
     from persistence import BountyStatus
+
+    actor_type, actor_id = _identity_actor_ctx(identity)
 
     errors = []
     for bid in ids:
@@ -993,8 +1168,8 @@ def cancel_bounty(
             bid,
             BountyStatus.CANCELLED.value,
             ctx={
-                "actor_type": "user" if hasattr(identity, "role") else "agent",
-                "actor_id": getattr(identity, "id", None) or getattr(identity, "agent_id", None),
+                "actor_type": actor_type,
+                "actor_id": actor_id,
                 "reason": req.reason,
             },
         )
@@ -1022,20 +1197,12 @@ def restore_bounty(
     if not bounty:
         raise HTTPException(status_code=404, detail="Bounty not found")
 
-    from agenthub_protocol.roles import RepoRole
-    from agent_auth.services.authz import require_repo_member
-
-    allowed = False
-    if hasattr(identity, "role") and isinstance(identity.role, UserRole):
-        allowed = identity.role == UserRole.ADMIN
-    else:
-        allowed = require_repo_member(auth_session, bounty.repo_name, identity.id, role=RepoRole.ARCHITECT)
-
-    if not allowed:
-        raise HTTPException(status_code=403, detail="Forbidden: architect/admin required")
+    _require_governance_identity(auth_session, bounty.repo_name, identity)
 
     from agent_auth.services.bounty_fsm import transition
     from persistence import BountyStatus
+
+    actor_type, actor_id = _identity_actor_ctx(identity)
 
     # Try OPEN first, fallback to PENDING
     updated, err = transition(
@@ -1043,8 +1210,8 @@ def restore_bounty(
         bounty_id,
         BountyStatus.OPEN.value,
         ctx={
-            "actor_type": "user" if hasattr(identity, "role") else "agent",
-            "actor_id": getattr(identity, "id", None) or getattr(identity, "agent_id", None),
+            "actor_type": actor_type,
+            "actor_id": actor_id,
         },
     )
     if err:
@@ -1053,8 +1220,8 @@ def restore_bounty(
             bounty_id,
             BountyStatus.PENDING.value,
             ctx={
-                "actor_type": "user" if hasattr(identity, "role") else "agent",
-                "actor_id": getattr(identity, "id", None) or getattr(identity, "agent_id", None),
+                "actor_type": actor_type,
+                "actor_id": actor_id,
             },
         )
         if err:
@@ -1089,35 +1256,49 @@ async def analyze_bounty(
     If validation fails, a retry prompt is returned.
     Repeated violations result in reputation penalties and potential suspension.
     """
-    # Initialize services (TODO: expose validator via facade if still needed)
+    from agent_auth.models import Agent
     from agent_auth.services.penalty_service import PenaltyService
+    from agent_auth.validators.output_validator import get_validator
+
+    try:
+        agent_uuid = UUID(str(agent.id))
+    except ValueError:
+        return BountyDecisionResponse(
+            success=False,
+            is_valid=False,
+            error_message="Invalid agent identity",
+            is_suspended=True,
+        )
+
+    db_agent = auth_session.get(Agent, agent_uuid)
+    if not db_agent:
+        return BountyDecisionResponse(
+            success=False,
+            is_valid=False,
+            error_message="Agent not found",
+            is_suspended=True,
+        )
 
     penalty_service = PenaltyService(auth_session)
 
     # Check if agent is allowed to act
-    allowed, reason = penalty_service.is_agent_allowed(agent)
+    allowed, reason = penalty_service.is_agent_allowed(db_agent)
     if not allowed:
         return BountyDecisionResponse(
             success=False,
             is_valid=False,
             error_message=reason,
+            reputation_score=db_agent.reputation_score,
             is_suspended=True,
         )
 
-    # TODO: expose validator via facade; temporarily accept options as valid
-    class _Result:
-        def __init__(self):
-            self.is_valid = True
-            self.error_message = None
-            self.penalty_points = 0
-            self.parsed_options = req.options_json
-
-    result, retry_prompt = _Result(), None
+    validator = get_validator()
+    result, retry_prompt = validator.validate_with_retry_prompt(req.options_json)
 
     if not result.is_valid:
         # Record violation and apply penalty
-        is_suspended, suspension_msg = penalty_service.record_violation(
-            agent,
+        is_suspended, _ = penalty_service.record_violation(
+            db_agent,
             result.error_message or "Output validation failed",
             result.penalty_points,
         )
@@ -1127,12 +1308,12 @@ async def analyze_bounty(
             is_valid=False,
             error_message=result.error_message,
             retry_prompt=retry_prompt,
-            reputation_score=agent.reputation_score,
+            reputation_score=db_agent.reputation_score,
             is_suspended=is_suspended,
         )
 
     # Validation passed - record success for reputation recovery
-    new_score = penalty_service.record_success(agent)
+    new_score = penalty_service.record_success(db_agent)
 
     return BountyDecisionResponse(
         success=True,

@@ -33,7 +33,6 @@ interface ComputeJob {
   started_at: string | null;
   completed_at: string | null;
   service_endpoint?: string | null;
-  access_token?: string | null;
 }
 
 type StatusFilter = "all" | "running" | "completed" | "failed" | "pending";
@@ -55,12 +54,23 @@ export default function TestingPage() {
   const [searchTerm, setSearchTerm] = useState("");
   const [selectedJobId, setSelectedJobId] = useState<string | null>(null);
 
+  const getAuthHeaders = (): Record<string, string> => {
+    const token = localStorage.getItem("token");
+    const headers: Record<string, string> = {};
+    if (token) {
+      headers["Authorization"] = `Bearer ${token}`;
+    }
+    return headers;
+  };
+
   const fetchJobs = async () => {
     setLoading(true);
     setError(null);
 
     try {
-      const res = await fetch(`${API_BASE}/v1/runners/jobs`);
+      const res = await fetch(`${API_BASE}/v1/runners/jobs`, {
+        headers: getAuthHeaders(),
+      });
 
       if (!res.ok) {
         throw new Error(`Failed to fetch jobs: ${res.status}`);
@@ -123,7 +133,7 @@ export default function TestingPage() {
             Service Testing
           </h1>
           <p className="text-zinc-400 mt-2 max-w-xl">
-            Access deployed services for blackbox testing. Use the endpoint URL and access token to test running services.
+            Access deployed services for blackbox testing. Use the endpoint URL to verify running services.
           </p>
         </div>
         <button
@@ -270,7 +280,7 @@ export default function TestingPage() {
               <Server className="w-10 h-10 text-zinc-700 mx-auto mb-3" />
               <p className="text-zinc-500 text-sm">Select a job to view</p>
               <p className="text-zinc-600 text-xs mt-1">
-                Click on any job to see its service endpoint and access token
+                Click on any job to see its service endpoint and runtime status
               </p>
             </div>
           )}

@@ -17,7 +17,10 @@ from sqlmodel import Session, select
 
 from agenthub_execution_vmm.guard import ExecutionGuard
 from agenthub_protocol.path_utils import ensure_safe_path
-from agenthub_protocol.schemas import TRACE_COMMIT_PROTOCOL_VERSION
+from agenthub_protocol.schemas import (
+    TRACE_COMMIT_PROTOCOL_VERSION,
+    TRACE_COMMIT_MAX_COMMIT_MESSAGE_BYTES,
+)
 from agenthub_protocol.signing import (
     compute_binding_hash,
     compute_diff_hash_from_patch,
@@ -27,16 +30,19 @@ from agenthub_protocol.signing import (
 )
 from agenthub_protocol.validator import TraceValidator
 from core.middleware import limiter
-from core.security import STORE_ROOT, ensure_safe_ref, get_secure_repo_path
+from core.security import STORE_ROOT, ensure_governance_allows_execution, ensure_safe_ref, get_secure_repo_path
 from core.settings import get_settings
 from dependencies.auth import require_active_identity, require_agent
 from git_tree_service import GitTreeService
 from persistence import Bounty, CommitRecord, get_session
 from schemas.commits import BlackboxReport, CommitRequest, CommitResponse, VerificationRequest
 from agent_auth.models.runner import ComputeJob, ComputeJobStatus, ExecutionMode, RepoExecutionConfig
+from agent_auth.models.platform import UserAgentBinding
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
+
+TRACE_COMMIT_QUALITY_GATE_ENV = "TRACE_COMMIT_QUALITY_GATE"
 
 
 class DailyBudgetTracker:
@@ -136,6 +142,71 @@ def _resolve_execution_mode(
     return selected_execution_mode, source, repo_uuid
 
 
+def _compact_reasoning_trace_for_commit_message(reasoning_trace: list[str], reasoning_hash: str) -> list[str]:
+    return [
+        "Reasoning trace abbreviated in git commit message due to byte limit; full trace is persisted in CommitRecord.trace_json.",
+        f"reasoning_hash_full={reasoning_hash}",
+        f"reasoning_steps_full={len(reasoning_trace)}",
+    ]
+
+
+def _build_commit_message(
+    trace_commit: dict,
+    *,
+    signing_secret: str,
+    trusted_agent_id: str,
+) -> tuple[str, dict, bool]:
+    trace_for_commit_message = {**trace_commit}
+    commit_msg = json.dumps(trace_for_commit_message, ensure_ascii=False, separators=(",", ":"))
+    commit_msg_bytes = len(commit_msg.encode("utf-8"))
+    if commit_msg_bytes <= TRACE_COMMIT_MAX_COMMIT_MESSAGE_BYTES:
+        return commit_msg, trace_for_commit_message, False
+
+    full_reasoning_trace = trace_commit.get("reasoning_trace")
+    if not isinstance(full_reasoning_trace, list) or not full_reasoning_trace:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "TraceCommit payload too large for git commit message and cannot compact reasoning_trace "
+                f"({commit_msg_bytes} bytes > {TRACE_COMMIT_MAX_COMMIT_MESSAGE_BYTES})"
+            ),
+        )
+
+    full_reasoning_hash = trace_commit.get("reasoning_hash")
+    if not isinstance(full_reasoning_hash, str) or not full_reasoning_hash:
+        full_reasoning_hash = compute_reasoning_hash(full_reasoning_trace)
+
+    trace_for_commit_message["reasoning_trace"] = _compact_reasoning_trace_for_commit_message(
+        full_reasoning_trace,
+        full_reasoning_hash,
+    )
+    trace_for_commit_message["reasoning_hash"] = compute_reasoning_hash(trace_for_commit_message["reasoning_trace"])
+    trace_for_commit_message["binding_hash"] = compute_binding_hash(trace_for_commit_message)
+    trace_for_commit_message["signature"] = sign_trace_commit(
+        trace_for_commit_message,
+        signing_secret,
+        agent_id=trusted_agent_id,
+    )
+
+    compact_commit_msg = json.dumps(trace_for_commit_message, ensure_ascii=False, separators=(",", ":"))
+    compact_commit_msg_bytes = len(compact_commit_msg.encode("utf-8"))
+    if compact_commit_msg_bytes > TRACE_COMMIT_MAX_COMMIT_MESSAGE_BYTES:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "TraceCommit payload too large for git commit message after reasoning compaction "
+                f"({compact_commit_msg_bytes} bytes > {TRACE_COMMIT_MAX_COMMIT_MESSAGE_BYTES})"
+            ),
+        )
+
+    return compact_commit_msg, trace_for_commit_message, True
+
+
+def _resolve_quality_gate_mode() -> str:
+    value = (os.getenv(TRACE_COMMIT_QUALITY_GATE_ENV) or "warn").strip().lower()
+    return value if value in {"warn", "enforce"} else "warn"
+
+
 @router.post("/api/v1/repos/{repo_name}/commit")
 @router.post("/repos/{repo_name}/commit")
 @limiter.limit("10/minute")
@@ -150,12 +221,21 @@ async def api_commit(
     Submit code via API (no git client needed).
     Creates files and commits to the bare repo.
     """
+    ensure_governance_allows_execution()
+
+    requester_user_id: Optional[UUID] = None
     trusted_agent_id = str(agent.id)
     trusted_agent_uuid: Optional[UUID] = None
     try:
         trusted_agent_uuid = UUID(trusted_agent_id)
     except (TypeError, ValueError):
         logger.warning("[commit] trusted agent id is not a valid UUID: %s", trusted_agent_id)
+
+    if trusted_agent_uuid is not None:
+        binding = session.exec(
+            select(UserAgentBinding).where(UserAgentBinding.agent_id == trusted_agent_uuid)
+        ).first()
+        requester_user_id = binding.user_id if binding else None
     if trusted_agent_id != req.agent_id:
         raise HTTPException(status_code=403, detail="Agent ID mismatch")
     bare_repo_path = get_secure_repo_path(repo_name)
@@ -370,8 +450,14 @@ async def api_commit(
         except ValueError as ve:
             raise HTTPException(status_code=400, detail=str(ve))
 
+        # Preflight commit-message byte budget before git clone/write to fail early
+        commit_msg, trace_commit_for_git_message, reasoning_trace_compacted = _build_commit_message(
+            trace_commit,
+            signing_secret=signing_secret,
+            trusted_agent_id=trusted_agent_id,
+        )
+
         # Commit with TraceCommit JSON as message
-        commit_msg = json.dumps(trace_commit)
         subprocess.run(
             ["git", "commit", "-m", commit_msg],
             cwd=work_dir,
@@ -385,6 +471,55 @@ async def api_commit(
                 "GIT_COMMITTER_EMAIL": f"{trusted_agent_id}@agenthub.dev",
             },
         )
+
+        sha_result = subprocess.run(["git", "rev-parse", "HEAD"], cwd=work_dir, capture_output=True, text=True)
+        if sha_result.returncode != 0:
+            raise HTTPException(status_code=500, detail="Failed to resolve commit SHA")
+        sha = sha_result.stdout.strip()
+        if not sha:
+            raise HTTPException(status_code=500, detail="Failed to resolve commit SHA")
+
+        persisted_trace_json = {**trace_commit}
+        if reasoning_trace_compacted:
+            persisted_trace_json["git_message_trace"] = {
+                "reasoning_trace_compacted": True,
+                "reasoning_trace": trace_commit_for_git_message.get("reasoning_trace") or [],
+                "reasoning_hash": trace_commit_for_git_message.get("reasoning_hash"),
+                "binding_hash": trace_commit_for_git_message.get("binding_hash"),
+                "signature": trace_commit_for_git_message.get("signature"),
+            }
+
+        persisted_trace_json["commit_sha"] = sha
+        persisted_trace_json["binding_hash"] = compute_binding_hash(persisted_trace_json)
+        persisted_trace_json["signature"] = sign_trace_commit(
+            persisted_trace_json,
+            signing_secret,
+            agent_id=trusted_agent_id,
+        )
+
+        try:
+            validated_trace = TraceValidator.validate_commit(
+                persisted_trace_json,
+                expected_commit_sha=sha,
+                require_commit_sha=True,
+                require_parent_sha=bool(parent_sha),
+                require_timezone_aware_timestamp=True,
+            )
+        except ValueError as ve:
+            raise HTTPException(status_code=500, detail=f"Invalid persisted TraceCommit: {ve}")
+
+        quality_warnings = TraceValidator.check_quality(validated_trace)
+        quality_gate_mode = _resolve_quality_gate_mode()
+        if quality_warnings:
+            persisted_trace_json["quality_warnings"] = quality_warnings
+            if quality_gate_mode == "enforce":
+                raise HTTPException(
+                    status_code=400,
+                    detail={
+                        "message": "Trace quality gate failed",
+                        "quality_warnings": quality_warnings,
+                    },
+                )
 
         # Push branch to bare repo (retry on branch-name conflict)
         max_push_attempts = 3
@@ -414,7 +549,6 @@ async def api_commit(
             # Avoid leaking git stderr to clients
             logger.error("[commit] git push failed: %s", (result.stderr[:2000] if result.stderr else ""))
             raise HTTPException(status_code=502, detail="Git push failed")
-
         queue_runner_job = False
         runner_job_repo_id: Optional[UUID] = None
         runner_job_test_cmd: Optional[str] = None
@@ -479,38 +613,6 @@ async def api_commit(
                 raise HTTPException(status_code=500, detail="Invalid bounty verification_mode")
 
         # Save record to history
-        # Capture SHA
-        sha_result = subprocess.run(["git", "rev-parse", "HEAD"], cwd=work_dir, capture_output=True, text=True)
-        if sha_result.returncode != 0:
-            raise HTTPException(status_code=500, detail="Failed to resolve commit SHA")
-        sha = sha_result.stdout.strip()
-        if not sha:
-            raise HTTPException(status_code=500, detail="Failed to resolve commit SHA")
-        persisted_trace_json = {**trace_commit}
-        if sha:
-            persisted_trace_json["commit_sha"] = sha
-            persisted_trace_json["binding_hash"] = compute_binding_hash(persisted_trace_json)
-            persisted_trace_json["signature"] = sign_trace_commit(
-                persisted_trace_json,
-                signing_secret,
-                agent_id=trusted_agent_id,
-            )
-
-        try:
-            validated_trace = TraceValidator.validate_commit(
-                persisted_trace_json,
-                expected_commit_sha=sha,
-                require_commit_sha=True,
-                require_parent_sha=bool(parent_sha),
-                require_timezone_aware_timestamp=True,
-            )
-        except ValueError as ve:
-            raise HTTPException(status_code=500, detail=f"Invalid persisted TraceCommit: {ve}")
-
-        quality_warnings = TraceValidator.check_quality(validated_trace)
-        if quality_warnings:
-            persisted_trace_json["quality_warnings"] = quality_warnings
-
         if bounty and resolved_execution_mode:
             persisted_trace_json["execution_policy"] = {
                 "mode": resolved_execution_mode.value,
@@ -561,7 +663,7 @@ async def api_commit(
                 repo_id=runner_job_repo_id,
                 submission_id=str(record.id),
                 execution_mode=ExecutionMode.SELF_HOSTED,
-                requester_user_id=None,
+                requester_user_id=requester_user_id,
                 requester_agent_id=trusted_agent_uuid,
                 requester_type="agent",
                 test_command=runner_job_test_cmd or "pytest",
@@ -752,6 +854,7 @@ def submit_blackbox_test(
     identity: Any = Depends(require_active_identity),
 ):
     """Submit a blackbox test report for a commit."""
+    ensure_governance_allows_execution()
     # If identity is an Agent, check role
     if hasattr(identity, "role"):
         if identity.role.lower() != "tester":
@@ -824,6 +927,7 @@ def verify_commit(
     agent: Any = Depends(require_agent),
 ):
     """Manual verification from executor/reviewer agents."""
+    ensure_governance_allows_execution()
     if agent.role.lower() != "executor":
         raise HTTPException(status_code=403, detail="Only executor can verify")
     record = session.get(CommitRecord, commit_id)
@@ -849,6 +953,7 @@ async def verify_commit_external(
     session: Session = Depends(get_session),
 ):
     """External CI callback verification."""
+    ensure_governance_allows_execution()
     expected_token = os.getenv("EXTERNAL_CI_TOKEN")
     expected_secret = os.getenv("EXTERNAL_CI_SECRET")
     if expected_secret:

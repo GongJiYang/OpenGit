@@ -12,7 +12,7 @@ sys.path.insert(0, os.path.abspath("apps/api-gateway/src"))
 
 from core.settings import clear_settings_cache  # noqa: E402
 from agent_auth.models import Agent, AgentStatus, EmailVerification, AgentMetrics  # noqa: E402
-from agent_auth.models.platform import User, Repo, RepoMember  # noqa: E402
+from agent_auth.models.platform import User, Repo, RepoMember, RepoRole  # noqa: E402
 from agent_auth.models.runner import ComputeJob, ComputeJobStatus  # noqa: E402
 from agent_auth.services.repo_service import RepoService  # noqa: E402
 from agent_auth.utils import hash_api_key, get_api_key_prefix, API_KEY_PREFIX, API_KEY_LENGTH  # noqa: E402
@@ -119,6 +119,136 @@ def test_reviewer_me_resolves_agent_from_api_key(_set_required_security_env, cli
     payload = response.json()
     assert payload["reviewer_id"] == str(agent.id)
     assert isinstance(payload["reviews"], list)
+
+
+def test_repo_service_permissions_cover_reviewer_executor_librarian(db_engine):
+    with Session(db_engine) as session:
+        service = RepoService(session)
+        repo = service.get_or_create_repo(full_name=f"owner/repo-role-perm-{uuid4().hex[:8]}")
+
+        reviewer = Agent(
+            name="reviewer-role-perm",
+            model_name="test-model",
+            api_key_hash=hash_api_key(API_KEY_PREFIX + ("b" * API_KEY_LENGTH)),
+            api_key_prefix=get_api_key_prefix(API_KEY_PREFIX + ("b" * API_KEY_LENGTH)),
+            claim_code=f"RVP{uuid4().hex[:6].upper()}",
+            claim_url="/api/v1/agents/claim/RVP01",
+            claim_expires_at=datetime.utcnow() + timedelta(days=3650),
+            status=AgentStatus.CLAIMED,
+            role="reviewer",
+        )
+        executor = Agent(
+            name="executor-role-perm",
+            model_name="test-model",
+            api_key_hash=hash_api_key(API_KEY_PREFIX + ("c" * API_KEY_LENGTH)),
+            api_key_prefix=get_api_key_prefix(API_KEY_PREFIX + ("c" * API_KEY_LENGTH)),
+            claim_code=f"EXP{uuid4().hex[:6].upper()}",
+            claim_url="/api/v1/agents/claim/EXP01",
+            claim_expires_at=datetime.utcnow() + timedelta(days=3650),
+            status=AgentStatus.CLAIMED,
+            role="executor",
+        )
+        librarian = Agent(
+            name="librarian-role-perm",
+            model_name="test-model",
+            api_key_hash=hash_api_key(API_KEY_PREFIX + ("d" * API_KEY_LENGTH)),
+            api_key_prefix=get_api_key_prefix(API_KEY_PREFIX + ("d" * API_KEY_LENGTH)),
+            claim_code=f"LBP{uuid4().hex[:6].upper()}",
+            claim_url="/api/v1/agents/claim/LBP01",
+            claim_expires_at=datetime.utcnow() + timedelta(days=3650),
+            status=AgentStatus.CLAIMED,
+            role="librarian",
+        )
+        session.add(reviewer)
+        session.add(executor)
+        session.add(librarian)
+        session.commit()
+        session.refresh(reviewer)
+        session.refresh(executor)
+        session.refresh(librarian)
+
+        service.join_repo(repo.id, reviewer.id, role=RepoRole.REVIEWER)
+        service.join_repo(repo.id, executor.id, role=RepoRole.EXECUTOR)
+        service.join_repo(repo.id, librarian.id, role=RepoRole.LIBRARIAN)
+
+        assert service.has_permission(repo.id, reviewer.id, "review_submissions") is True
+        assert service.has_permission(repo.id, reviewer.id, "claim_bounty") is True
+        assert service.has_permission(repo.id, reviewer.id, "submit_code") is True
+
+        assert service.has_permission(repo.id, executor.id, "claim_bounty") is True
+        assert service.has_permission(repo.id, executor.id, "submit_code") is True
+
+        assert service.has_permission(repo.id, librarian.id, "claim_bounty") is True
+        assert service.has_permission(repo.id, librarian.id, "submit_code") is True
+
+
+def test_repo_service_role_hierarchy_includes_reviewer_executor_librarian(db_engine):
+    with Session(db_engine) as session:
+        service = RepoService(session)
+        repo = service.get_or_create_repo(full_name=f"owner/repo-role-hierarchy-{uuid4().hex[:8]}")
+
+        architect = Agent(
+            name="architect-role-hierarchy",
+            model_name="test-model",
+            api_key_hash=hash_api_key(API_KEY_PREFIX + ("e" * API_KEY_LENGTH)),
+            api_key_prefix=get_api_key_prefix(API_KEY_PREFIX + ("e" * API_KEY_LENGTH)),
+            claim_code=f"ARP{uuid4().hex[:6].upper()}",
+            claim_url="/api/v1/agents/claim/ARP01",
+            claim_expires_at=datetime.utcnow() + timedelta(days=3650),
+            status=AgentStatus.CLAIMED,
+            role="architect",
+        )
+        reviewer = Agent(
+            name="reviewer-role-hierarchy",
+            model_name="test-model",
+            api_key_hash=hash_api_key(API_KEY_PREFIX + ("f" * API_KEY_LENGTH)),
+            api_key_prefix=get_api_key_prefix(API_KEY_PREFIX + ("f" * API_KEY_LENGTH)),
+            claim_code=f"RHP{uuid4().hex[:6].upper()}",
+            claim_url="/api/v1/agents/claim/RHP01",
+            claim_expires_at=datetime.utcnow() + timedelta(days=3650),
+            status=AgentStatus.CLAIMED,
+            role="reviewer",
+        )
+        executor = Agent(
+            name="executor-role-hierarchy",
+            model_name="test-model",
+            api_key_hash=hash_api_key(API_KEY_PREFIX + ("g" * API_KEY_LENGTH)),
+            api_key_prefix=get_api_key_prefix(API_KEY_PREFIX + ("g" * API_KEY_LENGTH)),
+            claim_code=f"EHP{uuid4().hex[:6].upper()}",
+            claim_url="/api/v1/agents/claim/EHP01",
+            claim_expires_at=datetime.utcnow() + timedelta(days=3650),
+            status=AgentStatus.CLAIMED,
+            role="executor",
+        )
+        librarian = Agent(
+            name="librarian-role-hierarchy",
+            model_name="test-model",
+            api_key_hash=hash_api_key(API_KEY_PREFIX + ("h" * API_KEY_LENGTH)),
+            api_key_prefix=get_api_key_prefix(API_KEY_PREFIX + ("h" * API_KEY_LENGTH)),
+            claim_code=f"LHP{uuid4().hex[:6].upper()}",
+            claim_url="/api/v1/agents/claim/LHP01",
+            claim_expires_at=datetime.utcnow() + timedelta(days=3650),
+            status=AgentStatus.CLAIMED,
+            role="librarian",
+        )
+        session.add(architect)
+        session.add(reviewer)
+        session.add(executor)
+        session.add(librarian)
+        session.commit()
+        session.refresh(architect)
+        session.refresh(reviewer)
+        session.refresh(executor)
+        session.refresh(librarian)
+
+        service.join_repo(repo.id, architect.id, role=RepoRole.ARCHITECT)
+        service.join_repo(repo.id, reviewer.id, role=RepoRole.REVIEWER)
+        service.join_repo(repo.id, executor.id, role=RepoRole.EXECUTOR)
+        service.join_repo(repo.id, librarian.id, role=RepoRole.LIBRARIAN)
+
+        assert service.can_kick(RepoRole.ARCHITECT, RepoRole.REVIEWER) is True
+        assert service.can_kick(RepoRole.ARCHITECT, RepoRole.EXECUTOR) is True
+        assert service.can_kick(RepoRole.ARCHITECT, RepoRole.LIBRARIAN) is True
 
 
 def test_model_table_indexes_declared_on_target_models():

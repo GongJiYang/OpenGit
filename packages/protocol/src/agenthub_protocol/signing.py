@@ -109,7 +109,7 @@ def verify_trace_commit_signature(trace_data: Mapping[str, Any], secret: str) ->
 
 def get_trace_signing_secret(env: Optional[Mapping[str, str]] = None) -> Optional[str]:
     source = env if env is not None else os.environ
-    secret = source.get("TRACE_COMMIT_SIGNING_SECRET") or source.get("INTERNAL_API_TOKEN")
+    secret = source.get("TRACE_COMMIT_SIGNING_SECRET")
     if secret and secret.strip():
         return secret.strip()
     return None

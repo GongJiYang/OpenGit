@@ -507,7 +507,6 @@ async def verify_claim_with_email(
         .where(EmailVerification.verified.is_(False))
         .values(verified=True)  # Mark as used to prevent reuse
     )
-    session.commit()
 
     # Create new verification record
     token = generate_email_verify_token()

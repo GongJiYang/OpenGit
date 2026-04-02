@@ -32,6 +32,8 @@ class TraceValidator:
 
     SHA1_HEX_RE = re.compile(r"^[0-9a-f]{40}$")
     SHA256_HEX_RE = re.compile(r"^[0-9a-f]{64}$")
+    DOC_REFERENCE_RE = re.compile(r"^[a-z][a-z0-9+.-]*://[^\s]+$")
+    ENV_VAR_NAME_RE = re.compile(r"^[A-Z][A-Z0-9_]*$")
 
     MAX_DIFF_SUMMARY_LENGTH = TRACE_COMMIT_MAX_DIFF_SUMMARY_LENGTH
     MAX_REASONING_STEPS = TRACE_COMMIT_MAX_REASONING_STEPS
@@ -174,11 +176,33 @@ class TraceValidator:
             if any(part == ".." for part in normalized.split("/")):
                 raise ValueError("Protocol Violation: file path traversal segment '..' is not allowed.")
 
-        # Rule 6.1: un-attestable context fields must remain empty (policy)
-        if commit.context_snapshot.doc_references:
-            raise ValueError("Protocol Violation: 'context_snapshot.doc_references' must be empty.")
-        if commit.context_snapshot.env_vars_accessed:
-            raise ValueError("Protocol Violation: 'context_snapshot.env_vars_accessed' must be empty.")
+        # Rule 6.1: attestable context evidence constraints
+        for ref in commit.context_snapshot.doc_references:
+            if not isinstance(ref, str) or not ref.strip():
+                raise ValueError("Protocol Violation: each 'context_snapshot.doc_references' item must be a non-empty string.")
+            normalized_ref = ref.strip()
+            if len(normalized_ref) > TraceValidator.MAX_FILE_PATH_LENGTH:
+                raise ValueError(
+                    "Protocol Violation: 'context_snapshot.doc_references' item exceeds max length "
+                    f"{TraceValidator.MAX_FILE_PATH_LENGTH}."
+                )
+            if not TraceValidator.DOC_REFERENCE_RE.fullmatch(normalized_ref):
+                raise ValueError(
+                    "Protocol Violation: 'context_snapshot.doc_references' item must use an attestable URI format "
+                    "(scheme://reference)."
+                )
+
+        for env_name in commit.context_snapshot.env_vars_accessed:
+            if not isinstance(env_name, str) or not env_name.strip():
+                raise ValueError("Protocol Violation: each 'context_snapshot.env_vars_accessed' item must be a non-empty string.")
+            normalized_env = env_name.strip()
+            if len(normalized_env) > 128:
+                raise ValueError("Protocol Violation: 'context_snapshot.env_vars_accessed' item exceeds max length 128.")
+            if not TraceValidator.ENV_VAR_NAME_RE.fullmatch(normalized_env):
+                raise ValueError(
+                    "Protocol Violation: 'context_snapshot.env_vars_accessed' item must be uppercase env var name "
+                    "([A-Z][A-Z0-9_]*)."
+                )
 
         # Rule 7: author identity constraints
         if not commit.author.agent_id or not commit.author.agent_id.strip():

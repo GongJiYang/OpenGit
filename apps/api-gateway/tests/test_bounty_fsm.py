@@ -97,6 +97,15 @@ def test_submit_and_revert(session: Session):
     assert e2 is None and u2.status == BountyStatus.IN_PROGRESS.value
 
 
+def test_submitted_to_completed(session: Session):
+    b = create_bounty(session, status=BountyStatus.SUBMITTED.value, assignee="dev")
+    updated, err = transition(session, b.id, BountyStatus.COMPLETED.value, ctx={"actor_type": "user", "actor_id": "admin"})
+    assert err is None
+    assert updated is not None
+    assert updated.status == BountyStatus.COMPLETED.value
+    assert updated.assignee == "dev"
+
+
 def test_temporary_claim_create_and_cleanup(session: Session):
     # Create temp claim (open -> in_progress) then cleanup back to open
     b = create_bounty(session, status=BountyStatus.OPEN.value)
