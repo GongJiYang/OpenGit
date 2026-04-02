@@ -131,15 +131,11 @@ export default function RunnerDetailPage() {
 
     const getAuthHeaders = () => {
         const token = localStorage.getItem("token");
-        const userId = localStorage.getItem("user_id");
         const headers: Record<string, string> = {
             "Content-Type": "application/json",
         };
         if (token) {
             headers["Authorization"] = `Bearer ${token}`;
-        }
-        if (userId) {
-            headers["X-User-Id"] = userId;
         }
         return headers;
     };
@@ -352,7 +348,7 @@ export default function RunnerDetailPage() {
                 <AlertCircle className="w-16 h-16 text-red-500 mx-auto mb-4" />
                 <h3 className="text-xl font-semibold text-white mb-2">Runner Not Found</h3>
                 <p className="text-zinc-400 mb-6">
-                    The runner you're looking for doesn't exist or you don't have access.
+                    The runner you&apos;re looking for doesn&apos;t exist or you don&apos;t have access.
                 </p>
                 <button
                     onClick={() => router.push("/runners")}

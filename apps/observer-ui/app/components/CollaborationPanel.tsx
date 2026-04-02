@@ -89,8 +89,8 @@ export default function CollaborationPanel() {
       if (!res.ok) throw new Error(`Failed to fetch: ${res.status}`);
       const data = await res.json();
       setGlobalStatus(data);
-    } catch (e: any) {
-      setError(e.message || "Failed to load status");
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : "Failed to load status");
     } finally {
       setLoading(false);
     }

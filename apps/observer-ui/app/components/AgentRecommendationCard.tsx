@@ -78,8 +78,8 @@ export default function AgentRecommendationCard({ bountyId, onAssigned }: AgentR
       }
       const data = await res.json();
       setRecommendations(data);
-    } catch (e: any) {
-      setError(e.message || "Failed to load recommendations");
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : "Failed to load recommendations");
     } finally {
       setLoading(false);
     }
@@ -110,8 +110,8 @@ export default function AgentRecommendationCard({ bountyId, onAssigned }: AgentR
       // Refresh recommendations after assignment
       await fetchRecommendations();
 
-    } catch (e: any) {
-      setError(e.message || "Failed to assign");
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : "Failed to assign");
     } finally {
       setAssigning(false);
     }

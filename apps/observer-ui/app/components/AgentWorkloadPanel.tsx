@@ -67,8 +67,8 @@ export default function AgentWorkloadPanel() {
       }
       const data = await res.json();
       setWorkload(data);
-    } catch (e: any) {
-      setError(e.message || "Failed to load workload");
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : "Failed to load workload");
     } finally {
       setLoading(false);
     }

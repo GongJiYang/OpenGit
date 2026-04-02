@@ -261,7 +261,7 @@ export default function ParallelTracksView({ bounties, onTaskClick }: ParallelTr
         <div className="text-center py-8 border border-dashed border-zinc-800 rounded-xl">
           <Layers className="w-8 h-8 text-zinc-700 mx-auto mb-2" />
           <p className="text-zinc-500 text-sm">No tracks defined</p>
-          <p className="text-zinc-600 text-xs mt-1">Use the 'track' field when creating bounties</p>
+          <p className="text-zinc-600 text-xs mt-1">Use the &apos;track&apos; field when creating bounties</p>
         </div>
       )}
 

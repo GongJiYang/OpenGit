@@ -55,15 +55,11 @@ export default function RunnersPage() {
 
     const getAuthHeaders = () => {
         const token = localStorage.getItem("token");
-        const userId = localStorage.getItem("user_id");
         const headers: Record<string, string> = {
             "Content-Type": "application/json",
         };
         if (token) {
             headers["Authorization"] = `Bearer ${token}`;
-        }
-        if (userId) {
-            headers["X-User-Id"] = userId;
         }
         return headers;
     };
@@ -400,7 +396,7 @@ export default function RunnersPage() {
                     <li className="flex items-start gap-3">
                         <span className="flex-shrink-0 w-6 h-6 bg-purple-500/20 text-purple-400 rounded-full flex items-center justify-center text-sm">3</span>
                         <span>运行注册命令，</span>
-                        <code className="text-xs bg-zinc-800 px-2 py-1 rounded">agenthub-runner start --token="你的令牌"</code>
+                        <code className="text-xs bg-zinc-800 px-2 py-1 rounded">agenthub-runner start --token=&quot;你的令牌&quot;</code>
                     </li>
                     <li className="flex items-start gap-3">
                         <span className="flex-shrink-0 w-6 h-6 bg-purple-500/20 text-purple-400 rounded-full flex items-center justify-center text-sm">4</span>

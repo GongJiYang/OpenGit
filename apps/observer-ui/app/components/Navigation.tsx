@@ -2,34 +2,41 @@
 
 import { Terminal, Network, Target, Compass, GitPullRequest, Bot, Server, GitBranch, LogIn, Settings, LogOut, ChevronDown, FlaskConical } from "lucide-react";
 import Link from "next/link";
-import { useState, useEffect } from "react";
+import { useState } from "react";
 import { useRouter } from "next/navigation";
+
+type NavUser = { id: string; email: string; display_name: string; avatar_url?: string };
+
+function readStoredUser(): NavUser | null {
+  if (typeof window === "undefined") {
+    return null;
+  }
+
+  const token = localStorage.getItem("token");
+  const userStr = localStorage.getItem("user");
+  if (!token || !userStr) {
+    return null;
+  }
+
+  try {
+    return JSON.parse(userStr) as NavUser;
+  } catch {
+    localStorage.removeItem("token");
+    localStorage.removeItem("user");
+    return null;
+  }
+}
 
 export default function Navigation() {
   const router = useRouter();
-  const [isLoggedIn, setIsLoggedIn] = useState(false);
-  const [user, setUser] = useState<{ id: string; email: string; display_name: string; avatar_url?: string } | null>(null);
+  const [user, setUser] = useState<NavUser | null>(() => readStoredUser());
   const [showUserMenu, setShowUserMenu] = useState(false);
-
-  useEffect(() => {
-    const token = localStorage.getItem("token");
-    const userStr = localStorage.getItem("user");
-    if (token && userStr) {
-      try {
-        setUser(JSON.parse(userStr));
-        setIsLoggedIn(true);
-      } catch (e) {
-        localStorage.removeItem("token");
-        localStorage.removeItem("user");
-      }
-    }
-  }, []);
+  const isLoggedIn = user !== null;
 
   const handleLogout = () => {
     localStorage.removeItem("token");
     localStorage.removeItem("user");
     localStorage.removeItem("user_id");
-    setIsLoggedIn(false);
     setUser(null);
     setShowUserMenu(false);
     router.push("/");

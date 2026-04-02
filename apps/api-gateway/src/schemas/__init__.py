@@ -1,3 +1,4 @@
+from .backlog_governance import BacklogEnvelope, BacklogStartRequest
 from .bounties import (
     BountyDecisionRequest,
     BountyDecisionResponse,
@@ -36,6 +37,8 @@ from .system import MemoryStatusResponse, SystemStats
 from .workitems import WorkItemListResponse
 
 __all__ = [
+    "BacklogEnvelope",
+    "BacklogStartRequest",
     "BountyDecisionRequest",
     "BountyDecisionResponse",
     "CancelRequest",
