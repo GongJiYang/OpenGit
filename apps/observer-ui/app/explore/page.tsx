@@ -12,6 +12,13 @@ interface Project {
     description?: string | null;
 }
 
+interface RepoSummary {
+    id: string;
+    name: string;
+    full_name: string;
+    description?: string | null;
+}
+
 export default function ExplorePage() {
     const [projects, setProjects] = useState<Project[]>([]);
     const [loading, setLoading] = useState(true);
@@ -21,23 +28,17 @@ export default function ExplorePage() {
         async function fetchRepos() {
             try {
                 // Use Next.js proxy to avoid CORS issues
-                const res = await fetch("/api/repos");
+                const res = await fetch("/api/v1/repos");
                 if (!res.ok) throw new Error("Failed to fetch");
 
-                const names: string[] = await res.json();
-                const realProjects = names.map((name) => {
-                    const normalized = name.endsWith(".git") ? name.slice(0, -4) : name;
-                    const parts = normalized.split("/");
-                    const owner = parts.length > 1 ? parts[0] : "local";
-                    const repoName = parts.length > 1 ? parts.slice(1).join("/") : normalized;
-
-                    return {
-                        id: normalized,
-                        name: repoName,
-                        full_name: `${owner}/${repoName}`,
-                        description: null,
-                    };
-                });
+                const reposData = await res.json();
+                const repoItems = Array.isArray(reposData) ? reposData : [];
+                const realProjects = repoItems.map((repo: RepoSummary) => ({
+                    id: repo.id,
+                    name: repo.name,
+                    full_name: repo.full_name,
+                    description: repo.description ?? null,
+                }));
 
                 setProjects(realProjects);
             } catch (error) {
