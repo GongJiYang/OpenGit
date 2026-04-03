@@ -39,14 +39,35 @@ export default function ReviewsPage() {
     const [selected, setSelected] = useState<CommitDetail | null>(null);
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState<string | null>(null);
+    const [isLoggedIn, setIsLoggedIn] = useState(false);
+
+    useEffect(() => {
+        if (typeof window === "undefined") {
+            return;
+        }
+        setIsLoggedIn(Boolean(localStorage.getItem("token")));
+    }, []);
 
     async function fetchPending() {
+        const headers = getAuthHeaders();
+        if (!headers.Authorization) {
+            setPending([]);
+            setSelected(null);
+            setError(null);
+            return;
+        }
+
         try {
             setLoading(true);
             setError(null);
             const res = await fetch(`/api/v1/commits/pending`, {
-                headers: getAuthHeaders()
+                headers
             });
+            if (res.status === 401) {
+                setPending([]);
+                setSelected(null);
+                return;
+            }
             if (!res.ok) {
                 throw new Error(`Failed to fetch pending commits (${res.status})`);
             }
@@ -97,8 +118,13 @@ export default function ReviewsPage() {
     }
 
     useEffect(() => {
+        if (!isLoggedIn) {
+            setPending([]);
+            setSelected(null);
+            return;
+        }
         fetchPending();
-    }, []);
+    }, [isLoggedIn]);
 
     return (
         <div className="space-y-6">
@@ -109,13 +135,18 @@ export default function ReviewsPage() {
                 </div>
                 <button
                     onClick={fetchPending}
-                    className="flex items-center gap-2 px-3 py-1.5 text-xs rounded bg-zinc-800 text-zinc-300 hover:text-white"
+                    disabled={!isLoggedIn}
+                    className="flex items-center gap-2 px-3 py-1.5 text-xs rounded bg-zinc-800 text-zinc-300 hover:text-white disabled:opacity-50 disabled:cursor-not-allowed"
                 >
                     <RefreshCw className="w-3.5 h-3.5" /> Refresh
                 </button>
             </div>
 
-            {error && (
+            {!isLoggedIn ? (
+                <div className="p-3 border border-zinc-800 bg-zinc-900/50 text-zinc-400 text-xs rounded">
+                    Login required to view pending commit reviews.
+                </div>
+            ) : error && (
                 <div className="p-3 border border-red-500/30 bg-red-500/10 text-red-300 text-xs rounded">
                     {error}
                 </div>
