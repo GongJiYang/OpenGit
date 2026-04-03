@@ -53,6 +53,7 @@ export default function TestingPage() {
   const [filter, setFilter] = useState<StatusFilter>("all");
   const [searchTerm, setSearchTerm] = useState("");
   const [selectedJobId, setSelectedJobId] = useState<string | null>(null);
+  const [isLoggedIn, setIsLoggedIn] = useState(false);
 
   const getAuthHeaders = (): Record<string, string> => {
     const token = localStorage.getItem("token");
@@ -63,14 +64,33 @@ export default function TestingPage() {
     return headers;
   };
 
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+    setIsLoggedIn(Boolean(localStorage.getItem("token")));
+  }, []);
+
   const fetchJobs = async () => {
+    const headers = getAuthHeaders();
+    if (!headers.Authorization) {
+      setJobs([]);
+      setError(null);
+      return;
+    }
+
     setLoading(true);
     setError(null);
 
     try {
       const res = await fetch(`${API_BASE}/v1/runners/jobs`, {
-        headers: getAuthHeaders(),
+        headers,
       });
+
+      if (res.status === 401) {
+        setJobs([]);
+        return;
+      }
 
       if (!res.ok) {
         throw new Error(`Failed to fetch jobs: ${res.status}`);
@@ -86,12 +106,17 @@ export default function TestingPage() {
   };
 
   useEffect(() => {
+    if (!isLoggedIn) {
+      setJobs([]);
+      setSelectedJobId(null);
+      return;
+    }
+
     fetchJobs();
 
-    // Auto-refresh every 30 seconds
     const interval = setInterval(fetchJobs, 30000);
     return () => clearInterval(interval);
-  }, []);
+  }, [isLoggedIn]);
 
   const filteredJobs = jobs.filter(job => {
     const matchesStatus = filter === "all" || job.status === filter;
@@ -138,8 +163,8 @@ export default function TestingPage() {
         </div>
         <button
           onClick={fetchJobs}
-          disabled={loading}
-          className="flex items-center gap-2 px-3 py-1.5 text-xs rounded bg-zinc-800 text-zinc-300 hover:text-white transition-colors"
+          disabled={loading || !isLoggedIn}
+          className="flex items-center gap-2 px-3 py-1.5 text-xs rounded bg-zinc-800 text-zinc-300 hover:text-white transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
         >
           <RefreshCw className={`w-3.5 h-3.5 ${loading ? "animate-spin" : ""}`} />
           Refresh
@@ -182,7 +207,11 @@ export default function TestingPage() {
         </div>
       </div>
 
-      {error && (
+      {!isLoggedIn ? (
+        <div className="p-3 border border-zinc-800 bg-zinc-900/50 text-zinc-400 text-xs rounded">
+          Login required to view runner jobs.
+        </div>
+      ) : error && (
         <div className="p-3 border border-red-500/30 bg-red-500/10 text-red-300 text-xs rounded">
           {error}
         </div>
