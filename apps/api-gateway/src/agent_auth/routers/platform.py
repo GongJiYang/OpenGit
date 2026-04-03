@@ -9,6 +9,7 @@ This router is intentionally THIN - it only handles:
 All business logic lives in Service classes.
 """
 
+import os
 from typing import List, Optional
 from uuid import UUID
 
@@ -31,6 +32,7 @@ from ..models.platform import (
 from ..services.user_auth import UserAuthService, get_current_user, get_current_user_optional
 from ..services.repo_service import RepoService
 from ..database import get_db
+from core.settings import get_settings
 
 router = APIRouter(tags=["Platform"])
 
@@ -58,6 +60,34 @@ def _is_user_claimed_owner(user: User, agent) -> bool:
     if agent.owner_wechat_openid and user.wechat_openid:
         return agent.owner_wechat_openid == user.wechat_openid
     return False
+
+
+def _list_store_repo_names() -> list[str]:
+    store_root = get_settings().store_root
+    if not os.path.isdir(store_root):
+        return []
+
+    repo_names: list[str] = []
+    for entry in sorted(os.listdir(store_root)):
+        if entry.startswith("."):
+            continue
+
+        entry_path = os.path.join(store_root, entry)
+        if not os.path.isdir(entry_path):
+            continue
+
+        if entry.endswith(".git"):
+            repo_names.append(entry)
+            continue
+
+        for child in sorted(os.listdir(entry_path)):
+            if child.startswith(".") or not child.endswith(".git"):
+                continue
+            child_path = os.path.join(entry_path, child)
+            if os.path.isdir(child_path):
+                repo_names.append(f"{entry}/{child}")
+
+    return repo_names
 
 
 # ============== Auth Endpoints ==============
@@ -229,8 +259,10 @@ async def list_repos(
 
     service = RepoService(session)
 
-    # If user wants their repos, filter by created_by_user_id
-    if mine and user:
+    if mine and not user:
+        return []
+
+    if mine:
         statement = select(Repo).where(
             Repo.is_active.is_(True),
             Repo.created_by_user_id == user.id
@@ -238,16 +270,22 @@ async def list_repos(
         repos = session.exec(statement).all()
     else:
         statement = select(Repo).where(Repo.is_active.is_(True))
-        repos = session.exec(statement).all()
+        repos = list(session.exec(statement).all())
 
-    # Get agent context for membership check
+        existing_full_names = {repo.full_name for repo in repos}
+        for repo_name in _list_store_repo_names():
+            if repo_name in existing_full_names:
+                continue
+            repos.append(service.get_or_create_repo(full_name=repo_name))
+            existing_full_names.add(repo_name)
+
     agent_id = None
     if user:
         try:
             agent, _ = _get_bound_agent_or_403(user, session)
             agent_id = agent.id
         except HTTPException:
-            pass  # User has no bound agent, that's ok
+            pass
 
     return [service.build_repo_response(repo, agent_id, user.id if user else None) for repo in repos]
 

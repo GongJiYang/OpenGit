@@ -54,7 +54,7 @@ class RepoService:
         if repo:
             return repo
 
-        owner, name = full_name.split("/", 1)
+        owner, name = full_name.split("/", 1) if "/" in full_name else ("unknown", full_name)
         repo = Repo(
             full_name=full_name,
             name=name,

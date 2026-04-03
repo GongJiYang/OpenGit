@@ -1,5 +1,6 @@
 import os
 import sys
+from pathlib import Path
 from uuid import uuid4
 
 from datetime import datetime, timedelta
@@ -95,6 +96,31 @@ def test_get_repo_jobs_supports_uuid_and_full_name(client, _set_required_securit
     payload_by_name = by_full_name.json()
     assert isinstance(payload_by_name, list)
     assert any(entry["id"] == str(job.id) for entry in payload_by_name)
+
+
+def test_list_repos_backfills_store_root_entries(
+    client,
+    _set_required_security_env,
+    monkeypatch,
+    tmp_path: Path,
+):
+    store_root = tmp_path / "repos"
+    store_root.mkdir()
+    (store_root / "demo-project.git").mkdir()
+    owner_dir = store_root / "owner"
+    owner_dir.mkdir()
+    (owner_dir / "platform.git").mkdir()
+
+    monkeypatch.setenv("STORE_ROOT", str(store_root))
+    clear_settings_cache()
+
+    response = client.get("/api/v1/repos")
+    assert response.status_code == 200
+
+    payload = response.json()
+    full_names = {entry["full_name"] for entry in payload}
+    assert "demo-project.git" in full_names
+    assert "owner/platform.git" in full_names
 
 
 def test_reviewer_me_requires_valid_api_key(_set_required_security_env, client):
