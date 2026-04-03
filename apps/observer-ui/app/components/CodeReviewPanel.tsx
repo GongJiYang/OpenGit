@@ -18,6 +18,17 @@ import {
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE || "/api";
 
+const getAuthHeaders = (): Record<string, string> => {
+  const headers: Record<string, string> = {};
+  if (typeof window !== "undefined") {
+    const token = localStorage.getItem("token");
+    if (token) {
+      headers["Authorization"] = `Bearer ${token}`;
+    }
+  }
+  return headers;
+};
+
 interface ReviewComment {
   author_id: string;
   content: string;
@@ -60,17 +71,41 @@ export default function CodeReviewPanel({
   const [newComment, setNewComment] = useState("");
   const [newFilePath, setNewFilePath] = useState("");
   const [showCreateForm, setShowCreateForm] = useState(false);
+  const [isLoggedIn, setIsLoggedIn] = useState(false);
+  const isExternallyManaged = externalReviews !== undefined;
 
   useEffect(() => {
-    if (!externalReviews) {
+    if (typeof window === "undefined") {
+      return;
+    }
+    setIsLoggedIn(Boolean(localStorage.getItem("token")));
+  }, []);
+
+  useEffect(() => {
+    if (!isExternallyManaged && isLoggedIn) {
       fetchReviews();
     }
-  }, [externalReviews]);
+    if (!isExternallyManaged && !isLoggedIn) {
+      setReviews([]);
+    }
+  }, [isExternallyManaged, isLoggedIn]);
 
   const fetchReviews = async () => {
+    const headers = getAuthHeaders();
+    if (!headers.Authorization) {
+      setReviews([]);
+      return;
+    }
+
     setLoading(true);
     try {
-      const res = await fetch(`${API_BASE}/v1/collaboration/reviews/reviewer/me`);
+      const res = await fetch(`${API_BASE}/v1/collaboration/reviews/reviewer/me`, {
+        headers,
+      });
+      if (res.status === 401) {
+        setReviews([]);
+        return;
+      }
       if (res.ok) {
         const data = await res.json();
         setReviews(data.reviews || []);
@@ -90,7 +125,7 @@ export default function CodeReviewPanel({
     try {
       const res = await fetch(`${API_BASE}/v1/collaboration/reviews/create`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", ...getAuthHeaders() },
         body: JSON.stringify({
           review_id: reviewId,
           file_path: newFilePath
@@ -112,7 +147,7 @@ export default function CodeReviewPanel({
     try {
       const res = await fetch(`${API_BASE}/v1/collaboration/reviews/${reviewId}/submit`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", ...getAuthHeaders() },
         body: JSON.stringify({
           status: status,
           comments: newComment ? [{ content: newComment }] : null
@@ -128,6 +163,12 @@ export default function CodeReviewPanel({
       console.error("Failed to submit review:", e);
     }
   };
+
+  useEffect(() => {
+    if (isExternallyManaged) {
+      setReviews(externalReviews || []);
+    }
+  }, [externalReviews, isExternallyManaged]);
 
   const pendingCount = reviews.filter(r => r.status === "pending").length;
 
@@ -147,8 +188,8 @@ export default function CodeReviewPanel({
           )}
           <button
             onClick={fetchReviews}
-            disabled={loading}
-            className="p-1.5 rounded bg-zinc-800 text-zinc-400 hover:text-white transition-colors"
+            disabled={loading || !isLoggedIn}
+            className="p-1.5 rounded bg-zinc-800 text-zinc-400 hover:text-white transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
           >
             <RefreshCw className={`w-3.5 h-3.5 ${loading ? "animate-spin" : ""}`} />
           </button>
