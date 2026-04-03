@@ -12,6 +12,12 @@ interface Repo {
   status: "unknown";
 }
 
+interface RepoSummary {
+  id: string;
+  name: string;
+  full_name: string;
+}
+
 interface Stats {
   active_agents: number;
   total_repos: number;
@@ -44,21 +50,17 @@ export default function Home() {
         setStats(statsData);
 
         // Fetch Repos
-        const resRepos = await fetch(`${API_BASE}/repos`);
+        const resRepos = await fetch(`${API_BASE}/v1/repos`);
+        if (!resRepos.ok) throw new Error("Failed to fetch repos");
         const reposData = await resRepos.json();
+        const repoItems = Array.isArray(reposData) ? reposData : [];
         setRepos(
-          reposData.map((name: string) => {
-            const normalized = name.endsWith(".git") ? name.slice(0, -4) : name;
-            const parts = normalized.split("/");
-            const owner = parts.length > 1 ? parts[0] : "local";
-            const repoName = parts.length > 1 ? parts.slice(1).join("/") : normalized;
-            return {
-              id: normalized,
-              name: repoName,
-              full_name: `${owner}/${repoName}`,
-              status: "unknown" as const,
-            };
-          })
+          repoItems.map((repo: RepoSummary) => ({
+            id: repo.id,
+            name: repo.name,
+            full_name: repo.full_name,
+            status: "unknown" as const,
+          }))
         );
 
         setError(false);
