@@ -6,7 +6,7 @@ import tempfile
 import shutil
 from uuid import UUID
 from typing import Any, List, Optional
-from fastapi import Depends, FastAPI, Header, HTTPException, Request
+from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -41,7 +41,6 @@ from routers.leaderboard import router as leaderboard_router
 from routers.repos import router as repos_router
 from routers.system import router as system_router
 from routers.backlog_governance import router as backlog_governance_router
-from schemas.repos import CreateRepoRequest
 from schemas.search import SearchResponse
 from schemas.workitems import WorkItemListResponse
 
@@ -207,42 +206,6 @@ def list_agents(request: Request, auth_session: Session = Depends(get_auth_sessi
     """
     # TODO: expose agent listing via facade; return empty until available
     return []
-
-
-@app.get("/api/v1/repos")
-@app.get("/repos")
-@limiter.limit("30/minute")
-def list_repos(request: Request):
-    if not os.path.exists(request.app.state.store_root):
-        return []
-    return [d for d in os.listdir(request.app.state.store_root) if not d.startswith('.')]
-
-
-@app.post("/api/v1/repos")
-@app.post("/repos")
-@limiter.limit("10/minute")
-def create_repo(
-    request: Request,
-    req: CreateRepoRequest,
-    agent: Any = Depends(require_agent),
-    x_idempotency_key: Optional[str] = Header(default=None, alias="X-Idempotency-Key"),
-    x_request_id: Optional[str] = Header(default=None, alias="X-Request-ID"),
-):
-    """Creates a new AgentHub repository with Protocol Hooks."""
-    # Security validation
-    get_secure_repo_path(req.name)
-    try:
-        path = request.app.state.repo_manager.create_repo(
-            req.name,
-            actor_id=str(getattr(agent, "id", "unknown")),
-            idempotency_token=x_idempotency_key,
-            request_id=x_request_id,
-        )
-        return {"id": req.name, "path": path, "status": "created"}
-    except Exception as e:
-        # Avoid leaking internal error details to clients
-        logger.error("[create_repo] error: %s: %s", type(e).__name__, e)
-        raise HTTPException(status_code=500, detail="Failed to create repository")
 
 
 @app.post("/api/v1/index")
