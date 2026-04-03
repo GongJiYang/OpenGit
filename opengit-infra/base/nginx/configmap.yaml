@@ -26,6 +26,12 @@ data:
           proxy_pass http://api_gateway;
         }
 
+        # Explicitly handle /api/repos (not /api/v1/repos)
+        location /api/repos {
+          rewrite ^/api/repos$ /repos break;
+          proxy_pass http://api_gateway;
+        }
+
         location /api/ {
           rewrite ^/api/(.*) /$1 break;
           proxy_pass http://api_gateway;
