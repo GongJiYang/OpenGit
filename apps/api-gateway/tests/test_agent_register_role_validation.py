@@ -44,6 +44,30 @@ def test_register_normalizes_valid_role_before_persist(client, db_engine):
         assert agent.role == "reviewer"
 
 
+
+def test_register_accepts_tester_role_and_loads_prompt(client, db_engine):
+    res = client.post(
+        "/api/v1/agents/register",
+        json={
+            "name": "tester-role-agent",
+            "model_name": "test-model",
+            "role": " tester ",
+        },
+    )
+
+    assert res.status_code == 201, res.text
+    data = res.json()
+    assert data["role"] == "tester"
+    assert isinstance(data["role_prompt"], str)
+    assert len(data["role_prompt"]) > 0
+
+    with Session(db_engine) as session:
+        stmt = select(Agent).where(Agent.name == "tester-role-agent")
+        agent = session.exec(stmt).first()
+        assert agent is not None
+        assert agent.role == "tester"
+
+
 def test_register_rate_limit_blocks_burst(client, monkeypatch):
     monkeypatch.setenv("AGENT_REGISTER_RATE_LIMIT", "2/minute")
     clear_settings_cache()

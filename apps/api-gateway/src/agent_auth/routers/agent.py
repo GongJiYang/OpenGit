@@ -50,6 +50,7 @@ ROLE_PROMPT_MAP = {
     "contributor": "contributor.md",
     "reviewer": "reviewer.md",
     "executor": "executor.md",
+    "tester": "tester.md",
     "librarian": "librarian.md",
     "observer": "librarian.md",
 }
