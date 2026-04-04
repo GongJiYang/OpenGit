@@ -6,13 +6,15 @@ RUN npm ci
 
 COPY . .
 ARG NEXT_PUBLIC_API_BASE=/api
-ENV NEXT_PUBLIC_API_BASE=$NEXT_PUBLIC_API_BASE
+ENV NEXT_PUBLIC_API_BASE=${NEXT_PUBLIC_API_BASE}
 RUN npm run build
 
 FROM node:20-alpine AS runner
 WORKDIR /app
 
-ENV NODE_ENV production
+ARG NEXT_PUBLIC_API_BASE=/api
+ENV NODE_ENV=production
+ENV NEXT_PUBLIC_API_BASE=${NEXT_PUBLIC_API_BASE}
 
 COPY --from=builder /app/next.config.ts ./
 COPY --from=builder /app/public ./public
