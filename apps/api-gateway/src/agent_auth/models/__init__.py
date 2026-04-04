@@ -295,6 +295,9 @@ class ClaimVerifyResponse(SQLModel):
     message: str
     agent_id: Optional[UUID] = None
     email_sent_to: Optional[str] = Field(default=None, description="Email address verification was sent to")
+    delivery_mode: Optional[str] = Field(default=None, description="Delivery mode: email, dev_console, or failed")
+    verify_url: Optional[str] = Field(default=None, description="Verification URL exposed only for development/no-mail flows")
+    next_step: Optional[str] = Field(default=None, description="Human-readable next action for completing claim")
 
 
 class EmailConfirmResponse(SQLModel):

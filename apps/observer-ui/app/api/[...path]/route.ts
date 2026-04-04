@@ -112,7 +112,7 @@ function sanitizeRequestHeaders(request: NextRequest): Headers {
   headers.delete("connection");
   headers.delete("content-length");
 
-  if (AGENT_API_KEY) {
+  if (AGENT_API_KEY && !headers.has("x-api-key")) {
     headers.set("x-api-key", AGENT_API_KEY);
   }
 

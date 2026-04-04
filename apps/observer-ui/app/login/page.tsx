@@ -1,13 +1,14 @@
 "use client";
 
 import { useState } from "react";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { Terminal, Mail, Lock, ArrowRight, Github, AlertCircle } from "lucide-react";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE || "/api";
 
 export default function LoginPage() {
     const router = useRouter();
+    const searchParams = useSearchParams();
     const [mode, setMode] = useState<"login" | "register">("login");
     const [email, setEmail] = useState("");
     const [password, setPassword] = useState("");
@@ -39,9 +40,9 @@ export default function LoginPage() {
             localStorage.setItem("user", JSON.stringify(data.user));
             localStorage.setItem("user_id", data.user.id);
 
-            // Redirect to home
-            router.push("/");
-        } catch (e) {
+            const next = searchParams.get("next");
+            router.push(next || "/");
+        } catch {
             setError("网络错误，请重试");
         } finally {
             setLoading(false);

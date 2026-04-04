@@ -7,7 +7,7 @@ Handles GitHub OAuth flow for agent claiming.
 import os
 import time
 from datetime import datetime
-from urllib.parse import urlencode
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, status, Query
@@ -41,7 +41,40 @@ def get_session():
     yield from get_db()
 
 
-def _encode_oauth_state(agent_id: str, claim_code: str) -> str:
+def _normalize_return_to(return_to: str | None) -> str | None:
+    if not return_to:
+        return None
+
+    normalized = return_to.strip()
+    if not normalized.startswith("/") or normalized.startswith("//"):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid return_to path.",
+        )
+
+    return normalized
+
+
+def _build_frontend_return_url(return_to: str | None, agent_id: str, claim_code: str) -> str | None:
+    normalized_return_to = _normalize_return_to(return_to)
+    if not normalized_return_to:
+        return None
+
+    settings = get_settings()
+    base = settings.frontend_url.rstrip("/")
+    parts = urlsplit(normalized_return_to)
+    query_params = parse_qsl(parts.query, keep_blank_values=True)
+    query_params = [(key, value) for key, value in query_params if key not in {"agent_id", "claim_code"}]
+    query_params.extend([
+        ("agent_id", agent_id),
+        ("claim_code", claim_code),
+    ])
+    query = urlencode(query_params)
+    path = urlunsplit(("", "", parts.path, query, parts.fragment))
+    return f"{base}{path}"
+
+
+def _encode_oauth_state(agent_id: str, claim_code: str, return_to: str | None = None) -> str:
     settings = get_settings()
     secret = settings.effective_jwt_secret
     if not secret:
@@ -59,6 +92,9 @@ def _encode_oauth_state(agent_id: str, claim_code: str) -> str:
         "exp": now_ts + OAUTH_STATE_TTL_SECONDS,
         "jti": generate_oauth_state_token(),
     }
+    normalized_return_to = _normalize_return_to(return_to)
+    if normalized_return_to:
+        payload["rt"] = normalized_return_to
     return jwt.encode(payload, secret, algorithm="HS256")
 
 
@@ -93,6 +129,10 @@ def _decode_oauth_state(state_token: str) -> dict:
             detail="Invalid OAuth state.",
         )
 
+    return_to = payload.get("rt")
+    if return_to is not None:
+        _normalize_return_to(return_to)
+
     return payload
 
 
@@ -105,6 +145,7 @@ def _decode_oauth_state(state_token: str) -> dict:
 )
 async def github_auth_start(
     claim_code: str = Query(..., description="Agent's claim code"),
+    return_to: str | None = Query(default=None, description="Optional frontend path to return to after successful claim"),
     session: Session = Depends(get_session)
 ) -> RedirectResponse:
     """
@@ -114,7 +155,6 @@ async def github_auth_start(
     2. Generate state token
     3. Redirect to GitHub authorization
     """
-    # Find agent by claim code
     statement = select(Agent).where(Agent.claim_code == claim_code)
     agent = session.exec(statement).first()
 
@@ -124,24 +164,20 @@ async def github_auth_start(
             detail="Invalid claim code."
         )
 
-    # Check if already claimed
     if agent.status == AgentStatus.CLAIMED:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Agent is already claimed."
         )
 
-    # Check expiration
     if is_claim_expired(agent.claim_expires_at):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Claim link has expired. Please request a new one."
         )
 
-    # Generate signed stateless state token
-    state_token = _encode_oauth_state(str(agent.id), claim_code)
+    state_token = _encode_oauth_state(str(agent.id), claim_code, return_to=return_to)
 
-    # Build GitHub authorization URL
     params = {
         "client_id": GITHUB_CLIENT_ID,
         "redirect_uri": GITHUB_REDIRECT_URI,
@@ -157,12 +193,13 @@ async def github_auth_start(
     "/github/callback",
     summary="GitHub OAuth callback",
     description="Handle GitHub OAuth callback and complete agent claiming.",
+    response_model=None,
 )
 async def github_auth_callback(
     code: str = Query(..., description="GitHub authorization code"),
     state: str = Query(..., description="OAuth state token"),
     session: Session = Depends(get_session)
-) -> dict:
+) -> dict | RedirectResponse:
     """
     Process GitHub OAuth callback.
 
@@ -171,10 +208,8 @@ async def github_auth_callback(
     3. Fetch user info from GitHub
     4. Complete agent claiming
     """
-    # Validate and decode signed state
     state_data = _decode_oauth_state(state)
 
-    # Get agent
     from uuid import UUID
     agent_id = UUID(state_data["aid"])
     statement = select(Agent).where(Agent.id == agent_id)
@@ -204,7 +239,6 @@ async def github_auth_callback(
             detail="Claim link has expired. Please request a new one."
         )
 
-    # Exchange code for access token
     async with httpx.AsyncClient() as client:
         token_response = await client.post(
             "https://github.com/login/oauth/access_token",
@@ -226,7 +260,6 @@ async def github_auth_callback(
 
         access_token = token_data["access_token"]
 
-        # Fetch user info
         user_response = await client.get(
             "https://api.github.com/user",
             headers={
@@ -236,7 +269,6 @@ async def github_auth_callback(
         )
         user_data = user_response.json()
 
-        # Fetch user emails (may be private)
         emails_response = await client.get(
             "https://api.github.com/user/emails",
             headers={
@@ -246,7 +278,6 @@ async def github_auth_callback(
         )
         emails_data = emails_response.json()
 
-    # Extract primary verified email
     primary_email = None
     if isinstance(emails_data, list):
         for email_info in emails_data:
@@ -270,7 +301,6 @@ async def github_auth_callback(
     normalized_github_id = str(user_data.get("id", ""))
     normalized_github_login = user_data.get("login", "")
 
-    # Atomically transition non-claimed agent to claimed exactly once
     agent_update = session.exec(
         update(Agent)
         .where(
@@ -298,6 +328,14 @@ async def github_auth_callback(
         )
 
     session.commit()
+
+    frontend_return_url = _build_frontend_return_url(
+        return_to=state_data.get("rt"),
+        agent_id=str(agent.id),
+        claim_code=state_data["cc"],
+    )
+    if frontend_return_url:
+        return RedirectResponse(url=frontend_return_url, status_code=status.HTTP_302_FOUND)
 
     return {
         "success": True,

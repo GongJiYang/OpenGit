@@ -7,6 +7,8 @@ Supports Resend API for production and console logging for development.
 
 import os
 import logging
+from dataclasses import dataclass
+from typing import Optional
 
 import aiohttp
 
@@ -18,11 +20,17 @@ FROM_EMAIL = os.getenv("FROM_EMAIL", "noreply@agenthub.dev")
 BASE_URL = os.getenv("BASE_URL", "http://localhost:8000")
 
 
+@dataclass(frozen=True)
+class EmailDeliveryResult:
+    delivery_mode: str
+    verify_url: Optional[str] = None
+
+
 async def send_verification_email(
     to_email: str,
     agent_name: str,
     verify_url: str,
-) -> bool:
+) -> EmailDeliveryResult:
     """
     Send verification email for agent ownership claim.
 
@@ -32,11 +40,10 @@ async def send_verification_email(
         verify_url: Full verification URL (including token)
 
     Returns:
-        bool: True if email sent successfully
+        EmailDeliveryResult: Delivery outcome and verification URL when exposed
     """
     full_verify_url = f"{BASE_URL.rstrip('/')}{verify_url}"
 
-    # Development mode: log instead of sending
     if not RESEND_API_KEY:
         logger.info(f"""
 [DEV MODE] Verification Email
@@ -46,10 +53,11 @@ Agent: {agent_name}
 Verify URL: {full_verify_url}
 -----------------------------
 """)
-        # In development, still return success
-        return True
+        return EmailDeliveryResult(
+            delivery_mode="dev_console",
+            verify_url=full_verify_url,
+        )
 
-    # Production: send via Resend API
     try:
         async with aiohttp.ClientSession() as session:
             response = await session.post(
@@ -72,18 +80,18 @@ Verify URL: {full_verify_url}
 
             if response.status == 200:
                 logger.info(f"Verification email sent to {to_email} for agent {agent_name}")
-                return True
-            else:
-                error_text = await response.text()
-                logger.error(f"Failed to send email: {response.status} - {error_text}")
-                return False
+                return EmailDeliveryResult(delivery_mode="email")
+
+            error_text = await response.text()
+            logger.error(f"Failed to send email: {response.status} - {error_text}")
+            return EmailDeliveryResult(delivery_mode="failed")
 
     except aiohttp.ClientError as e:
         logger.error(f"Email send error: {e}")
-        return False
+        return EmailDeliveryResult(delivery_mode="failed")
     except Exception as e:
         logger.error(f"Unexpected error sending email: {e}")
-        return False
+        return EmailDeliveryResult(delivery_mode="failed")
 
 
 def _render_verification_email_html(agent_name: str, verify_url: str) -> str:

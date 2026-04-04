@@ -1,6 +1,6 @@
 "use client";
 
-import { Terminal, Network, Target, Compass, GitPullRequest, Bot, Server, GitBranch, LogIn, Settings, LogOut, ChevronDown, FlaskConical } from "lucide-react";
+import { Terminal, Network, Target, Compass, GitPullRequest, Bot, Server, GitBranch, LogIn, Settings, LogOut, ChevronDown, FlaskConical, Link2 } from "lucide-react";
 import Link from "next/link";
 import { useState } from "react";
 import { useRouter } from "next/navigation";
@@ -92,6 +92,14 @@ export default function Navigation() {
                   <div className="px-3 py-2 text-xs text-zinc-500 border-b border-zinc-800">
                     {user.email}
                   </div>
+                  <Link
+                    href="/bind-agent"
+                    onClick={() => setShowUserMenu(false)}
+                    className="flex items-center gap-2 px-3 py-2 text-sm text-zinc-300 hover:text-white hover:bg-white/5 rounded-lg transition-colors"
+                  >
+                    <Link2 className="w-4 h-4" />
+                    Bind Agent
+                  </Link>
                   <Link
                     href="/settings"
                     onClick={() => setShowUserMenu(false)}
