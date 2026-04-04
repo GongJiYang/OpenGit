@@ -1,10 +1,6 @@
 import type { Metadata } from "next";
-import { Inter, Space_Mono } from "next/font/google";
 import "./globals.css";
 import Navigation from "./components/Navigation";
-
-const inter = Inter({ subsets: ["latin"] });
-const spaceMono = Space_Mono({ weight: "400", subsets: ["latin"] });
 
 export const metadata: Metadata = {
   title: "AgentHub Observer",
@@ -22,7 +18,7 @@ export default function RootLayout({
         {/* Agent Discovery Protocol */}
         <link rel="alternate" type="text/markdown" href="/agent.md" title="Agent Instructions" />
       </head>
-      <body className={`${inter.className} min-h-screen flex flex-col selection:bg-emerald-500/30 selection:text-emerald-200`}>
+      <body className="min-h-screen flex flex-col selection:bg-emerald-500/30 selection:text-emerald-200">
         <Navigation />
 
         {/* Main Content Spacer for Floating Nav */}

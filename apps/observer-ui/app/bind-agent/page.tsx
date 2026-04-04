@@ -1,14 +1,13 @@
 "use client";
 
-import { FormEvent, useEffect, useMemo, useState } from "react";
-import { useRouter, useSearchParams } from "next/navigation";
+import { FormEvent, useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
 import { AlertCircle, CheckCircle2, KeyRound, Link2, Loader2, UserRound } from "lucide-react";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE || "/api";
 
 export default function BindAgentPage() {
   const router = useRouter();
-  const searchParams = useSearchParams();
   const [agentId, setAgentId] = useState("");
   const [claimCode, setClaimCode] = useState("");
   const [agentApiKey, setAgentApiKey] = useState("");
@@ -17,27 +16,27 @@ export default function BindAgentPage() {
   const [success, setSuccess] = useState("");
   const [checkingAuth, setCheckingAuth] = useState(true);
 
-  const bindPathWithQuery = useMemo(() => {
-    const params = new URLSearchParams();
-    const qsAgentId = searchParams.get("agent_id");
-    const qsClaimCode = searchParams.get("claim_code");
-    if (qsAgentId) params.set("agent_id", qsAgentId);
-    if (qsClaimCode) params.set("claim_code", qsClaimCode);
-    const query = params.toString();
-    return query ? `/bind-agent?${query}` : "/bind-agent";
-  }, [searchParams]);
-
   useEffect(() => {
+    const query = new URLSearchParams(window.location.search);
+    const qsAgentId = query.get("agent_id") || "";
+    const qsClaimCode = query.get("claim_code") || "";
+    const bindParams = new URLSearchParams();
+    if (qsAgentId) bindParams.set("agent_id", qsAgentId);
+    if (qsClaimCode) bindParams.set("claim_code", qsClaimCode);
+    const bindPathWithQuery = bindParams.size
+      ? `/bind-agent?${bindParams.toString()}`
+      : "/bind-agent";
     const token = localStorage.getItem("token");
+
     if (!token) {
       router.replace(`/login?next=${encodeURIComponent(bindPathWithQuery)}`);
       return;
     }
 
-    setAgentId(searchParams.get("agent_id") || "");
-    setClaimCode(searchParams.get("claim_code") || "");
+    setAgentId(qsAgentId);
+    setClaimCode(qsClaimCode);
     setCheckingAuth(false);
-  }, [bindPathWithQuery, router, searchParams]);
+  }, [router]);
 
   const handleSubmit = async (e: FormEvent<HTMLFormElement>) => {
     e.preventDefault();
@@ -47,6 +46,12 @@ export default function BindAgentPage() {
 
     try {
       const token = localStorage.getItem("token");
+      const bindParams = new URLSearchParams();
+      if (agentId.trim()) bindParams.set("agent_id", agentId.trim());
+      if (claimCode.trim()) bindParams.set("claim_code", claimCode.trim());
+      const bindPathWithQuery = bindParams.size
+        ? `/bind-agent?${bindParams.toString()}`
+        : "/bind-agent";
       if (!token) {
         router.replace(`/login?next=${encodeURIComponent(bindPathWithQuery)}`);
         return;
