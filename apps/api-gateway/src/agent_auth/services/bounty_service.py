@@ -317,6 +317,14 @@ class BountyService:
         if not eligibility.is_eligible:
             return None, eligibility.error_message
 
+        # 验证 agent 角色与 bounty 要求匹配
+        agent = self._resolve_agent(agent_id)
+        if agent:
+            req_role = eligibility.bounty.required_role
+            req_role_str = req_role.value if hasattr(req_role, "value") else str(req_role)
+            if agent.role.lower() != req_role_str.lower():
+                return None, f"This task requires role '{req_role_str}', agent has '{agent.role}'"
+
         # Create temporary claim (FSM + flags)
         now = datetime.utcnow()
         expires_at = now + timedelta(hours=TEMPORARY_CLAIM_EXPIRATION_HOURS)

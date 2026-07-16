@@ -26,6 +26,7 @@ out/
 .env
 .env.local
 .env.*.local
+.env.private
 
 # IDE
 .idea/
@@ -75,3 +76,4 @@ graph.json
 # api-gateway test repo artifacts
 apps/api-gateway/data/repos/traceability/
 apps/api-gateway/data/repos/traceability-*/
+.hypothesis/

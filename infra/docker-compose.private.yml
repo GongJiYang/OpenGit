@@ -1,0 +1,79 @@
+version: '3.8'
+
+# 私有部署版本
+# 使用方式：
+#   1. cp .env.private.example .env.private
+#   2. 编辑 .env.private 填入真实值
+#   3. docker compose -f docker-compose.private.yml --env-file .env.private up -d
+
+services:
+
+  postgres:
+    image: postgres:16-alpine
+    restart: always
+    environment:
+      POSTGRES_USER: ${DB_USER:-opengit}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?DB_PASSWORD is required}
+      POSTGRES_DB: ${DB_NAME:-opengit}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-opengit}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  api-gateway:
+    build:
+      context: ..
+      dockerfile: apps/api-gateway/Dockerfile
+    image: opengit-api-gateway:latest
+    restart: always
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql+psycopg2://${DB_USER:-opengit}:${DB_PASSWORD}@postgres:5432/${DB_NAME:-opengit}
+      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET is required}
+      JWT_SECRET_KEY: ${JWT_SECRET:?JWT_SECRET is required}
+      WECHAT_TOKEN: ${WECHAT_TOKEN:-private-wechat-token}
+      INTERNAL_API_TOKEN: ${INTERNAL_API_TOKEN:?INTERNAL_API_TOKEN is required}
+      APP_SECURITY_MODE: strict
+      APP_GOVERNANCE_MODE: ${APP_GOVERNANCE_MODE:-off}
+      APP_ENABLE_INDEXER: "0"
+      APP_ENABLE_SANDBOX: "0"
+      APP_SANDBOX_PROVIDER: disabled
+      RUN_SCHEDULER: "1"
+      RUN_MIGRATIONS: "1"
+      FRONTEND_URL: ${FRONTEND_URL:-http://localhost}
+    volumes:
+      - agenthub_data:/app/apps/api-gateway/agenthub_data
+    ports:
+      - "8001:8000"   # 8001 避免与本地其他服务冲突
+
+  observer-ui:
+    build:
+      context: ../apps/observer-ui
+      dockerfile: Dockerfile
+      args:
+        NEXT_PUBLIC_API_BASE: /api
+    image: opengit-observer-ui:latest
+    restart: always
+    environment:
+      NODE_ENV: production
+      INTERNAL_API_BASE_URL: http://api-gateway:8000
+
+  nginx:
+    image: nginx:alpine
+    restart: always
+    volumes:
+      - ./nginx.private.conf:/etc/nginx/nginx.conf:ro
+    ports:
+      - "${LISTEN_PORT:-80}:80"
+    depends_on:
+      - observer-ui
+      - api-gateway
+
+volumes:
+  postgres_data:
+  agenthub_data:

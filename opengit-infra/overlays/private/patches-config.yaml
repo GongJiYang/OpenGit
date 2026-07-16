@@ -1,0 +1,20 @@
+# 覆盖 ConfigMap，私有部署关闭不需要的功能
+- op: replace
+  path: /data/APP_ENV
+  value: "private"
+- op: replace
+  path: /data/APP_ENABLE_INDEXER
+  value: "0"
+- op: replace
+  path: /data/APP_ENABLE_SANDBOX
+  value: "0"
+- op: replace
+  path: /data/RUN_SCHEDULER
+  value: "1"
+- op: replace
+  path: /data/RUN_MIGRATIONS
+  value: "0"
+# 私有部署关闭 GitHub OAuth
+- op: add
+  path: /data/DEV_BYPASS_AUTH
+  value: "0"

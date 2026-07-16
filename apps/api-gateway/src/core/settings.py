@@ -48,8 +48,6 @@ class Settings(BaseSettings):
     jwt_secret: Optional[str] = Field(default=None, alias="JWT_SECRET")
     jwt_secret_key: Optional[str] = Field(default=None, alias="JWT_SECRET_KEY")
     wechat_token: Optional[str] = Field(default=None, alias="WECHAT_TOKEN")
-    github_client_id: Optional[str] = Field(default=None, alias="GITHUB_CLIENT_ID")
-    github_client_secret: Optional[str] = Field(default=None, alias="GITHUB_CLIENT_SECRET")
     internal_api_token: Optional[str] = Field(default=None, alias="INTERNAL_API_TOKEN")
 
     # Auth/runtime
@@ -102,6 +100,11 @@ class Settings(BaseSettings):
         return backend if backend in {"memory", "redis"} else "memory"
 
     def collect_security_problems(self) -> list[str]:
+        import os
+        # In dev bypass mode, skip all security checks
+        if os.getenv("DEV_BYPASS_AUTH", "0") == "1":
+            return []
+
         problems: list[str] = []
 
         if self.jwt_secret and self.jwt_secret_key and self.jwt_secret != self.jwt_secret_key:
@@ -151,10 +154,6 @@ class Settings(BaseSettings):
         elif self.wechat_token == "agenthub_token":
             problems.append("WECHAT_TOKEN uses insecure default")
 
-        if not self.github_client_id:
-            problems.append("GITHUB_CLIENT_ID is not set")
-        if not self.github_client_secret:
-            problems.append("GITHUB_CLIENT_SECRET is not set")
         if not self.internal_api_token:
             problems.append("INTERNAL_API_TOKEN is not set")
 

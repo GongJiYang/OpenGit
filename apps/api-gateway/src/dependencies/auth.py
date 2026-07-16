@@ -1,5 +1,6 @@
+import os
 from typing import Any, Optional
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from fastapi import Depends, Header, HTTPException, status
 from sqlmodel import Session
@@ -8,11 +9,38 @@ from agent_auth.deps import get_auth_session
 from agent_auth.models import Agent
 from agent_auth.services.user_auth import UserAuthService
 
+# ============== Dev Bypass ==============
+# DEV_BYPASS_AUTH=1 skips all authentication checks.
+# Use X-Dev-Role header to simulate a specific agent role (default: architect).
+# NEVER enable in production.
+
+_DEV_BYPASS = os.getenv("DEV_BYPASS_AUTH", "0") == "1"
+
+# Stable fake UUIDs per role so agent_id comparisons are consistent within a session
+_DEV_ROLE_IDS: dict[str, str] = {}
+
+
+def _get_dev_principal(role: str = "architect") -> Any:
+    """Return a fake principal for local dev. No DB access."""
+    from agent_auth.services.authz import Principal
+
+    role = role.lower().strip()
+    if role not in _DEV_ROLE_IDS:
+        _DEV_ROLE_IDS[role] = str(uuid4())
+
+    p = Principal(id=_DEV_ROLE_IDS[role], kind="agent", status="claimed")
+    p.role = role  # type: ignore[attr-defined]
+    return p
+
 
 def require_agent(
     x_api_key: str = Header(None, alias="X-API-Key"),
+    x_dev_role: str = Header(None, alias="X-Dev-Role"),
     auth_session: Session = Depends(get_auth_session)
 ) -> Any:
+    if _DEV_BYPASS:
+        return _get_dev_principal(x_dev_role or "architect")
+
     if not x_api_key:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Missing X-API-Key")
     from agent_auth.services.authz import authenticate_api_key
@@ -42,6 +70,7 @@ def require_agent(
 
 def require_active_identity(
     x_api_key: Optional[str] = Header(None, alias="X-API-Key"),
+    x_dev_role: Optional[str] = Header(None, alias="X-Dev-Role"),
     authorization: Optional[str] = Header(None, alias="Authorization"),
     auth_session: Session = Depends(get_auth_session)
 ) -> Any:
@@ -49,6 +78,9 @@ def require_active_identity(
     Dependency that allows EITHER an agent (via API Key) OR a human user (via JWT).
     Returns an Agent object or a User object.
     """
+    if _DEV_BYPASS:
+        return _get_dev_principal(x_dev_role or "architect")
+
     # 1. Try Agent Auth
     if x_api_key:
         try:
@@ -75,6 +107,7 @@ def require_active_identity(
 
 def require_active_identity_optional(
     x_api_key: Optional[str] = Header(None, alias="X-API-Key"),
+    x_dev_role: Optional[str] = Header(None, alias="X-Dev-Role"),
     authorization: Optional[str] = Header(None, alias="Authorization"),
     auth_session: Session = Depends(get_auth_session),
 ) -> Optional[Any]:
@@ -84,12 +117,16 @@ def require_active_identity_optional(
     - Returns None when no identity credentials are provided.
     - Preserves strict validation (raises) when credentials are provided but invalid.
     """
+    if _DEV_BYPASS:
+        return _get_dev_principal(x_dev_role or "architect")
+
     has_bearer = bool(authorization and authorization.startswith("Bearer "))
     if not x_api_key and not has_bearer:
         return None
 
     return require_active_identity(
         x_api_key=x_api_key,
+        x_dev_role=x_dev_role,
         authorization=authorization,
         auth_session=auth_session,
     )

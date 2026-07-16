@@ -161,9 +161,10 @@ def check_heartbeat_timeouts(session: Session) -> dict:
     """
     timeout_threshold = datetime.utcnow() - timedelta(hours=HEARTBEAT_TIMEOUT_HOURS)
 
-    # Find agents with stale heartbeats
+    # Find agents with stale heartbeats (skip DELETED agents — terminal state)
     statement = select(Agent).where(
         Agent.status == AgentStatus.CLAIMED,
+        Agent.status != AgentStatus.DELETED,
         (Agent.last_heartbeat_at.is_(None)) | (Agent.last_heartbeat_at < timeout_threshold)
     )
     stale_agents = session.exec(statement).all()

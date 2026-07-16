@@ -1,0 +1,27 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: api-gateway-migrate
+  namespace: opengit
+spec:
+  backoffLimit: 3
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: migrate
+          image: opengit-api-gateway:latest
+          imagePullPolicy: IfNotPresent
+          envFrom:
+            - secretRef:
+                name: api-gateway-secrets
+            - configMapRef:
+                name: api-gateway-config
+          env:
+            - name: PYTHONPATH
+              value: "/app:/app/apps/api-gateway:/app/apps/api-gateway/src"
+            - name: ALEMBIC_CONFIG
+              value: /app/apps/api-gateway/alembic.ini
+          command: ["sh", "-c"]
+          args:
+            - alembic -c "$ALEMBIC_CONFIG" upgrade head

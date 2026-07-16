@@ -10,8 +10,6 @@ def test_security_env_failfast_missing_required(monkeypatch):
     monkeypatch.delenv("JWT_SECRET", raising=False)
     monkeypatch.delenv("JWT_SECRET_KEY", raising=False)
     monkeypatch.delenv("WECHAT_TOKEN", raising=False)
-    monkeypatch.delenv("GITHUB_CLIENT_ID", raising=False)
-    monkeypatch.delenv("GITHUB_CLIENT_SECRET", raising=False)
     monkeypatch.delenv("INTERNAL_API_TOKEN", raising=False)
 
     with pytest.raises(RuntimeError):
@@ -24,8 +22,6 @@ def test_security_env_failfast_rejects_insecure_defaults(monkeypatch):
     monkeypatch.setenv("JWT_SECRET", "change-this-in-production")
     monkeypatch.setenv("JWT_SECRET_KEY", "dev-secret-key-change-in-production")
     monkeypatch.setenv("WECHAT_TOKEN", "agenthub_token")
-    monkeypatch.setenv("GITHUB_CLIENT_ID", "test-github-client-id")
-    monkeypatch.setenv("GITHUB_CLIENT_SECRET", "test-github-client-secret")
     monkeypatch.setenv("INTERNAL_API_TOKEN", "test-internal-token")
 
     with pytest.raises(RuntimeError):
@@ -38,8 +34,6 @@ def test_security_env_warn_mode_does_not_raise(monkeypatch):
     monkeypatch.delenv("JWT_SECRET", raising=False)
     monkeypatch.delenv("JWT_SECRET_KEY", raising=False)
     monkeypatch.delenv("WECHAT_TOKEN", raising=False)
-    monkeypatch.delenv("GITHUB_CLIENT_ID", raising=False)
-    monkeypatch.delenv("GITHUB_CLIENT_SECRET", raising=False)
     monkeypatch.delenv("INTERNAL_API_TOKEN", raising=False)
 
     validate_security_env()
@@ -51,8 +45,6 @@ def test_security_env_rejects_mismatched_jwt_aliases(monkeypatch):
     monkeypatch.setenv("JWT_SECRET", "jwt-secret-a")
     monkeypatch.setenv("JWT_SECRET_KEY", "jwt-secret-b")
     monkeypatch.setenv("WECHAT_TOKEN", "test-wechat-token")
-    monkeypatch.setenv("GITHUB_CLIENT_ID", "test-github-client-id")
-    monkeypatch.setenv("GITHUB_CLIENT_SECRET", "test-github-client-secret")
     monkeypatch.setenv("INTERNAL_API_TOKEN", "test-internal-token")
 
     with pytest.raises(RuntimeError):

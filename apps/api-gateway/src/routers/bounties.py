@@ -1,3 +1,4 @@
+import copy
 import html
 import logging
 import os
@@ -16,19 +17,24 @@ from core.security import STORE_ROOT, get_secure_repo_path
 from core.settings import get_settings
 from dependencies.auth import require_agent, require_active_identity, require_active_identity_optional
 from git_tree_service import GitTreeService
-from persistence import Bounty, get_session
+from persistence import Bounty, get_session, _empty_spec, _ensure_spec
 from agenthub_protocol.roles import UserRole
 from agenthub_protocol.roles import RepoRole
 from schemas.bounties import (
+    ArchitectSpecUpdate,
     BountyDecisionRequest,
     BountyDecisionResponse,
+    BountySubmitRequest,
     CancelRequest,
+    ContributorSpecUpdate,
     CreateBountyRequest,
     DecomposedBountyRequest,
     DecomposedBountyResponse,
     PreparationClaimRequest,
+    RejectRequest,
     RestoreRequest,
     GovernanceTransitionRequest,
+    SpecUpdateOnSubmit,
     SubTaskDTO,
     TaskNode,
 )
@@ -51,12 +57,52 @@ def _is_platform_admin(identity: Any) -> bool:
 
 def _require_repo_architect_or_admin(auth_session: Session, repo_name: str, identity: Any) -> None:
     from agent_auth.services.authz import require_repo_member
+    from agent_auth.models.platform import Repo, RepoMember, MembershipStatus
+    from sqlmodel import select
+    from uuid import UUID
 
     if _is_platform_admin(identity):
         return
 
-    if require_repo_member(auth_session, repo_name, str(identity.id), role=RepoRole.ARCHITECT):
+    agent_role = str(getattr(identity, "role", "")).lower()
+    agent_id_str = str(getattr(identity, "id", ""))
+
+    # 如果仓库不存在（新仓库），允许 architect 角色的 agent 创建
+    repo = auth_session.exec(select(Repo).where(Repo.full_name == repo_name)).first()
+    if repo is None:
+        if agent_role == "architect":
+            return
+        raise HTTPException(status_code=403, detail=_ADMIN_ARCHITECT_REQUIRED_DETAIL)
+
+    # 仓库存在，检查成员资格
+    if require_repo_member(auth_session, repo_name, agent_id_str, role=RepoRole.ARCHITECT):
         return
+
+    # architect 角色的 agent 首次访问仓库时自动加入为 architect
+    if agent_role == "architect":
+        try:
+            agent_uuid = UUID(agent_id_str)
+            existing = auth_session.exec(
+                select(RepoMember).where(
+                    RepoMember.repo_id == repo.id,
+                    RepoMember.agent_id == agent_uuid,
+                )
+            ).first()
+            if not existing:
+                member = RepoMember(
+                    repo_id=repo.id,
+                    agent_id=agent_uuid,
+                    role=RepoRole.ARCHITECT,
+                    status=MembershipStatus.ACTIVE,
+                    added_by_agent_id=agent_uuid,
+                )
+                auth_session.add(member)
+                auth_session.commit()
+                return
+            elif existing.role == RepoRole.ARCHITECT and existing.status == MembershipStatus.ACTIVE:
+                return
+        except Exception:
+            pass
 
     raise HTTPException(status_code=403, detail=_ADMIN_ARCHITECT_REQUIRED_DETAIL)
 
@@ -173,6 +219,58 @@ def list_bounties(
     return session.exec(stmt).all()
 
 
+@router.get("/api/v1/bounties/project/{repo_name}/book")
+@router.get("/bounties/project/{repo_name}/book")
+def get_project_task_book(
+    repo_name: str,
+    filter: Optional[str] = None,
+    session: Session = Depends(get_session),
+):
+    """Return all bounties for a repo as a task book, ordered by tree structure."""
+    stmt = select(Bounty).where(Bounty.repo_name == repo_name)
+    bounties = session.exec(stmt).all()
+
+    # Apply filter
+    if filter == "submitted":
+        bounties = [b for b in bounties if b.status == "submitted"]
+    elif filter == "incomplete":
+        bounties = [b for b in bounties if b.status not in {"completed", "cancelled"}]
+
+    # Build topological ordering (parent before children) via DFS
+    bounty_map = {b.id: b for b in bounties}
+    children_map: dict = {}
+    for b in bounties:
+        parent = b.parent_id
+        if parent not in children_map:
+            children_map[parent] = []
+        children_map[parent].append(b.id)
+
+    ordered = []
+    visited = set()
+
+    def dfs(bounty_id: str):
+        if bounty_id in visited:
+            return
+        visited.add(bounty_id)
+        b = bounty_map.get(bounty_id)
+        if b:
+            ordered.append(b)
+        for child_id in children_map.get(bounty_id, []):
+            dfs(child_id)
+
+    # Start from root nodes (parent_id is None or parent not in current set)
+    root_ids = [b.id for b in bounties if b.parent_id is None or b.parent_id not in bounty_map]
+    for root_id in root_ids:
+        dfs(root_id)
+
+    # Include any remaining bounties not reached from roots (orphans)
+    for b in bounties:
+        if b.id not in visited:
+            ordered.append(b)
+
+    return {"repo_name": repo_name, "bounties": [b.model_dump() for b in ordered]}
+
+
 @router.post("/api/v1/bounties")
 @router.post("/bounties")
 @limiter.limit("20/minute")
@@ -262,6 +360,16 @@ def create_bounty(
         test_command=" ".join(tokens),
         verification_mode=verification_mode,
     )
+
+    # Initialize spec skeleton and populate architect fields
+    _ensure_spec(new_bounty)
+    new_bounty.spec["architect"]["title"] = title
+    new_bounty.spec["architect"]["description"] = description
+    new_bounty.spec["architect"]["required_role"] = str(bounty.required_role.value if isinstance(bounty.required_role, RepoRole) else bounty.required_role)
+    new_bounty.spec["architect"]["estimated_hours"] = bounty.estimated_hours
+    new_bounty.spec["architect"]["track"] = bounty.track
+    new_bounty.spec["system"]["created_at"] = datetime.utcnow().isoformat()
+    new_bounty.spec = copy.deepcopy(new_bounty.spec)  # trigger SQLAlchemy dirty tracking
 
     session.add(new_bounty)
     session.commit()
@@ -368,6 +476,18 @@ def _flatten_task_tree(
         verification_mode=node.verification_mode,
         status=BountyStatus.PENDING.value if node.dependencies else BountyStatus.OPEN.value,
     )
+
+    # Initialize spec skeleton and populate architect fields from node
+    _ensure_spec(bounty)
+    bounty.spec["architect"]["title"] = node.title
+    bounty.spec["architect"]["description"] = node.description
+    bounty.spec["architect"]["required_role"] = str(node.required_role.value if hasattr(node.required_role, "value") else node.required_role)
+    bounty.spec["architect"]["estimated_hours"] = node.estimated_hours
+    bounty.spec["architect"]["track"] = node.track
+    bounty.spec["architect"]["acceptance_criteria"] = list(node.acceptance_criteria) if node.acceptance_criteria else []
+    bounty.spec["system"]["created_at"] = datetime.utcnow().isoformat()
+    bounty.spec = copy.deepcopy(bounty.spec)  # trigger SQLAlchemy dirty tracking
+
     all_bounties.append(bounty)
     # Return bounty and client_id (if provided) so caller can build mapping
     return bounty, (node.client_id or None)
@@ -392,9 +512,10 @@ def create_decomposed_bounties(
     """
     from persistence import BountyStatus
 
-    # Validate repo exists in filesystem
+    # Validate repo exists in filesystem（支持带或不带 .git 后缀）
     repo_path = get_secure_repo_path(req.repo_name)
-    if not os.path.exists(repo_path):
+    repo_path_git = get_secure_repo_path(req.repo_name.rstrip(".git") + ".git") if not req.repo_name.endswith(".git") else repo_path
+    if not os.path.exists(repo_path) and not os.path.exists(repo_path_git):
         raise HTTPException(status_code=404, detail=f"Repo '{req.repo_name}' not found")
 
     # Resolve/create repo registry record and enforce repo_id consistency
@@ -619,6 +740,144 @@ def resolve_bounty_dependencies(bounty_id: str, session: Session) -> int:
     return updated_count
 
 
+@router.patch("/api/v1/bounties/{bounty_id}/spec")
+@router.patch("/bounties/{bounty_id}/spec")
+def update_bounty_spec_architect(
+    bounty_id: str,
+    req: ArchitectSpecUpdate,
+    session: Session = Depends(get_session),
+    identity=Depends(require_active_identity),
+):
+    """Architect updates architect-authored spec fields."""
+    bounty = session.get(Bounty, bounty_id)
+    if not bounty:
+        raise HTTPException(status_code=404, detail="Bounty not found")
+
+    # Validate no contributor/system keys in request
+    req_dict = req.model_dump(exclude_none=True)
+    forbidden_keys = {"contributor", "system"}
+    if forbidden_keys.intersection(req_dict.keys()):
+        raise HTTPException(
+            status_code=403,
+            detail="Cannot modify contributor or system fields via architect endpoint",
+        )
+
+    _ensure_spec(bounty)
+    for key, value in req_dict.items():
+        bounty.spec["architect"][key] = value
+
+    bounty.spec = copy.deepcopy(bounty.spec)  # trigger SQLAlchemy dirty tracking
+    session.add(bounty)
+    session.commit()
+    session.refresh(bounty)
+    return bounty
+
+
+@router.patch("/api/v1/bounties/{bounty_id}/spec/contributor")
+@router.patch("/bounties/{bounty_id}/spec/contributor")
+def update_bounty_spec_contributor(
+    bounty_id: str,
+    req: ContributorSpecUpdate,
+    session: Session = Depends(get_session),
+    identity=Depends(require_active_identity),
+):
+    """Contributor updates contributor-authored spec fields (assignee only)."""
+    bounty = session.get(Bounty, bounty_id)
+    if not bounty:
+        raise HTTPException(status_code=404, detail="Bounty not found")
+
+    if str(identity.id) != str(bounty.assignee):
+        raise HTTPException(
+            status_code=403,
+            detail="Only the assigned contributor may update contributor fields",
+        )
+
+    if bounty.status != "in_progress":
+        raise HTTPException(
+            status_code=409,
+            detail=f"Cannot update contributor spec when bounty status is '{bounty.status}'; must be 'in_progress'",
+        )
+
+    _ensure_spec(bounty)
+    req_dict = req.model_dump(exclude_none=True)
+
+    # Detect if implementation_plan is being set for the first time
+    plan_first_write = (
+        "implementation_plan" in req_dict
+        and bounty.spec["contributor"].get("implementation_plan") is None
+    )
+
+    for key, value in req_dict.items():
+        bounty.spec["contributor"][key] = value
+
+    # Append plan_submitted event if implementation_plan was first written
+    if plan_first_write:
+        entry = {
+            "timestamp": datetime.utcnow().isoformat(),
+            "actor_type": "contributor",
+            "actor_id": str(identity.id),
+            "from_status": bounty.status,
+            "to_status": bounty.status,
+            "event": "plan_submitted",
+        }
+        bounty.spec["system"]["status_history"] = list(bounty.spec["system"]["status_history"]) + [entry]
+
+    bounty.spec = copy.deepcopy(bounty.spec)  # trigger SQLAlchemy dirty tracking
+    session.add(bounty)
+    session.commit()
+    session.refresh(bounty)
+    return bounty
+
+
+@router.post("/api/v1/bounties/{bounty_id}/reject")
+@router.post("/bounties/{bounty_id}/reject")
+def reject_bounty(
+    bounty_id: str,
+    req: RejectRequest,
+    session: Session = Depends(get_session),
+    identity=Depends(require_active_identity),
+):
+    """Architect rejects a submitted bounty with feedback."""
+    bounty = session.get(Bounty, bounty_id)
+    if not bounty:
+        raise HTTPException(status_code=404, detail="Bounty not found")
+
+    if bounty.status != "submitted":
+        raise HTTPException(
+            status_code=409,
+            detail=f"Cannot reject bounty with status '{bounty.status}'; must be 'submitted'",
+        )
+
+    _ensure_spec(bounty)
+
+    # Append review event
+    review_event = {
+        "timestamp": datetime.utcnow().isoformat(),
+        "reviewer_id": str(identity.id),
+        "decision": "rejected",
+        "feedback": req.feedback,
+    }
+    new_spec = dict(bounty.spec)
+    new_spec["system"] = dict(new_spec["system"])
+    new_spec["system"]["review_history"] = list(new_spec["system"]["review_history"]) + [review_event]
+    bounty.spec = new_spec
+    session.add(bounty)
+    session.commit()
+
+    # Transition back to in_progress (FSM hook will append status_history entry)
+    from agent_auth.services.bounty_fsm import transition
+    updated, err = transition(
+        session,
+        bounty_id,
+        "in_progress",
+        ctx={"actor_type": "agent", "actor_id": str(identity.id)},
+    )
+    if err:
+        raise HTTPException(status_code=409, detail=err)
+
+    return {"success": True, "id": bounty_id, "status": "in_progress"}
+
+
 @router.post("/api/v1/bounties/{bounty_id}/claim")
 @router.post("/bounties/{bounty_id}/claim")
 def claim_bounty_route(
@@ -684,6 +943,60 @@ def claim_bounty_route(
             )
 
     return bounty
+
+
+@router.post("/api/v1/bounties/{bounty_id}/submit")
+@router.post("/bounties/{bounty_id}/submit")
+def submit_bounty(
+    bounty_id: str,
+    req: BountySubmitRequest,
+    session: Session = Depends(get_session),
+    identity: Any = Depends(require_active_identity),
+):
+    """
+    Agent submits a bounty for review.
+
+    Optionally accepts a spec_update to merge contributor fields (files_changed,
+    test_results, implementation_notes) and record submitted_at timestamp before
+    transitioning the bounty to 'submitted' status.
+    """
+    from agent_auth.services.bounty_fsm import transition
+    from persistence import BountyStatus
+
+    bounty = session.get(Bounty, bounty_id)
+    if not bounty:
+        raise HTTPException(status_code=404, detail="Bounty not found")
+
+    if str(identity.id) != str(bounty.assignee):
+        raise HTTPException(status_code=403, detail="Only the assignee can submit this bounty")
+
+    if bounty.status != BountyStatus.IN_PROGRESS.value:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Bounty is not in progress (status={bounty.status})",
+        )
+
+    # Handle spec_update if provided
+    if req.spec_update is not None:
+        _ensure_spec(bounty)
+        spec_update_dict = req.spec_update.model_dump(exclude_none=True)
+        for key, value in spec_update_dict.items():
+            bounty.spec["contributor"][key] = value
+        bounty.spec["system"]["submitted_at"] = datetime.utcnow().isoformat()
+        bounty.spec = copy.deepcopy(bounty.spec)  # trigger SQLAlchemy dirty tracking
+        session.add(bounty)
+        # Don't commit yet — let the transition() call below handle the final commit
+
+    updated, err = transition(
+        session,
+        bounty_id,
+        BountyStatus.SUBMITTED.value,
+        ctx={"actor_type": "agent", "actor_id": str(identity.id), "agent_id": str(identity.id)},
+    )
+    if err:
+        raise HTTPException(status_code=409, detail=err)
+
+    return {"success": True, "id": updated.id, "status": updated.status}
 
 
 @router.post("/api/v1/bounties/{bounty_id}/convert-claim")
@@ -980,10 +1293,13 @@ def _collect_cascade_ids(session: Session, root_id: str) -> Set[str]:
         children = session.exec(select(Bounty).where(Bounty.parent_id == current)).all()
         for child in children:
             to_visit.append(child.id)
-        # Reverse dependents
-        dependents = session.exec(select(Bounty).where(Bounty.dependencies.contains([current]))).all()
-        for dependent in dependents:
-            to_visit.append(dependent.id)
+        # Reverse dependents: 用 Python 过滤，避免 PostgreSQL JSON LIKE 兼容性问题
+        all_pending = session.exec(
+            select(Bounty).where(Bounty.status.in_(["pending", "ready_for_preparation", "open"]))
+        ).all()
+        for b in all_pending:
+            if b.dependencies and current in b.dependencies:
+                to_visit.append(b.id)
     return ids
 
 

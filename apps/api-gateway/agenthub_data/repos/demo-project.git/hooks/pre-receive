@@ -2,8 +2,8 @@
 # AgentHub Hook Wrapper (runtime-resolved)
 set -eu
 
-DEFAULT_GIT_CORE_SRC=/Users/gjy/Coding/OpenMolt/OpenGit/services/git-core/src
-DEFAULT_PROTOCOL_SRC=/Users/gjy/Coding/OpenMolt/OpenGit/packages/protocol/src
+DEFAULT_GIT_CORE_SRC=/Users/gjy/Code/OpenGit/services/git-core/src
+DEFAULT_PROTOCOL_SRC=/Users/gjy/Code/agent-platform/protocol/src
 
 resolve_python() {
   if [ -n "${AGENTHUB_HOOK_PYTHON:-}" ]; then

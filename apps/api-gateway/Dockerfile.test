@@ -1,0 +1,36 @@
+FROM python:3.11-slim
+
+WORKDIR /app
+
+RUN apt-get update && apt-get install -y git build-essential && rm -rf /var/lib/apt/lists/*
+
+# Install monorepo packages first (cached layer)
+COPY packages /app/packages
+COPY services /app/services
+COPY skills /app/skills
+COPY bots /app/bots
+
+RUN pip install --no-cache-dir \
+    /app/packages/protocol \
+    /app/services/git-core \
+    /app/services/semantic-store \
+    /app/services/execution-vmm
+
+# Install test + runtime deps
+COPY apps/api-gateway/src/agent_auth/requirements.txt /tmp/requirements.txt
+RUN pip install --no-cache-dir \
+    fastapi uvicorn pydantic pydantic-settings python-multipart \
+    gitpython requests httpx numpy zhipuai qdrant-client mem0ai \
+    slowapi sqlmodel "bcrypt>=4.0.1,<5.0.0" passlib \
+    "python-jose[cryptography]" apscheduler sniffio \
+    psycopg2-binary aiohttp alembic pyyaml jinja2 \
+    pytest pytest-asyncio httpx
+
+COPY apps/api-gateway /app/apps/api-gateway
+
+WORKDIR /app/apps/api-gateway
+
+ENV PYTHONPATH="/app:/app/apps/api-gateway:/app/apps/api-gateway/src"
+ENV ALLOW_SQLMODEL_CREATE_ALL=1
+
+CMD ["python3", "-m", "pytest", "tests/", "-v", "--tb=short", "-q"]

@@ -270,19 +270,18 @@ class UserAuthService:
 
     def bind_agent_to_user(self, user: User, agent: Agent, ip_address: str = None) -> UserAgentBinding:
         """
-        Permanently bind an agent to a user.
+        Bind an agent to a user (Passport).
+
         Rules:
-        - One user can only have ONE bound agent
-        - One agent can only be bound to ONE user
-        - Binding is permanent
+        - One user can bind MULTIPLE agents (different roles)
+        - One agent can only be bound to ONE user (enforced by uq_binding_agent)
+        - Agent must be in CLAIMED status and not DELETED
         """
-        # Check if user already has a bound agent
-        existing = self.session.exec(
-            select(UserAgentBinding).where(UserAgentBinding.user_id == user.id)
-        ).first()
-        if existing:
-            raise ValueError("User already has a bound agent")
-        # Check if agent is already bound
+        # Reject deleted agents
+        if agent.status == AgentStatus.DELETED:
+            raise ValueError("Cannot bind a deleted agent")
+
+        # Check if agent is already bound to another user
         existing = self.session.exec(
             select(UserAgentBinding).where(UserAgentBinding.agent_id == agent.id)
         ).first()
@@ -318,30 +317,43 @@ class UserAuthService:
         except IntegrityError:
             self.session.rollback()
             # Normalize concurrent / duplicate bind races to stable API errors.
-            existing_by_user = self.session.exec(
-                select(UserAgentBinding).where(UserAgentBinding.user_id == user.id)
-            ).first()
-            if existing_by_user:
-                raise ValueError("User already has a bound agent")
-
             existing_by_agent = self.session.exec(
                 select(UserAgentBinding).where(UserAgentBinding.agent_id == agent.id)
             ).first()
             if existing_by_agent:
                 raise ValueError("Agent is already bound to another user")
-
             raise
 
         self.session.refresh(binding)
         return binding
     def get_user_bound_agent(self, user: User) -> Optional[Agent]:
-        """Get the agent bound to a user."""
-        binding = self.session.exec(
+        """
+        Get the first non-deleted agent bound to a user.
+        Backward-compatible: returns Optional[Agent].
+        """
+        bindings = self.session.exec(
             select(UserAgentBinding).where(UserAgentBinding.user_id == user.id)
-        ).first()
-        if not binding:
-            return None
-        return self.session.get(Agent, binding.agent_id)
+        ).all()
+        for binding in bindings:
+            agent = self.session.get(Agent, binding.agent_id)
+            if agent and agent.status != AgentStatus.DELETED:
+                return agent
+        return None
+
+    def get_user_bound_agents(self, user: User) -> list:
+        """
+        Get all non-deleted agents bound to a user (Passport).
+        Returns List[Agent] — supports multi-role Passport.
+        """
+        bindings = self.session.exec(
+            select(UserAgentBinding).where(UserAgentBinding.user_id == user.id)
+        ).all()
+        agents = []
+        for binding in bindings:
+            agent = self.session.get(Agent, binding.agent_id)
+            if agent and agent.status != AgentStatus.DELETED:
+                agents.append(agent)
+        return agents
     def get_agent_bound_user(self, agent: Agent) -> Optional[User]:
         """Get the user who bound an agent."""
         binding = self.session.exec(

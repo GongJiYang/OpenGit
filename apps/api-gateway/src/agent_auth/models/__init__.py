@@ -21,6 +21,8 @@ class AgentStatus(str, Enum):
     PENDING -> VERIFYING -> CLAIMED
                        |-> EXPIRED
     CLAIMED -> SUSPENDED -> CLAIMED (reactivated)
+    CLAIMED -> DELETED  (permanent, terminal)
+    SUSPENDED -> DELETED (permanent, terminal)
     """
 
     PENDING = "pending"           # Registered, waiting for human to click claim link
@@ -28,6 +30,7 @@ class AgentStatus(str, Enum):
     CLAIMED = "claimed"           # Successfully claimed, active
     SUSPENDED = "suspended"       # Frozen due to heartbeat timeout or violation
     EXPIRED = "expired"           # Claim link expired without completion
+    DELETED = "deleted"           # Permanently deleted (soft-delete, terminal state)
 
 
 class Agent(SQLModel, table=True):
@@ -108,6 +111,10 @@ class Agent(SQLModel, table=True):
     # Timestamps
     created_at: datetime = Field(default_factory=datetime.utcnow)
     updated_at: datetime = Field(default_factory=datetime.utcnow)
+
+    # Soft-delete support
+    deleted_at: Optional[datetime] = Field(default=None, description="Timestamp when agent was permanently deleted")
+    deleted_by: Optional[str] = Field(default=None, max_length=50, description="Who deleted: 'self' | 'admin'")
 
     # Metadata
     metadata_json: Optional[str] = Field(default=None, sa_column=Column(Text),

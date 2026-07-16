@@ -1,8 +1,7 @@
 """
 Claim Router - Human-facing API endpoints
 
-Endpoints for humans to claim ownership of agents.
-Supports both GitHub OAuth and email-based verification.
+Endpoints for humans to claim ownership of agents via email verification.
 """
 
 from datetime import datetime
@@ -45,34 +44,25 @@ def get_session():
     yield from get_db()
 
 
-# ============== Configuration ==============
-
-
-GITHUB_CLIENT_ID = os.getenv("GITHUB_CLIENT_ID", "")
-GITHUB_REDIRECT_URI = os.getenv("GITHUB_REDIRECT_URI", "http://localhost:8000/api/v1/oauth/github/callback")
-
-
 # ============== Claim Page ==============
 
 @router.get(
     "/{claim_code}",
     response_class=HTMLResponse,
     summary="Claim page",
-    description="Display the claim page for humans to verify ownership.",
+    description="Display the claim page for humans to verify ownership via email.",
 )
 async def get_claim_page(
     claim_code: str,
     session: Session = Depends(get_session)
 ) -> HTMLResponse:
     """
-    Render the claim page with agent info and verification options.
+    Render the claim page with agent info and email verification form.
 
     Shows:
-    - Agent name
     - Claim code for verification
     - Expiration time
-    - GitHub OAuth button
-    - Email verification option (fallback)
+    - Email verification form
     """
     statement = select(Agent).where(Agent.claim_code == claim_code)
     agent = session.exec(statement).first()
@@ -102,7 +92,7 @@ async def get_claim_page(
             <div style="text-align: center; padding: 40px; background: white; border-radius: 12px; box-shadow: 0 2px 10px rgba(0,0,0,0.1);">
                 <h1 style="color: #f39c12;">Already Claimed</h1>
                 <p>This agent has already been claimed.</p>
-                <p><strong>Owner:</strong> {agent.owner_github_login or agent.owner_email}</p>
+                <p><strong>Owner:</strong> {agent.owner_email}</p>
             </div>
         </body>
         </html>
@@ -129,9 +119,8 @@ async def get_claim_page(
     hours_remaining = int(time_remaining.total_seconds() // 3600)
     minutes_remaining = int((time_remaining.total_seconds() % 3600) // 60)
     frontend_url = get_settings().frontend_url.rstrip("/")
-    bind_query = f"agent_id={agent.id}&claim_code={quote(claim_code)}"
-    bind_url = f"{frontend_url}/bind-agent?{bind_query}"
-    login_url = f"{frontend_url}/login?next={quote('/bind-agent?' + bind_query, safe='')}"
+    bind_url = f"{frontend_url}/bind-agent"
+    login_url = f"{frontend_url}/login?next={quote('/bind-agent', safe='')}"
 
     html_content = f"""
     <!DOCTYPE html>
@@ -159,65 +148,16 @@ async def get_claim_page(
                 width: 100%;
                 padding: 40px;
             }}
-            .logo {{
-                text-align: center;
-                margin-bottom: 30px;
-            }}
-            .logo h1 {{
-                font-size: 28px;
-                color: #333;
-            }}
+            .logo {{ text-align: center; margin-bottom: 30px; }}
+            .logo h1 {{ font-size: 28px; color: #333; }}
             .agent-info {{
                 background: #f8f9fa;
                 border-radius: 12px;
                 padding: 20px;
                 margin-bottom: 30px;
             }}
-            .expiry {{
-                color: #6c757d;
-                font-size: 14px;
-                margin-top: 12px;
-            }}
-            .oauth-btn {{
-                display: flex;
-                align-items: center;
-                justify-content: center;
-                width: 100%;
-                padding: 14px;
-                border-radius: 8px;
-                border: none;
-                font-size: 16px;
-                font-weight: 600;
-                cursor: pointer;
-                transition: all 0.2s;
-                text-decoration: none;
-                margin-bottom: 12px;
-            }}
-            .github-btn {{
-                background: #24292e;
-                color: white;
-            }}
-            .github-btn:hover {{
-                background: #1a1e22;
-            }}
-            .divider {{
-                display: flex;
-                align-items: center;
-                margin: 20px 0;
-                color: #6c757d;
-            }}
-            .divider::before, .divider::after {{
-                content: '';
-                flex: 1;
-                border-bottom: 1px solid #dee2e6;
-            }}
-            .divider span {{
-                padding: 0 16px;
-                font-size: 14px;
-            }}
-            .email-form {{
-                margin-top: 20px;
-            }}
+            .expiry {{ color: #6c757d; font-size: 14px; margin-top: 12px; }}
+            .email-form {{ margin-top: 8px; }}
             .email-form input {{
                 width: 100%;
                 padding: 14px;
@@ -226,10 +166,7 @@ async def get_claim_page(
                 font-size: 16px;
                 margin-bottom: 12px;
             }}
-            .email-form input:focus {{
-                outline: none;
-                border-color: #667eea;
-            }}
+            .email-form input:focus {{ outline: none; border-color: #667eea; }}
             .email-form button {{
                 width: 100%;
                 padding: 14px;
@@ -241,13 +178,8 @@ async def get_claim_page(
                 font-weight: 600;
                 cursor: pointer;
             }}
-            .email-form button:hover {{
-                background: #5a6fd6;
-            }}
-            .email-form button:disabled {{
-                background: #adb5bd;
-                cursor: not-allowed;
-            }}
+            .email-form button:hover {{ background: #5a6fd6; }}
+            .email-form button:disabled {{ background: #adb5bd; cursor: not-allowed; }}
             .success-message {{
                 display: none;
                 background: #d4edda;
@@ -259,9 +191,7 @@ async def get_claim_page(
                 text-align: left;
                 white-space: pre-line;
             }}
-            .success-message.show {{
-                display: block;
-            }}
+            .success-message.show {{ display: block; }}
             .error-message {{
                 display: none;
                 background: #f8d7da;
@@ -273,9 +203,7 @@ async def get_claim_page(
                 text-align: left;
                 white-space: pre-line;
             }}
-            .error-message.show {{
-                display: block;
-            }}
+            .error-message.show {{ display: block; }}
             .help-box {{
                 margin-top: 16px;
                 padding: 16px;
@@ -285,24 +213,8 @@ async def get_claim_page(
                 font-size: 14px;
                 line-height: 1.6;
             }}
-            .help-box a {{
-                color: #4c6ef5;
-                text-decoration: none;
-                font-weight: 600;
-            }}
-            .help-box code {{
-                background: white;
-                border: 1px solid #dee2e6;
-                border-radius: 6px;
-                padding: 2px 6px;
-                font-size: 12px;
-            }}
-            .footer {{
-                text-align: center;
-                margin-top: 24px;
-                color: #6c757d;
-                font-size: 13px;
-            }}
+            .help-box a {{ color: #4c6ef5; text-decoration: none; font-weight: 600; }}
+            .footer {{ text-align: center; margin-top: 24px; color: #6c757d; font-size: 13px; }}
         </style>
     </head>
     <body>
@@ -318,19 +230,8 @@ async def get_claim_page(
             </div>
 
             <p style="text-align: center; margin-bottom: 24px; color: #6c757d;">
-                Verify your ownership to complete the claiming process.
+                Enter your email to verify ownership and complete the claiming process.
             </p>
-
-            <a href="#" id="githubAuthBtn" class="oauth-btn github-btn">
-                <svg style="width: 20px; height: 20px; margin-right: 8px;" viewBox="0 0 24 24" fill="currentColor">
-                    <path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0024 12c0-6.63-5.37-12-12-12z"/>
-                </svg>
-                Continue with GitHub
-            </a>
-
-            <div class="divider">
-                <span>or</span>
-            </div>
 
             <form class="email-form" id="emailForm">
                 <input type="email" name="email" placeholder="Enter your email" required>
@@ -353,25 +254,15 @@ async def get_claim_page(
 
         <script>
             const claimPath = window.location.pathname.replace(/\/+$/, '');
-            const claimCode = claimPath.split('/').pop();
             const claimInfoUrl = claimPath + '/info';
             const claimVerifyUrl = claimPath + '/verify';
-            const bindPath = '/bind-agent?agent_id={agent.id}&claim_code=' + encodeURIComponent(claimCode);
-            const githubParams = new URLSearchParams();
-            githubParams.set('claim_code', claimCode);
-            githubParams.set('return_to', bindPath);
-            const githubOAuthUrl = '/api/v1/oauth/github?' + githubParams.toString();
 
             async function fetchClaimInfo() {{
                 const response = await fetch(claimInfoUrl, {{
                     method: 'GET',
                     headers: {{ 'Accept': 'application/json' }}
                 }});
-
-                if (!response.ok) {{
-                    throw new Error('Unable to load claim info');
-                }}
-
+                if (!response.ok) throw new Error('Unable to load claim info');
                 return response.json();
             }}
 
@@ -393,26 +284,11 @@ async def get_claim_page(
                 errorMsg.classList.add('show');
             }}
 
-            document.getElementById('githubAuthBtn').addEventListener('click', async (e) => {{
-                e.preventDefault();
-                try {{
-                    const info = await fetchClaimInfo();
-                    if (!info || !info.status || !info.expires_at) {{
-                        throw new Error('Invalid claim info');
-                    }}
-                    window.location.assign(githubOAuthUrl);
-                }} catch (error) {{
-                    showError('Claim validation failed. Please refresh and try again.');
-                }}
-            }});
-
             document.getElementById('emailForm').addEventListener('submit', async (e) => {{
                 e.preventDefault();
-
                 const form = e.target;
                 const submitBtn = document.getElementById('submitBtn');
-                const formData = new FormData(form);
-                const email = formData.get('email');
+                const email = new FormData(form).get('email');
 
                 submitBtn.disabled = true;
                 submitBtn.textContent = 'Sending...';
@@ -470,11 +346,7 @@ async def get_claim_info(
     claim_code: str,
     session: Session = Depends(get_session)
 ) -> ClaimInfoResponse:
-    """
-    Get minimal claim information for an agent.
-
-    Returns only expiration and current status.
-    """
+    """Get minimal claim information for an agent."""
     statement = select(Agent).where(Agent.claim_code == claim_code)
     agent = session.exec(statement).first()
 
@@ -490,13 +362,13 @@ async def get_claim_info(
     )
 
 
-# ============== Email Verification (Fallback) ==============
+# ============== Email Verification ==============
 
 @router.post(
     "/{claim_code}/verify",
     response_model=ClaimVerifyResponse,
     summary="Send verification email",
-    description="Send verification email to claim agent ownership (fallback method).",
+    description="Send verification email to claim agent ownership.",
 )
 async def verify_claim_with_email(
     claim_code: str,
@@ -507,11 +379,7 @@ async def verify_claim_with_email(
     """
     Send verification email for claim.
 
-    This endpoint sends a verification email instead of immediately claiming.
     The user must click the link in the email to complete the claim.
-
-    Note: This is a fallback method. GitHub OAuth is preferred for
-    stronger identity verification.
     """
     statement = select(Agent).where(Agent.claim_code == claim_code)
     agent = session.exec(statement).first()
@@ -537,6 +405,7 @@ async def verify_claim_with_email(
 
     email = sanitize_email(request.email)
 
+    # Invalidate any previous unused tokens
     session.exec(
         update(EmailVerification)
         .where(EmailVerification.agent_id == agent.id)
@@ -565,11 +434,11 @@ async def verify_claim_with_email(
         logger.error(f"Failed to send verification email to {email}")
         return ClaimVerifyResponse(
             success=False,
-            message="Verification could not be delivered. Please retry or use GitHub claim instead.",
+            message="Verification could not be delivered. Please retry.",
             agent_id=agent.id,
             email_sent_to=email,
             delivery_mode="failed",
-            next_step="Retry email verification, or return to the claim page and continue with GitHub.",
+            next_step="Retry email verification.",
         )
 
     if delivery.delivery_mode == "dev_console":
@@ -585,7 +454,6 @@ async def verify_claim_with_email(
         )
 
     logger.info(f"Verification email sent to {email} for agent {agent.id}")
-
     return ClaimVerifyResponse(
         success=True,
         message="Verification email sent. Check your inbox, complete the claim, then sign in to AgentHub to bind the agent.",
@@ -607,104 +475,55 @@ async def confirm_email_verification(
     token: str,
     session: Session = Depends(get_session)
 ) -> HTMLResponse:
-    """
-    Confirm email verification and complete the claim.
-
-    This endpoint is accessed via the link sent in the verification email.
-    """
+    """Confirm email verification and complete the claim."""
     statement = select(EmailVerification).where(EmailVerification.token == token)
     verification = session.exec(statement).first()
 
     if not verification:
-        return _render_error_page(
-            title="Invalid Link",
-            message="This verification link is invalid. Please request a new one.",
-        )
+        return _render_error_page("Invalid Link", "This verification link is invalid. Please request a new one.")
 
     if verification.verified:
-        return _render_error_page(
-            title="Link Already Used",
-            message="This verification link has already been used. If you completed the claim, your agent is ready!",
-        )
+        return _render_error_page("Link Already Used", "This verification link has already been used. If you completed the claim, your agent is ready!")
 
     if is_email_verify_expired(verification.token_expires_at):
-        return _render_error_page(
-            title="Link Expired",
-            message="This verification link has expired (30 minutes). Please submit your email again.",
-        )
+        return _render_error_page("Link Expired", "This verification link has expired (30 minutes). Please submit your email again.")
 
-    agent = session.exec(
-        select(Agent).where(Agent.id == verification.agent_id)
-    ).first()
+    agent = session.exec(select(Agent).where(Agent.id == verification.agent_id)).first()
 
     if not agent:
-        return _render_error_page(
-            title="Agent Not Found",
-            message="The associated agent could not be found.",
-        )
+        return _render_error_page("Agent Not Found", "The associated agent could not be found.")
 
     if agent.claim_code != claim_code:
-        return _render_error_page(
-            title="Invalid Claim",
-            message="Claim code mismatch. Please use the correct link.",
-        )
+        return _render_error_page("Invalid Claim", "Claim code mismatch. Please use the correct link.")
 
     if agent.status == AgentStatus.CLAIMED:
-        return _render_error_page(
-            title="Already Claimed",
-            message=f"This agent has already been claimed by {agent.owner_email}.",
-        )
+        return _render_error_page("Already Claimed", f"This agent has already been claimed by {agent.owner_email}.")
 
     if is_claim_expired(agent.claim_expires_at):
-        return _render_error_page(
-            title="Claim Expired",
-            message="The claim link has expired. Please request a new claim link from your agent.",
-        )
+        return _render_error_page("Claim Expired", "The claim link has expired. Please request a new claim link from your agent.")
 
     now = datetime.utcnow()
 
     verification_update = session.exec(
         update(EmailVerification)
-        .where(
-            and_(
-                EmailVerification.id == verification.id,
-                EmailVerification.verified.is_(False),
-            )
-        )
+        .where(and_(EmailVerification.id == verification.id, EmailVerification.verified.is_(False)))
         .values(verified=True, verified_at=now)
     )
     if verification_update.rowcount != 1:
         session.rollback()
-        return _render_error_page(
-            title="Link Already Used",
-            message="This verification link has already been used. If you completed the claim, your agent is ready!",
-        )
+        return _render_error_page("Link Already Used", "This verification link has already been used. If you completed the claim, your agent is ready!")
 
     agent_update = session.exec(
         update(Agent)
-        .where(
-            and_(
-                Agent.id == verification.agent_id,
-                Agent.claim_code == claim_code,
-                Agent.status != AgentStatus.CLAIMED,
-            )
-        )
-        .values(
-            status=AgentStatus.CLAIMED,
-            owner_email=verification.email,
-            claimed_at=now,
-        )
+        .where(and_(Agent.id == verification.agent_id, Agent.claim_code == claim_code, Agent.status != AgentStatus.CLAIMED))
+        .values(status=AgentStatus.CLAIMED, owner_email=verification.email, claimed_at=now)
     )
 
     if agent_update.rowcount != 1:
         session.rollback()
-        return _render_error_page(
-            title="Already Claimed",
-            message="This agent has already been claimed.",
-        )
+        return _render_error_page("Already Claimed", "This agent has already been claimed.")
 
     session.commit()
-
     logger.info(f"Agent {agent.id} claimed by {verification.email}")
 
     return _render_success_page(agent_id=str(agent.id), claim_code=claim_code, agent_name=agent.name, owner_email=verification.email)
@@ -713,7 +532,6 @@ async def confirm_email_verification(
 # ============== Helper Functions ==============
 
 def _render_error_page(title: str, message: str) -> HTMLResponse:
-    """Render an error page."""
     html_content = f"""
     <!DOCTYPE html>
     <html>
@@ -730,7 +548,6 @@ def _render_error_page(title: str, message: str) -> HTMLResponse:
 
 
 def _render_success_page(agent_id: str, claim_code: str, agent_name: str, owner_email: str) -> HTMLResponse:
-    """Render a success page after successful claim."""
     frontend_url = get_settings().frontend_url.rstrip("/")
     bind_path = f"/bind-agent?agent_id={agent_id}&claim_code={quote(claim_code)}"
     login_url = f"{frontend_url}/login?next={quote(bind_path, safe='')}"

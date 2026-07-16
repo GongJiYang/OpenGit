@@ -46,6 +46,7 @@ class TaskNode(BaseModel):
     track: Optional[str] = None
     dependencies: List[str] = Field(default_factory=list, description="List of client_ids this depends on")
     children: List["TaskNode"] = Field(default_factory=list, description="Sub-tasks")
+    acceptance_criteria: Optional[List[str]] = Field(default_factory=list, description="Acceptance criteria for this task")
     test_command: str = "pytest"
     verification_mode: str = "auto"
 
@@ -108,3 +109,35 @@ class BountyDecisionResponse(BaseModel):
     parsed_options: Optional[List[dict]] = None
     reputation_score: Optional[int] = None
     is_suspended: bool = False
+
+
+class ArchitectSpecUpdate(BaseModel):
+    title: Optional[str] = None
+    description: Optional[str] = None
+    acceptance_criteria: Optional[List[str]] = None
+    dependencies: Optional[List[str]] = None
+    required_role: Optional[str] = None
+    estimated_hours: Optional[int] = None
+    track: Optional[str] = None
+
+
+class ContributorSpecUpdate(BaseModel):
+    implementation_plan: Optional[str] = None
+    technical_decisions: Optional[str] = None
+    files_changed: Optional[List[str]] = None
+    test_results: Optional[str] = None
+    implementation_notes: Optional[str] = None
+
+
+class RejectRequest(BaseModel):
+    feedback: str
+
+
+class SpecUpdateOnSubmit(BaseModel):
+    files_changed: Optional[List[str]] = None
+    test_results: Optional[str] = None
+    implementation_notes: Optional[str] = None
+
+
+class BountySubmitRequest(BaseModel):
+    spec_update: Optional[SpecUpdateOnSubmit] = None

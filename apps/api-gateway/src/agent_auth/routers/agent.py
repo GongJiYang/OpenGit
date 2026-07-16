@@ -168,40 +168,56 @@ async def _authenticate_agent_by_api_key(
             detail="Agent is suspended. Contact support."
         )
 
+    if agent.status == AgentStatus.DELETED:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Agent has been permanently deleted."
+        )
+
     return agent
 
 
 async def get_current_agent(
-    x_api_key: str = Header(..., alias="X-API-Key", description="Agent API Key"),
+    x_api_key: Optional[str] = Header(None, alias="X-API-Key", description="Agent API Key"),
     session: Session = Depends(get_session)
 ) -> Agent:
     """
     Validate API Key and return a claimed authenticated agent.
 
     Raises:
-        HTTPException: 401 if API key is invalid or agent not found
+        HTTPException: 401 if API key is missing, invalid or agent not found
         HTTPException: 403 if agent is suspended or not claimed
     """
-    agent = await _authenticate_agent_by_api_key(x_api_key=x_api_key, session=session)
-    if agent.status != AgentStatus.CLAIMED:
+    if not x_api_key:
         raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Agent is not claimed. Complete the claim process to continue."
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Missing X-API-Key header."
         )
-    return agent
+    return await _authenticate_agent_by_api_key(x_api_key=x_api_key, session=session)
 
 
 async def get_registered_agent(
-    x_api_key: str = Header(..., alias="X-API-Key", description="Agent API Key"),
+    x_api_key: Optional[str] = Header(None, alias="X-API-Key", description="Agent API Key"),
     session: Session = Depends(get_session)
 ) -> Agent:
     """Validate API key for any non-suspended registered agent."""
+    if not x_api_key:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Missing X-API-Key header."
+        )
     return await _authenticate_agent_by_api_key(x_api_key=x_api_key, session=session)
 
 
 async def get_claimed_agent(
     agent: Agent = Depends(get_current_agent)
 ) -> Agent:
+    """Validate that the agent is claimed (not PENDING or VERIFYING)."""
+    if agent.status in [AgentStatus.PENDING, AgentStatus.VERIFYING]:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Agent not claimed. Only claimed agents can access this endpoint."
+        )
     return agent
 
 # ============== Registration Endpoint ==============
@@ -304,7 +320,14 @@ async def get_agent_status(
 ) -> AgentStatusResponse:
     """
     Get current agent status including claim information.
+    Only claimed agents can access this endpoint.
     """
+    if agent.status == AgentStatus.PENDING:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Agent not claimed. Only claimed agents can access status endpoint."
+        )
+    
     return AgentStatusResponse(
         id=agent.id,
         name=agent.name,
@@ -372,6 +395,35 @@ async def get_current_agent_info(
 ) -> AgentStatusResponse:
     """Alias for /status endpoint."""
     return await get_agent_status(agent)
+
+
+# ============== Delete Agent (permanent soft-delete) ==============
+
+@router.delete(
+    "/me",
+    summary="Permanently delete this Agent",
+    description="""
+    Permanently delete the authenticated Agent (soft-delete).
+
+    - Sets agent status to DELETED (terminal, non-recoverable)
+    - Atomically suspends all ACTIVE repository memberships
+    - Idempotent: safe to call multiple times
+    - The Agent's API Key will be rejected after deletion
+    """,
+)
+async def delete_agent_me(
+    agent: Agent = Depends(get_claimed_agent),
+    session: Session = Depends(get_session),
+) -> dict:
+    """
+    Permanently delete the authenticated agent.
+    Calls AgentLifecycleService.delete_agent() atomically.
+    """
+    from ..services.agent_lifecycle import AgentLifecycleService
+
+    service = AgentLifecycleService(session)
+    result = service.delete_agent(agent, deleted_by="self")
+    return result
 
 
 # ============== Regenerate Claim (if expired) ==============

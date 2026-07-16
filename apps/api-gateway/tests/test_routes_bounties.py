@@ -28,8 +28,6 @@ def _set_required_security_env(monkeypatch):
     monkeypatch.setenv("JWT_SECRET", "test-jwt-secret")
     monkeypatch.setenv("JWT_SECRET_KEY", "test-jwt-secret")
     monkeypatch.setenv("WECHAT_TOKEN", "test-wechat-token")
-    monkeypatch.setenv("GITHUB_CLIENT_ID", "test-github-client-id")
-    monkeypatch.setenv("GITHUB_CLIENT_SECRET", "test-github-client-secret")
     monkeypatch.setenv("INTERNAL_API_TOKEN", "test-internal-token")
     clear_settings_cache()
 

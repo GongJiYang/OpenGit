@@ -25,7 +25,7 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 from core.lifespan import lifespan
 from dependencies.services import get_indexer, get_sandbox, get_session_manager
 from core.security import ensure_governance_allows_execution, get_secure_repo_path
-from agent_auth.routers import agent_router, claim_router, oauth_router, wechat_router
+from agent_auth.routers import agent_router, claim_router, wechat_router
 from meta import meta_router
 from agent_auth.deps import get_auth_session
 from agent_auth.services.memory_service import get_memory_service
@@ -456,7 +456,6 @@ def create_app() -> FastAPI:
     # routers
     app.include_router(agent_router)
     app.include_router(claim_router)
-    app.include_router(oauth_router)
     app.include_router(wechat_router)
     app.include_router(meta_router)
     app.include_router(bounties_router)
@@ -486,9 +485,11 @@ def create_app() -> FastAPI:
     app.include_router(runner_router, prefix="/api/v1")
 
     # Skills router (M3-4): start & job polling endpoints
-    from skills.api_router import router as skills_router  # type: ignore
-
-    app.include_router(skills_router, prefix="/api/v1")
+    try:
+        from skills.api_router import router as skills_router  # type: ignore
+        app.include_router(skills_router, prefix="/api/v1")
+    except ImportError:
+        logger.warning("Skills module not available, skipping skills router")
     app.include_router(backlog_governance_router, prefix="/api/v1")
 
     return app

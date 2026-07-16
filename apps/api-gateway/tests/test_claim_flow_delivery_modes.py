@@ -5,36 +5,7 @@ import secrets
 from sqlmodel import Session
 
 import agent_auth.routers.claim as claim_module
-import agent_auth.routers.oauth as oauth_module
 from agent_auth.models import Agent, AgentStatus
-
-
-class _FakeResponse:
-    def __init__(self, payload):
-        self._payload = payload
-
-    def json(self):
-        return self._payload
-
-
-class _FakeAsyncClient:
-    async def __aenter__(self):
-        return self
-
-    async def __aexit__(self, exc_type, exc, tb):
-        return False
-
-    async def post(self, url, json=None, headers=None):
-        return _FakeResponse({"access_token": "fake-access-token"})
-
-    async def get(self, url, headers=None):
-        if url.endswith("/user"):
-            return _FakeResponse({"id": 123456, "login": "octocat", "email": "owner@example.com"})
-        if url.endswith("/user/emails"):
-            return _FakeResponse([
-                {"email": "owner@example.com", "primary": True, "verified": True}
-            ])
-        return _FakeResponse({})
 
 
 def _create_pending_agent(db_engine, name: str = "claim-flow-agent"):
@@ -124,32 +95,3 @@ def test_claim_confirm_success_page_includes_bind_guidance(client, db_engine):
     assert "Bind Agent" in confirm.text
     assert "Log in to bind agent" in confirm.text
     assert f"claim_code={claim_code}" in confirm.text
-
-
-def test_oauth_start_encodes_return_to_and_callback_redirects(client, db_engine, monkeypatch):
-    monkeypatch.setattr(oauth_module.httpx, "AsyncClient", _FakeAsyncClient)
-    agent_id, claim_code = _create_pending_agent(db_engine, name="oauth-return-to")
-
-    start = client.get(
-        "/api/v1/oauth/github",
-        params={"claim_code": claim_code, "return_to": "/bind-agent?source=oauth"},
-        follow_redirects=False,
-    )
-    assert start.status_code in (302, 307)
-
-    location = start.headers["location"]
-    state = parse_qs(urlparse(location).query)["state"][0]
-    decoded = oauth_module._decode_oauth_state(state)
-    assert decoded["rt"] == "/bind-agent?source=oauth"
-
-    callback = client.get(
-        "/api/v1/oauth/github/callback",
-        params={"code": "mock-code", "state": state},
-        follow_redirects=False,
-    )
-
-    assert callback.status_code == 302, callback.text
-    redirect = callback.headers["location"]
-    assert redirect.startswith("http://localhost:3000/bind-agent?source=oauth")
-    assert f"agent_id={agent_id}" in redirect
-    assert f"claim_code={claim_code}" in redirect

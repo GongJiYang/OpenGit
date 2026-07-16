@@ -32,7 +32,7 @@ from core.middleware import limiter  # noqa: E402
 from agent_auth.models import Agent, AgentStatus  # noqa: E402
 from agent_auth.utils import API_KEY_PREFIX, API_KEY_LENGTH, get_api_key_prefix  # noqa: E402
 import routers.commits as commits_router  # noqa: E402
-import skills.api_router as skills_api_router  # noqa: E402
+# import skills.api_router as skills_api_router  # noqa: E402
 
 
 @pytest.fixture(autouse=True)
@@ -42,8 +42,8 @@ def _clear_dependency_overrides():
         limiter._storage.reset()
 
     # Reset in-memory circuit-breaker state between tests to avoid cross-test coupling.
-    skills_api_router._CB_RECENT.clear()
-    skills_api_router._CB_OPEN_UNTIL.clear()
+    # skills_api_router._CB_RECENT.clear()
+    # skills_api_router._CB_OPEN_UNTIL.clear()
 
     # Reset daily budget tracker state to avoid cross-test coupling via shared JSON file.
     commits_router.budget_tracker._ensure_file()
@@ -56,8 +56,8 @@ def _clear_dependency_overrides():
     if hasattr(limiter, "_storage") and hasattr(limiter._storage, "reset"):
         limiter._storage.reset()
 
-    skills_api_router._CB_RECENT.clear()
-    skills_api_router._CB_OPEN_UNTIL.clear()
+    # skills_api_router._CB_RECENT.clear()
+    # skills_api_router._CB_OPEN_UNTIL.clear()
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -140,8 +140,6 @@ def client(monkeypatch):
     monkeypatch.setenv("JWT_SECRET", "test-jwt-secret")
     monkeypatch.setenv("JWT_SECRET_KEY", "test-jwt-secret")
     monkeypatch.setenv("WECHAT_TOKEN", "test-wechat-token")
-    monkeypatch.setenv("GITHUB_CLIENT_ID", "test-github-client-id")
-    monkeypatch.setenv("GITHUB_CLIENT_SECRET", "test-github-client-secret")
     monkeypatch.setenv("INTERNAL_API_TOKEN", "test-internal-token")
     monkeypatch.setenv("TRACE_COMMIT_SIGNING_SECRET", "test-trace-signing-secret")
 

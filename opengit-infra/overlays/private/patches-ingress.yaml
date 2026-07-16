@@ -1,0 +1,4 @@
+# 替换为你的内网域名或 IP（如果用 IP 直接访问可以删掉 Ingress）
+- op: replace
+  path: /spec/rules/0/host
+  value: opengit.internal   # 改成你的内网域名，或删掉用 NodePort

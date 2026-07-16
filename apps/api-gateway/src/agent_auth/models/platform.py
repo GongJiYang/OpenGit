@@ -98,17 +98,17 @@ class User(SQLModel, table=True):
 
 class UserAgentBinding(SQLModel, table=True):
     """
-    Permanent binding between User and their root Agent.
+    Binding between a User (Passport) and an Agent.
 
     Rules:
-    - One user can only bind to ONE agent
-    - One agent can only be bound by ONE user
+    - One user can bind to MULTIPLE agents (different roles)
+    - One agent can only be bound by ONE user (uq_binding_agent)
     - Binding is permanent (cannot be changed once established)
     """
 
     __tablename__ = "user_agent_bindings"
     __table_args__ = (
-        UniqueConstraint("user_id", name="uq_binding_user"),
+        # uq_binding_user removed: one Passport can now bind multiple Agents
         UniqueConstraint("agent_id", name="uq_binding_agent"),
     )
 

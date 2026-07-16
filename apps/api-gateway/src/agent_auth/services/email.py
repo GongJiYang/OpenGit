@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 # Configuration
 RESEND_API_KEY = os.getenv("RESEND_API_KEY", "")
 FROM_EMAIL = os.getenv("FROM_EMAIL", "noreply@agenthub.dev")
-BASE_URL = os.getenv("BASE_URL", "http://localhost:8000")
+BASE_URL = os.getenv("BASE_URL", os.getenv("FRONTEND_URL", "http://localhost:8000"))
 
 
 @dataclass(frozen=True)

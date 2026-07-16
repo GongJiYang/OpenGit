@@ -1,0 +1,75 @@
+version: '3.8'
+
+# 测试套件：后端单测 + 前端构建验证
+# 使用方式：
+#   全部跑：  docker compose -f docker-compose.test.yml up --build --abort-on-container-exit
+#   只跑后端：docker compose -f docker-compose.test.yml up --build api-test
+#   只跑前端：docker compose -f docker-compose.test.yml up --build ui-test
+
+services:
+
+  # ── 后端单测 ────────────────────────────────────────
+  api-test:
+    build:
+      context: ..
+      dockerfile: apps/api-gateway/Dockerfile.test
+    environment:
+      # 测试用 SQLite，不需要真实 DB
+      DATABASE_URL: "sqlite:///./agenthub_data/test_agenthub.db"
+      ALLOW_SQLMODEL_CREATE_ALL: "1"
+      # 安全校验在测试中由 conftest monkeypatch 覆盖，这里给默认值防止 import 报错
+      APP_SECURITY_MODE: "warn"
+      JWT_SECRET: "test-jwt-secret-for-ci"
+      JWT_SECRET_KEY: "test-jwt-secret-for-ci"
+      WECHAT_TOKEN: "test-wechat-token"
+      INTERNAL_API_TOKEN: "test-internal-token"
+      TRACE_COMMIT_SIGNING_SECRET: "test-trace-signing-secret"
+    volumes:
+      # 挂载源码，方便本地改了代码不用重新 build
+      - ../apps/api-gateway/src:/app/apps/api-gateway/src:ro
+      - ../apps/api-gateway/tests:/app/apps/api-gateway/tests:ro
+    command: >
+      python3 -m pytest tests/ -v --tb=short
+      --junitxml=/tmp/test-results/api-results.xml
+    # 测试结果输出到宿主机
+    # volumes 里加：- ./test-results:/tmp/test-results
+
+  # ── 前端构建验证 ─────────────────────────────────────
+  ui-test:
+    build:
+      context: ../apps/observer-ui
+      dockerfile: Dockerfile
+      args:
+        NEXT_PUBLIC_API_BASE: /api
+    # 构建成功即通过，不需要运行
+    command: echo "✅ Frontend build passed"
+
+  # ── 可选：集成测试（后端 + 真实 DB）────────────────
+  # 取消注释以启用
+  # postgres-test:
+  #   image: postgres:16-alpine
+  #   environment:
+  #     POSTGRES_USER: test
+  #     POSTGRES_PASSWORD: test
+  #     POSTGRES_DB: test
+  #   healthcheck:
+  #     test: ["CMD-SHELL", "pg_isready -U test"]
+  #     interval: 3s
+  #     retries: 5
+  #
+  # api-integration-test:
+  #   build:
+  #     context: ..
+  #     dockerfile: apps/api-gateway/Dockerfile.test
+  #   depends_on:
+  #     postgres-test:
+  #       condition: service_healthy
+  #   environment:
+  #     DATABASE_URL: postgresql+psycopg2://test:test@postgres-test:5432/test
+  #     APP_SECURITY_MODE: "warn"
+  #     JWT_SECRET: "test-jwt-secret-for-ci"
+  #     JWT_SECRET_KEY: "test-jwt-secret-for-ci"
+  #     WECHAT_TOKEN: "test-wechat-token"
+  #     INTERNAL_API_TOKEN: "test-internal-token"
+  #     TRACE_COMMIT_SIGNING_SECRET: "test-trace-signing-secret"
+  #   command: python3 -m pytest tests/ -v --tb=short -m integration

@@ -26,8 +26,24 @@ from typing import Any, Dict, Optional, Tuple
 
 from sqlmodel import Session, update
 
-from persistence import Bounty, BountyStatus, AuditLog
+from persistence import Bounty, BountyStatus, AuditLog, _ensure_spec
 
+
+
+def _append_status_history(bounty: Bounty, from_status: str, to_status: str, ctx: Dict[str, Any]) -> None:
+    """Append a status history entry to bounty.spec, reassigning to trigger SQLAlchemy dirty tracking."""
+    _ensure_spec(bounty)
+    entry = {
+        "timestamp": datetime.utcnow().isoformat(),
+        "actor_type": ctx.get("actor_type", "system") if ctx else "system",
+        "actor_id": ctx.get("actor_id", "") if ctx else "",
+        "from_status": from_status,
+        "to_status": to_status,
+    }
+    new_spec = dict(bounty.spec)
+    new_spec["system"] = dict(new_spec["system"])
+    new_spec["system"]["status_history"] = list(new_spec["system"]["status_history"]) + [entry]
+    bounty.spec = new_spec  # reassign to trigger SQLAlchemy dirty tracking
 
 
 def _deps_completed(session: Session, bounty: Bounty) -> bool:
@@ -92,6 +108,8 @@ def transition(session: Session, bounty_id: str, to_status: str, ctx: Optional[D
             return None, "Transition rejected due to concurrent update"
         session.commit()
         updated = session.get(Bounty, bounty_id)
+        _append_status_history(updated, from_status, to_status, ctx)
+        session.add(updated)
         _audit(session, updated, from_status, to_status, ctx)
         session.commit()
         return updated, None
@@ -111,6 +129,8 @@ def transition(session: Session, bounty_id: str, to_status: str, ctx: Optional[D
             return None, "Transition rejected due to concurrent update"
         session.commit()
         updated = session.get(Bounty, bounty_id)
+        _append_status_history(updated, from_status, to_status, ctx)
+        session.add(updated)
         _audit(session, updated, from_status, to_status, ctx)
         session.commit()
         return updated, None
@@ -131,6 +151,8 @@ def transition(session: Session, bounty_id: str, to_status: str, ctx: Optional[D
             return None, "Race detected: bounty already claimed"
         session.commit()
         updated = session.get(Bounty, bounty_id)
+        _append_status_history(updated, from_status, to_status, ctx)
+        session.add(updated)
         _audit(session, updated, from_status, to_status, ctx)
         session.commit()
         return updated, None
@@ -152,6 +174,8 @@ def transition(session: Session, bounty_id: str, to_status: str, ctx: Optional[D
             return None, "Transition rejected due to concurrent update"
         session.commit()
         updated = session.get(Bounty, bounty_id)
+        _append_status_history(updated, from_status, to_status, ctx)
+        session.add(updated)
         _audit(session, updated, from_status, to_status, ctx)
         session.commit()
         return updated, None
@@ -176,6 +200,8 @@ def transition(session: Session, bounty_id: str, to_status: str, ctx: Optional[D
             return None, "Race detected: bounty already claimed for preparation"
         session.commit()
         updated = session.get(Bounty, bounty_id)
+        _append_status_history(updated, from_status, to_status, ctx)
+        session.add(updated)
         _audit(session, updated, from_status, to_status, ctx)
         session.commit()
         return updated, None
@@ -197,6 +223,8 @@ def transition(session: Session, bounty_id: str, to_status: str, ctx: Optional[D
             return None, "Transition rejected due to concurrent update"
         session.commit()
         updated = session.get(Bounty, bounty_id)
+        _append_status_history(updated, from_status, to_status, ctx)
+        session.add(updated)
         _audit(session, updated, from_status, to_status, ctx)
         session.commit()
         return updated, None
@@ -217,6 +245,8 @@ def transition(session: Session, bounty_id: str, to_status: str, ctx: Optional[D
             return None, "Transition rejected due to concurrent update"
         session.commit()
         updated = session.get(Bounty, bounty_id)
+        _append_status_history(updated, from_status, to_status, ctx)
+        session.add(updated)
         _audit(session, updated, from_status, to_status, ctx)
         session.commit()
         return updated, None
@@ -235,6 +265,8 @@ def transition(session: Session, bounty_id: str, to_status: str, ctx: Optional[D
             return None, "Transition rejected due to concurrent update"
         session.commit()
         updated = session.get(Bounty, bounty_id)
+        _append_status_history(updated, from_status, to_status, ctx)
+        session.add(updated)
         _audit(session, updated, from_status, to_status, ctx)
         session.commit()
         return updated, None
@@ -252,6 +284,8 @@ def transition(session: Session, bounty_id: str, to_status: str, ctx: Optional[D
             return None, "Transition rejected due to concurrent update"
         session.commit()
         updated = session.get(Bounty, bounty_id)
+        _append_status_history(updated, from_status, to_status, ctx)
+        session.add(updated)
         _audit(session, updated, from_status, to_status, ctx)
         session.commit()
         return updated, None
@@ -272,6 +306,8 @@ def transition(session: Session, bounty_id: str, to_status: str, ctx: Optional[D
             return None, "Transition rejected due to concurrent update"
         session.commit()
         updated = session.get(Bounty, bounty_id)
+        _append_status_history(updated, from_status, to_status, ctx)
+        session.add(updated)
         _audit(session, updated, from_status, to_status, ctx)
         session.commit()
         return updated, None
@@ -303,6 +339,8 @@ def transition(session: Session, bounty_id: str, to_status: str, ctx: Optional[D
             return None, "Transition rejected due to concurrent update or invalid state"
         session.commit()
         updated = session.get(Bounty, bounty_id)
+        _append_status_history(updated, from_status, to_status, ctx)
+        session.add(updated)
         _audit(session, updated, from_status, to_status, ctx)
         session.commit()
         return updated, None
@@ -328,6 +366,8 @@ def transition(session: Session, bounty_id: str, to_status: str, ctx: Optional[D
             return None, "Transition rejected due to concurrent update"
         session.commit()
         updated = session.get(Bounty, bounty_id)
+        _append_status_history(updated, from_status, to_status, ctx)
+        session.add(updated)
         _audit(session, updated, from_status, to_status, ctx)
         session.commit()
         return updated, None

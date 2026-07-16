@@ -1,0 +1,20 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../../base
+  - job-migrate.yaml
+
+# 私有部署：本地 build 的镜像，tag 用 git commit sha 或 latest
+images:
+  - name: ghcr.io/opengit-dev/opengit-api-gateway
+    newName: opengit-api-gateway   # 本地 docker build -t opengit-api-gateway .
+    newTag: latest
+  - name: ghcr.io/opengit-dev/opengit-observer-ui
+    newName: opengit-observer-ui
+    newTag: latest
+
+patches:
+  - path: patches-ingress.yaml
+  - path: patches-secrets.yaml
+  - path: patches-config.yaml

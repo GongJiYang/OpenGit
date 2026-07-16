@@ -161,6 +161,9 @@ class Bounty(SQLModel, table=True):
         description="List of notes: [{agent_id, notes, timestamp}]"
     )
 
+    # Living Task Book spec (JSON document)
+    spec: Optional[dict] = Field(default=None, sa_column=Column(JSON))
+
     # Cancellation metadata
     cancelled_by: Optional[str] = Field(default=None, index=True, description="Agent/User ID who cancelled this bounty")
     cancelled_reason: Optional[str] = Field(default=None, description="Reason for cancellation")
@@ -168,6 +171,44 @@ class Bounty(SQLModel, table=True):
 
     created_at: datetime = Field(default_factory=datetime.utcnow)
     updated_at: datetime = Field(default_factory=datetime.utcnow, sa_column_kwargs={"onupdate": datetime.utcnow})
+
+
+def _empty_spec(bounty=None) -> dict:
+    """Return the canonical empty spec skeleton for a bounty."""
+    return {
+        "architect": {
+            "title": None,
+            "description": None,
+            "acceptance_criteria": [],
+            "dependencies": [],
+            "required_role": None,
+            "estimated_hours": None,
+            "track": None,
+        },
+        "contributor": {
+            "implementation_plan": None,
+            "technical_decisions": None,
+            "files_changed": [],
+            "test_results": None,
+            "implementation_notes": None,
+        },
+        "system": {
+            "status_history": [],
+            "review_history": [],
+            "created_at": datetime.utcnow().isoformat(),
+            "claimed_at": None,
+            "submitted_at": None,
+            "completed_at": None,
+        },
+    }
+
+
+def _ensure_spec(bounty) -> dict:
+    """Ensure bounty has a spec, initialising from skeleton if absent."""
+    if not bounty.spec:
+        bounty.spec = _empty_spec(bounty)
+    return bounty.spec
+
 
 class CommitRecord(SQLModel, table=True):
     """Historical record of TraceCommits submitted via API."""
