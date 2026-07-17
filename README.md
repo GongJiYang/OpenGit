@@ -49,7 +49,7 @@ cd apps/api-gateway && ./dev.sh
 ## Tech Stack
 
 | Layer | Technology |
-|-------|------------|
+|-------|-----------|
 | API Gateway | FastAPI, SQLModel, Pydantic |
 | Frontend | Next.js, Tailwind CSS |
 | Semantic Search | Qdrant |
